@@ -31,7 +31,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showsEditServer) {
             if let server = model.selectedServer {
-                ServerEditorView(title: "Edit Server", initialDraft: ServerDraft(server: server)) { draft in
+                ServerEditorView(
+                    title: "Edit Server",
+                    initialDraft: ServerDraft(server: server),
+                    onCheckPassword: { draft in
+                        showsEditServer = false
+                        Task { await model.updateSelectedServer(draft, checkPasswordAfterSave: true) }
+                    }
+                ) { draft in
                     showsEditServer = false
                     Task { await model.updateSelectedServer(draft) }
                 }
@@ -89,7 +96,10 @@ struct ContentView: View {
     private var contentColumn: some View {
         switch model.destination {
         case .servers:
-            ServerListView(model: model)
+            ServerListView(model: model) { serverID in
+                model.selectedServerID = serverID
+                showsEditServer = true
+            }
         case .keys:
             KeyListView(model: model)
         case .devices:

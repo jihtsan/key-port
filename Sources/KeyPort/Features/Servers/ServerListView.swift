@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ServerListView: View {
     let model: AppModel
+    let onEdit: (UUID) -> Void
 
     var body: some View {
         @Bindable var model = model
@@ -24,11 +25,22 @@ struct ServerListView: View {
         .navigationTitle("Servers")
         .contextMenu(forSelectionType: UUID.self) { selection in
             if selection.count == 1, let serverID = selection.first {
-                Button("Check Password SSH") { Task { await model.checkPassword(serverID: serverID) } }
-                Button("Check Key SSH") { Task { await model.checkKey(serverID: serverID) } }
-                Button("Copy SSH Alias") { model.copyAlias(serverID: serverID) }
+                Button {
+                    onEdit(serverID)
+                } label: {
+                    Label("Edit Server", systemImage: "pencil")
+                }
+                Button {
+                    model.copyAlias(serverID: serverID)
+                } label: {
+                    Label("Copy SSH Alias", systemImage: "doc.on.doc")
+                }
                 Divider()
-                Button("Delete", role: .destructive) { Task { await model.deleteServer(serverID) } }
+                Button(role: .destructive) {
+                    Task { await model.deleteServer(serverID) }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .overlay {
