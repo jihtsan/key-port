@@ -268,7 +268,7 @@ final class AppModel {
         await check(serverID: server.id, kind: .password)
     }
 
-    func updateSelectedServer(_ draft: ServerDraft) async {
+    func updateSelectedServer(_ draft: ServerDraft, checkPasswordAfterSave: Bool = false) async {
         guard let id = selectedServerID,
               let index = snapshot.servers.firstIndex(where: { $0.id == id }) else { return }
         let alias = draft.alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -309,7 +309,9 @@ final class AppModel {
         appendAudit(category: "server", action: "update", targetID: id.uuidString, result: "success")
         await persist()
         await writeConfig()
-        await check(serverID: id, kind: .password)
+        if checkPasswordAfterSave {
+            await check(serverID: id, kind: .password)
+        }
     }
 
     func deleteSelectedServer() async {

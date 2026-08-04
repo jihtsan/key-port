@@ -5,11 +5,18 @@ struct ServerEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ServerDraft
     let title: String
+    let onCheckPassword: ((ServerDraft) -> Void)?
     let onSave: (ServerDraft) -> Void
 
-    init(title: String, initialDraft: ServerDraft = ServerDraft(), onSave: @escaping (ServerDraft) -> Void) {
+    init(
+        title: String,
+        initialDraft: ServerDraft = ServerDraft(),
+        onCheckPassword: ((ServerDraft) -> Void)? = nil,
+        onSave: @escaping (ServerDraft) -> Void
+    ) {
         self.title = title
         _draft = State(initialValue: initialDraft)
+        self.onCheckPassword = onCheckPassword
         self.onSave = onSave
     }
 
@@ -39,6 +46,14 @@ struct ServerEditorView: View {
 
             Divider()
             HStack {
+                if let onCheckPassword {
+                    Button {
+                        onCheckPassword(draft)
+                    } label: {
+                        Label("Check Password SSH", systemImage: "lock")
+                    }
+                    .disabled(!isValid)
+                }
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
