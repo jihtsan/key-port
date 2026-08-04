@@ -68,7 +68,7 @@ M1 和 M2 均通过验收后，一期才视为完成。
 | 术语 | 定义 | 示例 |
 | --- | --- | --- |
 | 连接名称 | KeyPort 界面中的可读名称，可修改 | Doris 生产库 |
-| SSH 别名 | 用户在终端、脚本和 AI 中使用的稳定入口 | `kp-prod-doris` |
+| SSH 别名 | 用户在终端、脚本和 AI 中使用的稳定入口 | `prod-doris` |
 | 服务器端点 | 主机或域名与 SSH 端口的组合 | `192.168.1.20:22` |
 | 登录账号 | 服务器上的 SSH 用户 | `root` |
 | 设备名称 | 用户可读的 Mac 名称 | Jooder MacBook Pro |
@@ -139,18 +139,18 @@ M1 和 M2 均通过验收后，一期才视为完成。
 
 ### 5.1 SSH 别名
 
-默认格式：
+已有 SSH Config 连接默认复用原始 `Host` 别名；新建连接默认格式：
 
 ```text
-kp-<分组或环境>-<连接标识>
+<分组或环境>-<连接标识>
 ```
 
 示例：
 
 ```text
-kp-prod-doris
-kp-test-redis
-kp-office-nas
+prod-doris
+test-redis
+office-nas
 ```
 
 规则：
@@ -158,7 +158,7 @@ kp-office-nas
 1. 只允许小写字母、数字和连字符。
 2. 不允许空格、通配符和 SSH Config 特殊字符。
 3. 在 KeyPort 管理范围和用户现有 SSH Config 中必须唯一。
-4. 同一地址的不同账号可追加账号，例如 `kp-prod-doris-admin`。
+4. 同一地址的不同账号可追加账号，例如 `prod-doris-admin`。
 5. 别名同步到所有 Mac；本机配置引用各自的设备私钥。
 6. 修改别名前提示脚本、书签和 AI 引用可能失效。
 
@@ -283,7 +283,7 @@ keyport:v1:key_6cd814e9:jooder-macbook-pro
 KeyPort 生成独立配置文件：
 
 ```sshconfig
-Host kp-prod-doris
+Host prod-doris
     HostName 192.168.1.20
     Port 22
     User root
