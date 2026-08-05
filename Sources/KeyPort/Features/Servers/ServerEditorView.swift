@@ -66,7 +66,10 @@ struct ServerEditorView: View {
                     TextField("主机或 IP", text: $draft.host)
                         .onChange(of: draft.host) { _, _ in invalidateValidation(resetHostKeys: true) }
                     TextField("用户", text: $draft.username)
-                        .onChange(of: draft.username) { _, _ in invalidateValidation() }
+                        .onChange(of: draft.username) { _, _ in
+                            draft.updateSuggestedAlias()
+                            invalidateValidation()
+                        }
                     TextField("分组", text: $draft.group)
                         .onChange(of: draft.group) { _, _ in
                             draft.updateSuggestedAlias()

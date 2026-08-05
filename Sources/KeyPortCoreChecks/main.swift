@@ -151,6 +151,42 @@ do {
         serverSuggestion.availableAlias(avoiding: ["tailscale-build-server", "tailscale-build-server-2"]) == "tailscale-build-server-3",
         "tailscale alias collision was not resolved"
     )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "root", avoiding: []) == "tailscale-build-server-root",
+        "tailscale account alias omitted username"
+    )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "Deploy User", avoiding: []) == "tailscale-build-server-deploy-user",
+        "tailscale account alias did not normalize username"
+    )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "root", avoiding: ["tailscale-build-server-root"]) == "tailscale-build-server-root-2",
+        "tailscale account alias collision was not resolved"
+    )
+    let matchingTailscaleAccount = ServerConnection(
+        name: "Build Server Root",
+        host: "100.64.0.2",
+        username: "root",
+        alias: "tailscale-build-server-root"
+    )
+    try expect(
+        serverSuggestion.matchesAccount(
+            host: "build-server.example.ts.net",
+            port: 22,
+            username: "root",
+            server: matchingTailscaleAccount
+        ),
+        "tailscale account identity did not match the same node"
+    )
+    try expect(
+        !serverSuggestion.matchesAccount(
+            host: "other.example.ts.net",
+            port: 22,
+            username: "root",
+            server: matchingTailscaleAccount
+        ),
+        "tailscale account identity ignored a moved draft host"
+    )
     try expect(TailscaleSSHServerSuggestion(node: localNode) == nil, "tailscale self was offered as a server")
     let unroutableNode = TailscaleNode(
         id: "node-unroutable",
@@ -268,7 +304,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 80 assertions passed")
+    print("KeyPortCoreChecks: 85 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)

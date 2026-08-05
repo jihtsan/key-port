@@ -22,6 +22,8 @@ struct ServerDraft: Sendable {
     var group = ""
     var notes = ""
     var usesSuggestedAlias = true
+    var tailscaleSuggestion: TailscaleSSHServerSuggestion?
+    var aliasesToAvoid = Set<String>()
 
     init() {}
 
@@ -36,22 +38,30 @@ struct ServerDraft: Sendable {
         usesSuggestedAlias = false
     }
 
-    init(tailscaleSuggestion: TailscaleSSHServerSuggestion) {
+    init(tailscaleSuggestion: TailscaleSSHServerSuggestion, aliasesToAvoid: Set<String>) {
         name = tailscaleSuggestion.name
         host = tailscaleSuggestion.host
         port = tailscaleSuggestion.port
-        alias = tailscaleSuggestion.alias
         group = tailscaleSuggestion.group
+        self.tailscaleSuggestion = tailscaleSuggestion
+        self.aliasesToAvoid = aliasesToAvoid
+        alias = tailscaleSuggestion.suggestedAlias(username: username, avoiding: aliasesToAvoid)
     }
 
     mutating func updateSuggestedAlias() {
         guard usesSuggestedAlias else { return }
-        alias = KeyPortNaming.alias(group: group, name: name)
+        alias = suggestedAlias
     }
 
     mutating func noteAliasEdit() {
-        let suggestion = KeyPortNaming.alias(group: group, name: name)
-        usesSuggestedAlias = alias.isEmpty || alias == suggestion
+        usesSuggestedAlias = alias.isEmpty || alias == suggestedAlias
+    }
+
+    private var suggestedAlias: String {
+        if let tailscaleSuggestion {
+            return tailscaleSuggestion.suggestedAlias(username: username, avoiding: aliasesToAvoid)
+        }
+        return KeyPortNaming.alias(group: group, name: name)
     }
 }
 
@@ -203,19 +213,29 @@ final class AppModel {
         return deviceListItems.first { $0.id == selectedDeviceItemID }
     }
 
-    func managedServer(for suggestion: TailscaleSSHServerSuggestion) -> ServerConnection? {
-        snapshot.servers.first {
+    func managedServers(for suggestion: TailscaleSSHServerSuggestion) -> [ServerConnection] {
+        snapshot.servers.filter {
             !$0.isDeleted && $0.port == suggestion.port && suggestion.matches(host: $0.host)
+        }.sorted {
+            let usernameOrder = $0.username.localizedCaseInsensitiveCompare($1.username)
+            return usernameOrder == .orderedSame ? $0.alias < $1.alias : usernameOrder == .orderedAscending
         }
     }
 
-    func tailscaleServerDraft(for suggestion: TailscaleSSHServerSuggestion) -> ServerDraft {
-        var draft = ServerDraft(tailscaleSuggestion: suggestion)
-        let alias = suggestion.availableAlias(avoiding: Set(activeServers.map(\.alias)))
-        if alias != suggestion.alias {
-            draft.alias = alias
-            draft.usesSuggestedAlias = false
+    func tailscaleServerDraft(
+        for suggestion: TailscaleSSHServerSuggestion,
+        existingServer: ServerConnection? = nil
+    ) -> ServerDraft {
+        guard let existingServer else {
+            return ServerDraft(
+                tailscaleSuggestion: suggestion,
+                aliasesToAvoid: Set(activeServers.map(\.alias))
+            )
         }
+
+        var draft = ServerDraft(server: existingServer)
+        draft.tailscaleSuggestion = suggestion
+        draft.aliasesToAvoid = Set(activeServers.lazy.filter { $0.id != existingServer.id }.map(\.alias))
         return draft
     }
 
@@ -225,9 +245,12 @@ final class AppModel {
     ) -> UUID? {
         let username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
         return activeServers.first {
-            $0.port == draft.port
-                && $0.username == username
-                && suggestion.matches(host: $0.host)
+            suggestion.matchesAccount(
+                host: draft.host,
+                port: draft.port,
+                username: username,
+                server: $0
+            )
         }?.id
     }
     var pendingPreviousHostKeys: [HostKeyRecord] {
@@ -497,7 +520,8 @@ final class AppModel {
 
     func saveAndAuthorizeTailscaleServer(
         _ submission: ServerEditorSubmission,
-        suggestion: TailscaleSSHServerSuggestion
+        suggestion: TailscaleSSHServerSuggestion,
+        existingServerID: UUID? = nil
     ) async throws -> UUID {
         guard !isBusy else {
             throw SSHServiceError.operationFailed("KeyPort 正在执行其他操作，请稍后重试。")
@@ -505,15 +529,15 @@ final class AppModel {
         isBusy = true
         defer { isBusy = false }
 
-        let existingServerID = existingTailscaleServerID(for: suggestion, draft: submission.draft)
-        let serverID = try await saveServerEditor(submission, existingServerID: existingServerID)
+        let matchedServerID = existingServerID
+            ?? existingTailscaleServerID(for: suggestion, draft: submission.draft)
+        let serverID = try await saveServerEditor(submission, existingServerID: matchedServerID)
         if preferredKey == nil {
             let key = try await generateCurrentDeviceKey()
             appendAudit(category: "key", action: "generate", targetID: key.id, result: "tailscale-enrollment")
             await persist()
         }
         try await authorizeServer(serverID)
-        showServer(serverID)
         return serverID
     }
 
@@ -659,6 +683,20 @@ final class AppModel {
         isBusy = true
         defer { isBusy = false }
         do {
+            try await authorizeServer(serverID)
+        } catch { present(error) }
+    }
+
+    func authorizeCurrentDevice(serverID: UUID) async {
+        guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            if preferredKey == nil {
+                let key = try await generateCurrentDeviceKey()
+                appendAudit(category: "key", action: "generate", targetID: key.id, result: "account-authorization")
+                await persist()
+            }
             try await authorizeServer(serverID)
         } catch { present(error) }
     }
@@ -1329,6 +1367,28 @@ final class AppModel {
         }
         guard !activeServers.contains(where: { $0.id != existingServerID && $0.alias == alias }) else {
             throw SSHServiceError.operationFailed("该 SSH 别名已由 KeyPort 管理。")
+        }
+        if let suggestion = draft.tailscaleSuggestion, !suggestion.matches(host: host) {
+            throw SSHServiceError.operationFailed("Tailscale SSH 账户的主机必须属于当前设备。")
+        }
+        let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let hasDuplicateAccount = activeServers.contains { server in
+            guard server.id != existingServerID,
+                  server.port == draft.port,
+                  server.username == username else { return false }
+            if let suggestion = draft.tailscaleSuggestion {
+                return suggestion.matchesAccount(
+                    host: host,
+                    port: draft.port,
+                    username: username,
+                    server: server
+                )
+            }
+            let existingHost = server.host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            return existingHost == normalizedHost
+        }
+        guard !hasDuplicateAccount else {
+            throw SSHServiceError.operationFailed("该设备上的 SSH 用户已由 KeyPort 管理。")
         }
         let existingAlias = existingServerID.flatMap { id in
             snapshot.servers.first(where: { $0.id == id })?.alias
