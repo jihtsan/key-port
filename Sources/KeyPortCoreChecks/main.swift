@@ -145,6 +145,14 @@ do {
     try expect(devicePresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode == nil, "remote KeyPort device inherited a Tailscale peer")
     try expect(devicePresences.first(where: { $0.id == .tailscale("node-peer") })?.registeredDevice == nil, "tailscale peer inherited a KeyPort identity")
 
+    let staleLocalRegistration = Device(id: "dev-old-local", name: "LOCAL-MAC", isCurrent: false)
+    let deduplicatedDevicePresences = DevicePresenceMerger.merge(
+        devices: [registeredSameNamePeer, staleLocalRegistration, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(deduplicatedDevicePresences.count == 3, "stale local device registration was displayed separately")
+    try expect(deduplicatedDevicePresences.first(where: { $0.id == .keyPort("dev-old-local") }) == nil, "stale local device registration was not suppressed")
+
     let old = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:old", knownHostsLine: "host ssh-ed25519 old")
     let new = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:new", knownHostsLine: "host ssh-ed25519 new")
     let unconfirmedRSA = HostKeyRecord(algorithm: "ssh-rsa", fingerprint: "SHA256:rsa", knownHostsLine: "host ssh-rsa rsa")
@@ -212,7 +220,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 69 assertions passed")
+    print("KeyPortCoreChecks: 71 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
