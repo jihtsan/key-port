@@ -4,7 +4,7 @@ import KeyPortCore
 enum TailscaleServiceError: LocalizedError {
     case notInstalled
     case statusFailed(Int32)
-    case invalidStatus(String)
+    case invalidStatus
 
     var errorDescription: String? {
         switch self {
@@ -12,8 +12,8 @@ enum TailscaleServiceError: LocalizedError {
             "未找到 Tailscale。请先安装并登录 Tailscale。"
         case .statusFailed(let status):
             "无法读取 Tailscale 状态（退出码 \(status)）。"
-        case .invalidStatus(let detail):
-            "Tailscale 返回了无法识别的设备状态：\(detail)"
+        case .invalidStatus:
+            "无法读取 Tailscale 设备状态。请确认 Tailscale 已启动并登录。"
         }
     }
 }
@@ -34,22 +34,21 @@ actor TailscaleService {
             throw TailscaleServiceError.statusFailed(result.status)
         }
         guard let data = result.stdout.data(using: .utf8) else {
-            throw TailscaleServiceError.invalidStatus("输出不是 UTF-8 文本。")
+            throw TailscaleServiceError.invalidStatus
         }
         do {
             return try TailscaleStatusParser.parse(data)
         } catch {
-            throw TailscaleServiceError.invalidStatus(String(describing: error))
+            throw TailscaleServiceError.invalidStatus
         }
     }
 
     private static func executablePath() -> String? {
         let manager = FileManager.default
         let candidates = [
-            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-            "/Applications/Tailscale.app/Contents/MacOS/tailscale",
             "/usr/local/bin/tailscale",
             "/opt/homebrew/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         ]
         return candidates.first(where: manager.isExecutableFile(atPath:))
     }

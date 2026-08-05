@@ -54,13 +54,26 @@ public struct TailscaleNode: Identifiable, Hashable, Sendable {
     }
 }
 
+public enum TailscaleStatusParsingError: LocalizedError, Equatable, Sendable {
+    case invalidJSON
+
+    public var errorDescription: String? {
+        "Tailscale 状态输出不是有效的 JSON。"
+    }
+}
+
 public enum TailscaleStatusParser {
     public static func parse(_ text: String) throws -> TailscaleStatus {
         try parse(Data(text.utf8))
     }
 
     public static func parse(_ data: Data) throws -> TailscaleStatus {
-        let rawStatus = try JSONDecoder().decode(RawStatus.self, from: data)
+        let rawStatus: RawStatus
+        do {
+            rawStatus = try JSONDecoder().decode(RawStatus.self, from: data)
+        } catch {
+            throw TailscaleStatusParsingError.invalidJSON
+        }
         var nodes: [TailscaleNode] = []
 
         if let local = rawStatus.localNode {

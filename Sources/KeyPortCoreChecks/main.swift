@@ -111,6 +111,16 @@ do {
     try expect(tailscaleStatus.backendState == "Running", "tailscale backend state")
     try expect(tailscaleStatus.tailnetName == "example@example.com", "tailscale tailnet name")
     try expect(tailscaleStatus.nodes.count == 2, "tailscale node count")
+    var nonJSONTailscaleError: Error?
+    do {
+        _ = try TailscaleStatusParser.parse("Tailscale is not ready")
+    } catch {
+        nonJSONTailscaleError = error
+    }
+    guard let nonJSONTailscaleError else {
+        throw CheckFailure.failed("tailscale non-JSON command output was accepted")
+    }
+    try expect(!String(describing: nonJSONTailscaleError).contains("DecodingError"), "tailscale parser exposed decoder internals")
     guard let localNode = tailscaleStatus.nodes.first(where: \.isCurrent) else {
         throw CheckFailure.failed("tailscale current node missing")
     }
@@ -202,7 +212,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 68 assertions passed")
+    print("KeyPortCoreChecks: 69 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
