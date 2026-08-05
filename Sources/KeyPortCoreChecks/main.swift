@@ -74,6 +74,67 @@ do {
     try expect(discovered.identityFiles == ["~/.ssh/id_ed25519", "/Users/example/Keys/production key"], "effective identities parse")
     try expect(SSHConfigDiscoveryParser.parse(alias: "broken", output: "hostname example.com\nport invalid\nuser root\n") == nil, "invalid effective port accepted")
 
+    let tailscaleStatusJSON = """
+    {
+      "BackendState": "Running",
+      "MagicDNSSuffix": "example.ts.net",
+      "CurrentTailnet": {
+        "Name": "example@example.com",
+        "MagicDNSSuffix": "example.ts.net",
+        "MagicDNSEnabled": true
+      },
+      "Self": {
+        "ID": "node-local",
+        "HostName": "local-mac",
+        "DNSName": "local-mac.example.ts.net.",
+        "OS": "macOS",
+        "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
+        "Online": true,
+        "Relay": "sfo"
+      },
+      "Peer": {
+        "nodekey:peer": {
+          "ID": "node-peer",
+          "HostName": "build-server",
+          "DNSName": "build-server.example.ts.net.",
+          "OS": "linux",
+          "TailscaleIPs": ["100.64.0.2"],
+          "Online": false,
+          "LastSeen": "2026-08-01T00:24:58.1Z",
+          "Relay": "fra",
+          "ExitNodeOption": true
+        }
+      }
+    }
+    """
+    let tailscaleStatus = try TailscaleStatusParser.parse(tailscaleStatusJSON)
+    try expect(tailscaleStatus.backendState == "Running", "tailscale backend state")
+    try expect(tailscaleStatus.tailnetName == "example@example.com", "tailscale tailnet name")
+    try expect(tailscaleStatus.nodes.count == 2, "tailscale node count")
+    guard let localNode = tailscaleStatus.nodes.first(where: \.isCurrent) else {
+        throw CheckFailure.failed("tailscale current node missing")
+    }
+    try expect(localNode.id == "node-local", "tailscale current node identity")
+    try expect(localNode.dnsName == "local-mac.example.ts.net", "tailscale DNS name normalization")
+    try expect(localNode.addresses == ["100.64.0.1", "fd7a:115c:a1e0::1"], "tailscale addresses")
+    guard let peerNode = tailscaleStatus.nodes.first(where: { !$0.isCurrent }) else {
+        throw CheckFailure.failed("tailscale peer node missing")
+    }
+    try expect(peerNode.name == "build-server" && !peerNode.isOnline, "tailscale peer summary")
+    try expect(peerNode.lastSeen != nil && peerNode.isExitNodeOption, "tailscale peer metadata")
+
+    let registeredLocal = Device(id: "dev-local", name: "local-mac", isCurrent: true)
+    let registeredSameNamePeer = Device(id: "dev-peer", name: "build-server", isCurrent: false)
+    let devicePresences = DevicePresenceMerger.merge(
+        devices: [registeredSameNamePeer, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(devicePresences.count == 3, "tailscale peer was incorrectly merged by display name")
+    try expect(devicePresences.first?.id == .keyPort("dev-local"), "current KeyPort device was not first")
+    try expect(devicePresences.first?.tailscaleNode?.id == "node-local", "tailscale self was not merged into current device")
+    try expect(devicePresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode == nil, "remote KeyPort device inherited a Tailscale peer")
+    try expect(devicePresences.first(where: { $0.id == .tailscale("node-peer") })?.registeredDevice == nil, "tailscale peer inherited a KeyPort identity")
+
     let old = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:old", knownHostsLine: "host ssh-ed25519 old")
     let new = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:new", knownHostsLine: "host ssh-ed25519 new")
     let unconfirmedRSA = HostKeyRecord(algorithm: "ssh-rsa", fingerprint: "SHA256:rsa", knownHostsLine: "host ssh-rsa rsa")
@@ -141,7 +202,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 54 assertions passed")
+    print("KeyPortCoreChecks: 68 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)

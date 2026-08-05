@@ -176,6 +176,18 @@ struct ContentView: View {
             }
         }
 
+        if model.destination == .devices {
+            ToolbarItem {
+                Button {
+                    Task { await model.refreshTailscale() }
+                } label: {
+                    Label("刷新 Tailscale", systemImage: "arrow.clockwise")
+                }
+                .help("刷新 Tailscale 设备状态")
+                .disabled(model.tailscaleDiscoveryState == .refreshing)
+            }
+        }
+
         ToolbarItem(placement: .primaryAction) {
             if model.isBusy {
                 ProgressView().controlSize(.small)

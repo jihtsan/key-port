@@ -47,6 +47,13 @@ struct ServerDraft {
     }
 }
 
+enum TailscaleDiscoveryState: Equatable {
+    case idle
+    case refreshing
+    case available
+    case unavailable(String)
+}
+
 struct KeyServerRow: Identifiable {
     let server: ServerConnection
     let key: SSHKeyRecord?
@@ -92,6 +99,7 @@ final class AppModel {
     var selectedServerID: UUID?
     var selectedKeyID: String?
     var selectedKeyItemID: String?
+    var selectedDeviceItemID: DevicePresence.ID?
     var searchText = ""
     var isLoaded = false
     var isBusy = false
@@ -105,6 +113,8 @@ final class AppModel {
     var passwordSaveError: String?
     var isSavingPassword = false
     var discoveredSSHConnections: [DiscoveredSSHConnection] = []
+    var tailscaleStatus: TailscaleStatus?
+    var tailscaleDiscoveryState: TailscaleDiscoveryState = .idle
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
 
     private let store: SnapshotStore
@@ -113,6 +123,7 @@ final class AppModel {
     private let hostKeyService: HostKeyService
     private let sshService: OpenSSHService
     private let configService: SSHConfigService
+    private let tailscaleService: TailscaleService
     private let localAuthentication: LocalAuthenticationService
     private let cloudSync: any CloudSyncing
     private let archiveService = MetadataArchiveService()
@@ -134,6 +145,7 @@ final class AppModel {
         self.hostKeyService = HostKeyService(runner: runner, paths: paths)
         self.sshService = OpenSSHService(runner: runner, paths: paths, askPassPath: helper)
         self.configService = SSHConfigService(runner: runner, paths: paths)
+        self.tailscaleService = TailscaleService(runner: runner)
         self.localAuthentication = LocalAuthenticationService()
         self.cloudSync = cloudSync
     }
@@ -153,6 +165,13 @@ final class AppModel {
     }
 
     var currentDevice: Device? { snapshot.devices.first(where: \.isCurrent) }
+    var deviceListItems: [DevicePresence] {
+        DevicePresenceMerger.merge(devices: snapshot.devices, tailscaleNodes: tailscaleStatus?.nodes ?? [])
+    }
+    var selectedDeviceItem: DevicePresence? {
+        guard let selectedDeviceItemID else { return deviceListItems.first(where: \.isCurrent) ?? deviceListItems.first }
+        return deviceListItems.first { $0.id == selectedDeviceItemID }
+    }
     var pendingPreviousHostKeys: [HostKeyRecord] {
         guard let pendingHostKeyServerID else { return [] }
         return snapshot.servers.first(where: { $0.id == pendingHostKeyServerID })?.confirmedHostKeys ?? []
@@ -230,6 +249,9 @@ final class AppModel {
                 selectedKeyItemID = keyServerRows.first?.id
                     ?? discoveredSSHConnections.first.map { "config:\($0.alias)" }
                     ?? snapshot.keys.first.map { "identity:\($0.id)" }
+            }
+            if selectedDeviceItemID == nil {
+                selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
             }
             isLoaded = true
             appendAudit(category: "app", action: "load", result: "success")
@@ -556,6 +578,9 @@ final class AppModel {
             let previousServers = snapshot.servers
             snapshot = try await cloudSync.synchronize(snapshot)
             ensureCurrentDevice()
+            if selectedDeviceItem == nil {
+                selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
+            }
             normalizeStatusesAfterMetadataMerge(previousServers: previousServers)
             await refreshPasswordAvailability()
             cloudState = .available(.now)
@@ -565,6 +590,21 @@ final class AppModel {
             cloudState = .unavailable(error.localizedDescription)
             appendAudit(category: "cloud", action: "sync", result: "unavailable", level: .warning)
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshTailscale() async {
+        guard tailscaleDiscoveryState != .refreshing else { return }
+        tailscaleDiscoveryState = .refreshing
+        do {
+            tailscaleStatus = try await tailscaleService.status()
+            tailscaleDiscoveryState = .available
+            if selectedDeviceItem == nil {
+                selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
+            }
+        } catch {
+            tailscaleStatus = nil
+            tailscaleDiscoveryState = .unavailable(error.localizedDescription)
         }
     }
 
