@@ -79,10 +79,11 @@ private struct LocalDeviceTag: View {
 
 struct DeviceOverviewView: View {
     let model: AppModel
+    let onAddServer: (TailscaleSSHServerSuggestion) -> Void
 
     var body: some View {
         if let item = model.selectedDeviceItem {
-            DeviceDetailView(item: item, model: model)
+            DeviceDetailView(item: item, model: model, onAddServer: onAddServer)
         } else {
             ContentUnavailableView("未选择设备", systemImage: "laptopcomputer", description: Text("请选择一台设备。"))
         }
@@ -92,6 +93,7 @@ struct DeviceOverviewView: View {
 private struct DeviceDetailView: View {
     let item: DevicePresence
     let model: AppModel
+    let onAddServer: (TailscaleSSHServerSuggestion) -> Void
 
     var body: some View {
         ScrollView {
@@ -154,6 +156,11 @@ private struct DeviceDetailView: View {
                     tailscaleUnavailableContent
                 }
 
+                if let node = item.tailscaleNode,
+                   let suggestion = TailscaleSSHServerSuggestion(node: node) {
+                    tailscaleSSHManagement(node: node, suggestion: suggestion)
+                }
+
                 if item.isCurrent {
                     GroupBox("设备授权") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -172,6 +179,43 @@ private struct DeviceDetailView: View {
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
+        }
+    }
+
+    private func tailscaleSSHManagement(
+        node: TailscaleNode,
+        suggestion: TailscaleSSHServerSuggestion
+    ) -> some View {
+        GroupBox("SSH 管理") {
+            VStack(alignment: .leading, spacing: 10) {
+                if let server = model.managedServer(for: suggestion) {
+                    Label("已作为 \(server.username) 加入服务器", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    HStack {
+                        Button {
+                            model.showServer(server.id)
+                        } label: {
+                            Label("查看服务器", systemImage: "arrow.right.circle")
+                        }
+                        Button {
+                            onAddServer(suggestion)
+                        } label: {
+                            Label("添加其他用户", systemImage: "person.badge.plus")
+                        }
+                        .disabled(!node.isOnline || model.isBusy)
+                    }
+                } else {
+                    Button {
+                        onAddServer(suggestion)
+                    } label: {
+                        Label("添加并授权", systemImage: "key.horizontal")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!node.isOnline || model.isBusy)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 5)
         }
     }
 

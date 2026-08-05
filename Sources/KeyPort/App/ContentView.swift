@@ -5,6 +5,7 @@ struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
     @State private var showsEditServer = false
+    @State private var tailscaleServerSuggestion: TailscaleSSHServerSuggestion?
 
     var body: some View {
         @Bindable var model = model
@@ -24,24 +25,63 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer) {
-            ServerEditorView(title: "Add Server") { draft in
-                showsAddServer = false
-                Task { await model.addServer(draft) }
-            }
+            ServerEditorView(
+                title: "添加服务器",
+                canSynchronize: model.canSynchronizePasswords,
+                onCheck: { draft, password, hostKeys in
+                    await model.validateServerEditor(
+                        draft: draft,
+                        password: password,
+                        existingServerID: nil,
+                        trustedHostKeys: hostKeys
+                    )
+                },
+                onSave: { submission in
+                    _ = try await model.saveServerEditor(submission, existingServerID: nil)
+                }
+            )
+        }
+        .sheet(item: $tailscaleServerSuggestion) { suggestion in
+            ServerEditorView(
+                title: "添加并授权",
+                initialDraft: model.tailscaleServerDraft(for: suggestion),
+                canSynchronize: model.canSynchronizePasswords,
+                primaryActionTitle: "添加并授权",
+                showsNotes: false,
+                onCheck: { draft, password, hostKeys in
+                    await model.validateServerEditor(
+                        draft: draft,
+                        password: password,
+                        existingServerID: model.existingTailscaleServerID(for: suggestion, draft: draft),
+                        trustedHostKeys: hostKeys
+                    )
+                },
+                onSave: { submission in
+                    _ = try await model.saveAndAuthorizeTailscaleServer(submission, suggestion: suggestion)
+                }
+            )
         }
         .sheet(isPresented: $showsEditServer) {
             if let server = model.selectedServer {
                 ServerEditorView(
-                    title: "Edit Server",
+                    title: "编辑服务器",
+                    existingServerID: server.id,
                     initialDraft: ServerDraft(server: server),
-                    onCheckPassword: { draft in
-                        showsEditServer = false
-                        Task { await model.updateSelectedServer(draft, checkPasswordAfterSave: true) }
+                    initialHostKeys: server.confirmedHostKeys,
+                    hasStoredPassword: model.hasStoredPassword(serverID: server.id),
+                    canSynchronize: model.canSynchronizePasswords,
+                    onCheck: { draft, password, hostKeys in
+                        await model.validateServerEditor(
+                            draft: draft,
+                            password: password,
+                            existingServerID: server.id,
+                            trustedHostKeys: hostKeys
+                        )
+                    },
+                    onSave: { submission in
+                        _ = try await model.saveServerEditor(submission, existingServerID: server.id)
                     }
-                ) { draft in
-                    showsEditServer = false
-                    Task { await model.updateSelectedServer(draft) }
-                }
+                )
             }
         }
         .sheet(isPresented: Binding(
@@ -129,7 +169,9 @@ struct ContentView: View {
                 ContentUnavailableView("No Server Key Selected", systemImage: "key", description: Text("Select a server connection or local identity."))
             }
         case .devices:
-            DeviceOverviewView(model: model)
+            DeviceOverviewView(model: model) { suggestion in
+                tailscaleServerSuggestion = suggestion
+            }
         case .logs:
             AuditOverviewView(model: model)
         }
