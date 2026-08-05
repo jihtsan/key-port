@@ -27,7 +27,12 @@ public enum DevicePresenceMerger {
             result[node.id] = node
         }
         let localNode = unmatchedNodes.values.first(where: \.isCurrent)
-        var items = devices.map { device -> DevicePresence in
+        let localDeviceNames = Set(devices.lazy.filter(\.isCurrent).map { normalizedName($0.name) }.filter { !$0.isEmpty })
+        // A regenerated local device ID can leave a same-machine CloudKit registration behind.
+        let visibleDevices = devices.filter { device in
+            device.isCurrent || !localDeviceNames.contains(normalizedName(device.name))
+        }
+        var items = visibleDevices.map { device -> DevicePresence in
             let matchedNode = device.isCurrent ? localNode : nil
             if let matchedNode { unmatchedNodes.removeValue(forKey: matchedNode.id) }
             return DevicePresence(id: .keyPort(device.id), registeredDevice: device, tailscaleNode: matchedNode)
@@ -40,5 +45,9 @@ public enum DevicePresenceMerger {
             let comparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
             return comparison == .orderedSame ? String(describing: lhs.id) < String(describing: rhs.id) : comparison == .orderedAscending
         }
+    }
+
+    private static func normalizedName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
