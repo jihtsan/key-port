@@ -5,7 +5,7 @@ struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
     @State private var showsEditServer = false
-    @State private var tailscaleServerSuggestion: TailscaleSSHServerSuggestion?
+    @State private var tailscaleAccountEditorRequest: TailscaleAccountEditorRequest?
 
     var body: some View {
         @Bindable var model = model
@@ -41,23 +41,47 @@ struct ContentView: View {
                 }
             )
         }
-        .sheet(item: $tailscaleServerSuggestion) { suggestion in
+        .sheet(item: $tailscaleAccountEditorRequest) { request in
+            let suggestion = request.suggestion
+            let existingServer = request.serverID.flatMap { serverID in
+                model.activeServers.first { $0.id == serverID }
+            }
             ServerEditorView(
-                title: "添加并授权",
-                initialDraft: model.tailscaleServerDraft(for: suggestion),
+                title: request.authorizesAfterSave
+                    ? "授权本机账户"
+                    : (existingServer == nil ? "添加 SSH 账户" : "编辑 SSH 账户"),
+                existingServerID: existingServer?.id,
+                initialDraft: model.tailscaleServerDraft(
+                    for: suggestion,
+                    existingServer: existingServer
+                ),
+                initialHostKeys: existingServer?.confirmedHostKeys ?? [],
+                hasStoredPassword: existingServer.map { model.hasStoredPassword(serverID: $0.id) } ?? false,
                 canSynchronize: model.canSynchronizePasswords,
-                primaryActionTitle: "添加并授权",
+                primaryActionTitle: request.authorizesAfterSave ? "保存并授权本机" : "保存账户",
                 showsNotes: false,
                 onCheck: { draft, password, hostKeys in
-                    await model.validateServerEditor(
+                    let existingServerID = request.serverID
+                        ?? model.existingTailscaleServerID(for: suggestion, draft: draft)
+                    return await model.validateServerEditor(
                         draft: draft,
                         password: password,
-                        existingServerID: model.existingTailscaleServerID(for: suggestion, draft: draft),
+                        existingServerID: existingServerID,
                         trustedHostKeys: hostKeys
                     )
                 },
                 onSave: { submission in
-                    _ = try await model.saveAndAuthorizeTailscaleServer(submission, suggestion: suggestion)
+                    let existingServerID = request.serverID
+                        ?? model.existingTailscaleServerID(for: suggestion, draft: submission.draft)
+                    if request.authorizesAfterSave {
+                        _ = try await model.saveAndAuthorizeTailscaleServer(
+                            submission,
+                            suggestion: suggestion,
+                            existingServerID: existingServerID
+                        )
+                    } else {
+                        _ = try await model.saveServerEditor(submission, existingServerID: existingServerID)
+                    }
                 }
             )
         }
@@ -169,8 +193,8 @@ struct ContentView: View {
                 ContentUnavailableView("No Server Key Selected", systemImage: "key", description: Text("Select a server connection or local identity."))
             }
         case .devices:
-            DeviceOverviewView(model: model) { suggestion in
-                tailscaleServerSuggestion = suggestion
+            DeviceOverviewView(model: model) { request in
+                tailscaleAccountEditorRequest = request
             }
         case .logs:
             AuditOverviewView(model: model)

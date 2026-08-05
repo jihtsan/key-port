@@ -35,14 +35,36 @@ public struct TailscaleSSHServerSuggestion: Identifiable, Equatable, Sendable {
         normalizedHosts.contains(Self.normalizedHost(candidate))
     }
 
+    public func matchesAccount(
+        host: String,
+        port: Int,
+        username: String,
+        server: ServerConnection
+    ) -> Bool {
+        matches(host: host)
+            && server.port == port
+            && server.username == username
+            && matches(host: server.host)
+    }
+
     public func availableAlias(avoiding existingAliases: Set<String>) -> String {
-        guard existingAliases.contains(alias) else { return alias }
+        availableAlias(alias, avoiding: existingAliases)
+    }
+
+    public func suggestedAlias(username: String, avoiding existingAliases: Set<String>) -> String {
+        let usernameSlug = KeyPortNaming.slug(username)
+        let base = usernameSlug.isEmpty ? alias : "\(alias)-\(usernameSlug)"
+        return availableAlias(base, avoiding: existingAliases)
+    }
+
+    private func availableAlias(_ base: String, avoiding existingAliases: Set<String>) -> String {
+        guard existingAliases.contains(base) else { return base }
 
         var suffix = 2
-        while existingAliases.contains("\(alias)-\(suffix)") {
+        while existingAliases.contains("\(base)-\(suffix)") {
             suffix += 1
         }
-        return "\(alias)-\(suffix)"
+        return "\(base)-\(suffix)"
     }
 
     private static func cleanedHost(_ value: String) -> String? {

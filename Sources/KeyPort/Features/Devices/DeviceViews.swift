@@ -79,11 +79,11 @@ private struct LocalDeviceTag: View {
 
 struct DeviceOverviewView: View {
     let model: AppModel
-    let onAddServer: (TailscaleSSHServerSuggestion) -> Void
+    let onManageAccount: (TailscaleAccountEditorRequest) -> Void
 
     var body: some View {
         if let item = model.selectedDeviceItem {
-            DeviceDetailView(item: item, model: model, onAddServer: onAddServer)
+            DeviceDetailView(item: item, model: model, onManageAccount: onManageAccount)
         } else {
             ContentUnavailableView("未选择设备", systemImage: "laptopcomputer", description: Text("请选择一台设备。"))
         }
@@ -93,7 +93,7 @@ struct DeviceOverviewView: View {
 private struct DeviceDetailView: View {
     let item: DevicePresence
     let model: AppModel
-    let onAddServer: (TailscaleSSHServerSuggestion) -> Void
+    let onManageAccount: (TailscaleAccountEditorRequest) -> Void
 
     var body: some View {
         ScrollView {
@@ -186,36 +186,101 @@ private struct DeviceDetailView: View {
         node: TailscaleNode,
         suggestion: TailscaleSSHServerSuggestion
     ) -> some View {
-        GroupBox("SSH 管理") {
+        let servers = model.managedServers(for: suggestion)
+        return GroupBox("SSH 管理") {
             VStack(alignment: .leading, spacing: 10) {
-                if let server = model.managedServer(for: suggestion) {
-                    Label("已作为 \(server.username) 加入服务器", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    HStack {
-                        Button {
-                            model.showServer(server.id)
-                        } label: {
-                            Label("查看服务器", systemImage: "arrow.right.circle")
-                        }
-                        Button {
-                            onAddServer(suggestion)
-                        } label: {
-                            Label("添加其他用户", systemImage: "person.badge.plus")
-                        }
-                        .disabled(!node.isOnline || model.isBusy)
-                    }
+                if servers.isEmpty {
+                    Label("尚未添加 SSH 账户", systemImage: "person.crop.circle.badge.questionmark")
+                        .foregroundStyle(.secondary)
                 } else {
-                    Button {
-                        onAddServer(suggestion)
-                    } label: {
-                        Label("添加并授权", systemImage: "key.horizontal")
+                    ForEach(Array(servers.enumerated()), id: \.element.id) { index, server in
+                        if index > 0 { Divider() }
+                        tailscaleAccountRow(server, node: node, suggestion: suggestion)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!node.isOnline || model.isBusy)
                 }
+
+                Divider()
+                Button {
+                    onManageAccount(TailscaleAccountEditorRequest(suggestion: suggestion))
+                } label: {
+                    Label("添加 SSH 账户", systemImage: "person.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .disabled(!node.isOnline || model.isBusy)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 5)
+        }
+    }
+
+    private func tailscaleAccountRow(
+        _ server: ServerConnection,
+        node: TailscaleNode,
+        suggestion: TailscaleSSHServerSuggestion
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(server.username, systemImage: "person.crop.circle")
+                    .fontWeight(.medium)
+                Spacer()
+                Label(
+                    server.status == .authorized ? "本机已授权" : "本机未授权",
+                    systemImage: server.status == .authorized ? "checkmark.circle.fill" : "key.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(server.status == .authorized ? .green : .secondary)
+            }
+
+            HStack(spacing: 14) {
+                Text(server.alias)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Label(
+                    model.hasStoredPassword(serverID: server.id) ? "密码可用" : "需要密码",
+                    systemImage: model.hasStoredPassword(serverID: server.id) ? "key.fill" : "key.slash"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Button {
+                    model.showServer(server.id)
+                } label: {
+                    Label("查看", systemImage: "arrow.right.circle")
+                }
+                Button {
+                    onManageAccount(TailscaleAccountEditorRequest(suggestion: suggestion, serverID: server.id))
+                } label: {
+                    Label("编辑", systemImage: "pencil")
+                }
+                .disabled(!node.isOnline || model.isBusy)
+
+                if server.status != .authorized {
+                    if model.hasStoredPassword(serverID: server.id) {
+                        Button {
+                            Task { await model.authorizeCurrentDevice(serverID: server.id) }
+                        } label: {
+                            Label("授权本机", systemImage: "key.horizontal")
+                        }
+                        .disabled(!node.isOnline || model.isBusy)
+                    } else {
+                        Button {
+                            onManageAccount(
+                                TailscaleAccountEditorRequest(
+                                    suggestion: suggestion,
+                                    serverID: server.id,
+                                    authorizesAfterSave: true
+                                )
+                            )
+                        } label: {
+                            Label("输入密码并授权", systemImage: "key.viewfinder")
+                        }
+                        .disabled(!node.isOnline || model.isBusy)
+                    }
+                }
+            }
         }
     }
 
@@ -245,5 +310,25 @@ private struct DeviceDetailView: View {
         case .idle:
             EmptyView()
         }
+    }
+}
+
+struct TailscaleAccountEditorRequest: Identifiable {
+    let suggestion: TailscaleSSHServerSuggestion
+    let serverID: UUID?
+    let authorizesAfterSave: Bool
+
+    init(
+        suggestion: TailscaleSSHServerSuggestion,
+        serverID: UUID? = nil,
+        authorizesAfterSave: Bool = false
+    ) {
+        self.suggestion = suggestion
+        self.serverID = serverID
+        self.authorizesAfterSave = authorizesAfterSave
+    }
+
+    var id: String {
+        "\(suggestion.nodeID):\(serverID?.uuidString ?? "new"):\(authorizesAfterSave)"
     }
 }
