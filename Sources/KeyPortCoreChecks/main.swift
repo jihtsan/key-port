@@ -132,6 +132,54 @@ do {
     }
     try expect(peerNode.name == "build-server" && !peerNode.isOnline, "tailscale peer summary")
     try expect(peerNode.lastSeen != nil && peerNode.isExitNodeOption, "tailscale peer metadata")
+    guard let serverSuggestion = TailscaleSSHServerSuggestion(node: peerNode) else {
+        throw CheckFailure.failed("tailscale peer did not produce an SSH server suggestion")
+    }
+    try expect(
+        serverSuggestion.name == "build-server"
+            && serverSuggestion.host == "build-server.example.ts.net"
+            && serverSuggestion.port == 22
+            && serverSuggestion.group == "Tailscale"
+            && serverSuggestion.alias == "tailscale-build-server",
+        "tailscale SSH server suggestion"
+    )
+    try expect(serverSuggestion.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale MagicDNS host match")
+    try expect(serverSuggestion.matches(host: "100.64.0.2"), "tailscale IP host match")
+    try expect(!serverSuggestion.matches(host: "other.example.ts.net"), "unrelated SSH host matched tailscale node")
+    try expect(serverSuggestion.availableAlias(avoiding: []) == "tailscale-build-server", "unused tailscale alias changed")
+    try expect(
+        serverSuggestion.availableAlias(avoiding: ["tailscale-build-server", "tailscale-build-server-2"]) == "tailscale-build-server-3",
+        "tailscale alias collision was not resolved"
+    )
+    try expect(TailscaleSSHServerSuggestion(node: localNode) == nil, "tailscale self was offered as a server")
+    let unroutableNode = TailscaleNode(
+        id: "node-unroutable",
+        name: "unroutable",
+        dnsName: nil,
+        operatingSystem: "linux",
+        addresses: [],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(TailscaleSSHServerSuggestion(node: unroutableNode) == nil, "unroutable tailscale node was offered as a server")
+    let addressOnlyNode = TailscaleNode(
+        id: "node-address-only",
+        name: "address-only",
+        dnsName: nil,
+        operatingSystem: "linux",
+        addresses: ["fd7a:115c:a1e0::3", "100.64.0.3"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(TailscaleSSHServerSuggestion(node: addressOnlyNode)?.host == "100.64.0.3", "tailscale IPv4 fallback host")
 
     let registeredLocal = Device(id: "dev-local", name: "local-mac", isCurrent: true)
     let registeredSameNamePeer = Device(id: "dev-peer", name: "build-server", isCurrent: false)
@@ -220,7 +268,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 71 assertions passed")
+    print("KeyPortCoreChecks: 80 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
