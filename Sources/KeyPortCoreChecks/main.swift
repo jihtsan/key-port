@@ -20,6 +20,37 @@ do {
     try expect(KeyPortNaming.alias(group: "Prod", name: "Doris DB") == "prod-doris-db", "grouped alias normalization")
     try expect(KeyPortNaming.alias(group: "", name: "CN2 YLY") == "cn2-yly", "ungrouped alias normalization")
     try expect(KeyPortNaming.alias(group: "Asia", name: "") == "asia", "group-only alias normalization")
+    try expect(
+        KeyPortNaming.accountAlias(group: "Prod", name: "Doris DB", username: "root") == "prod-doris-db-root",
+        "account alias omitted username"
+    )
+    try expect(
+        KeyPortNaming.accountAlias(group: "", name: "Build Server", username: "Deploy User") == "build-server-deploy-user",
+        "account alias did not normalize username"
+    )
+    try expect(
+        KeyPortNaming.availableAlias("build-server-root", avoiding: ["build-server-root", "build-server-root-2"]) == "build-server-root-3",
+        "account alias collision was not resolved"
+    )
+    let groupingDate = Date(timeIntervalSince1970: 1_700_000_000)
+    let groupedConnections = ServerConnectionGrouping.groups([
+        ServerConnection(name: "Database", host: "DB.EXAMPLE.COM.", username: "root", alias: "database-root", createdAt: groupingDate),
+        ServerConnection(name: "Legacy Account Label", host: "db.example.com", username: "deploy", alias: "database-deploy", createdAt: groupingDate.addingTimeInterval(1)),
+        ServerConnection(name: "Database Admin", host: "db.example.com", port: 2222, username: "admin", alias: "database-admin")
+    ])
+    try expect(groupedConnections.count == 2, "accounts on the same endpoint were not grouped as one server")
+    try expect(
+        groupedConnections.first(where: { $0.port == 22 })?.accounts.map(\.username) == ["deploy", "root"],
+        "server accounts were not sorted by username"
+    )
+    try expect(
+        groupedConnections.first(where: { $0.port == 2222 })?.accounts.count == 1,
+        "different SSH ports were merged into one server"
+    )
+    try expect(
+        groupedConnections.first(where: { $0.port == 22 })?.representative.name == "Database",
+        "server display identity changed with account sort order"
+    )
     try expect(KeyPortNaming.isValidAlias("cn2-yly"), "native alias rejected")
     try expect(KeyPortNaming.isValidAlias("kp-prod-doris"), "valid alias rejected")
     try expect(KeyPortNaming.isValidAlias("server1"), "alphanumeric alias rejected")
@@ -73,6 +104,54 @@ do {
     try expect(discovered.username == "deploy", "effective username parse")
     try expect(discovered.identityFiles == ["~/.ssh/id_ed25519", "/Users/example/Keys/production key"], "effective identities parse")
     try expect(SSHConfigDiscoveryParser.parse(alias: "broken", output: "hostname example.com\nport invalid\nuser root\n") == nil, "invalid effective port accepted")
+
+    let machineOutput = """
+    hostname\tdb-01
+    operating_system\tUbuntu 24.04.1 LTS
+    kernel\tLinux 6.8.0
+    architecture\tx86_64
+    processor_count\t8
+    memory_bytes\t17179869184
+    """
+    guard let machine = RemoteMachineConfigurationParser.parse(machineOutput, synchronizedAt: Date(timeIntervalSince1970: 1_700_000_000)) else {
+        throw CheckFailure.failed("remote machine configuration parse")
+    }
+    try expect(machine.hostname == "db-01" && machine.operatingSystem == "Ubuntu 24.04.1 LTS", "remote machine identity parse")
+    try expect(machine.processorCount == 8 && machine.memoryBytes == 17_179_869_184, "remote machine capacity parse")
+    try expect(machine.capacitySummary == "8C16G", "remote machine capacity summary")
+    let compactMachine = RemoteMachineConfiguration(
+        hostname: "app-01",
+        operatingSystem: "Linux",
+        kernel: "Linux 6.8",
+        architecture: "arm64",
+        processorCount: 2,
+        memoryBytes: 4_294_967_296,
+        synchronizedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    try expect(compactMachine.capacitySummary == "2C4G", "two-core four-gibibyte summary")
+    try expect(RemoteMachineConfigurationParser.parse("hostname\tonly\n") == nil, "incomplete remote machine configuration accepted")
+
+    let refreshDate = Date(timeIntervalSince1970: 1_700_000_000)
+    let configuredServer = ServerConnection(
+        name: "Configured",
+        host: "configured.example",
+        username: "root",
+        alias: "configured",
+        machineConfiguration: compactMachine
+    )
+    try expect(!configuredServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval - 1)), "machine configuration refreshed too early")
+    try expect(configuredServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval)), "stale machine configuration was not refreshed")
+    var attemptedServer = ServerConnection(
+        name: "Attempted",
+        host: "attempted.example",
+        username: "root",
+        alias: "attempted",
+        machineConfigurationRefreshAttemptedAt: refreshDate
+    )
+    try expect(!attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval - 1)), "failed daily refresh was retried too early")
+    try expect(attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval)), "failed daily refresh did not retry on the next day")
+    attemptedServer.machineConfigurationRefreshAttemptedAt = nil
+    try expect(attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate), "server without refresh history was skipped")
 
     let tailscaleStatusJSON = """
     {
@@ -304,7 +383,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 85 assertions passed")
+    print("KeyPortCoreChecks: all assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
