@@ -5,6 +5,7 @@ struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
     @State private var showsEditServer = false
+    @State private var tailscaleAccountEditorRequest: TailscaleAccountEditorRequest?
 
     var body: some View {
         @Bindable var model = model
@@ -24,24 +25,87 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer) {
-            ServerEditorView(title: "Add Server") { draft in
-                showsAddServer = false
-                Task { await model.addServer(draft) }
+            ServerEditorView(
+                title: "添加服务器",
+                canSynchronize: model.canSynchronizePasswords,
+                onCheck: { draft, password, hostKeys in
+                    await model.validateServerEditor(
+                        draft: draft,
+                        password: password,
+                        existingServerID: nil,
+                        trustedHostKeys: hostKeys
+                    )
+                },
+                onSave: { submission in
+                    _ = try await model.saveServerEditor(submission, existingServerID: nil)
+                }
+            )
+        }
+        .sheet(item: $tailscaleAccountEditorRequest) { request in
+            let suggestion = request.suggestion
+            let existingServer = request.serverID.flatMap { serverID in
+                model.activeServers.first { $0.id == serverID }
             }
+            ServerEditorView(
+                title: request.authorizesAfterSave
+                    ? "授权本机账户"
+                    : (existingServer == nil ? "添加 SSH 账户" : "编辑 SSH 账户"),
+                existingServerID: existingServer?.id,
+                initialDraft: model.tailscaleServerDraft(
+                    for: suggestion,
+                    existingServer: existingServer
+                ),
+                initialHostKeys: existingServer?.confirmedHostKeys ?? [],
+                hasStoredPassword: existingServer.map { model.hasStoredPassword(serverID: $0.id) } ?? false,
+                canSynchronize: model.canSynchronizePasswords,
+                primaryActionTitle: request.authorizesAfterSave ? "保存并授权本机" : "保存账户",
+                showsNotes: false,
+                onCheck: { draft, password, hostKeys in
+                    let existingServerID = request.serverID
+                        ?? model.existingTailscaleServerID(for: suggestion, draft: draft)
+                    return await model.validateServerEditor(
+                        draft: draft,
+                        password: password,
+                        existingServerID: existingServerID,
+                        trustedHostKeys: hostKeys
+                    )
+                },
+                onSave: { submission in
+                    let existingServerID = request.serverID
+                        ?? model.existingTailscaleServerID(for: suggestion, draft: submission.draft)
+                    if request.authorizesAfterSave {
+                        _ = try await model.saveAndAuthorizeTailscaleServer(
+                            submission,
+                            suggestion: suggestion,
+                            existingServerID: existingServerID
+                        )
+                    } else {
+                        _ = try await model.saveServerEditor(submission, existingServerID: existingServerID)
+                    }
+                }
+            )
         }
         .sheet(isPresented: $showsEditServer) {
             if let server = model.selectedServer {
                 ServerEditorView(
-                    title: "Edit Server",
+                    title: "编辑服务器",
+                    existingServerID: server.id,
                     initialDraft: ServerDraft(server: server),
-                    onCheckPassword: { draft in
-                        showsEditServer = false
-                        Task { await model.updateSelectedServer(draft, checkPasswordAfterSave: true) }
+                    initialHostKeys: server.confirmedHostKeys,
+                    hasStoredPassword: model.hasStoredPassword(serverID: server.id),
+                    canSynchronize: model.canSynchronizePasswords,
+                    onCheck: { draft, password, hostKeys in
+                        await model.validateServerEditor(
+                            draft: draft,
+                            password: password,
+                            existingServerID: server.id,
+                            trustedHostKeys: hostKeys
+                        )
+                    },
+                    onSave: { submission in
+                        _ = try await model.saveServerEditor(submission, existingServerID: server.id)
                     }
-                ) { draft in
-                    showsEditServer = false
-                    Task { await model.updateSelectedServer(draft) }
-                }
+                )
             }
         }
         .sheet(isPresented: Binding(
@@ -129,7 +193,9 @@ struct ContentView: View {
                 ContentUnavailableView("No Server Key Selected", systemImage: "key", description: Text("Select a server connection or local identity."))
             }
         case .devices:
-            DeviceOverviewView(model: model)
+            DeviceOverviewView(model: model) { request in
+                tailscaleAccountEditorRequest = request
+            }
         case .logs:
             AuditOverviewView(model: model)
         }
@@ -173,6 +239,18 @@ struct ContentView: View {
                     Label("Authorize This Mac", systemImage: "key.horizontal")
                 }
                 .disabled(model.selectedServer?.status != .needsAuthorization || model.isBusy)
+            }
+        }
+
+        if model.destination == .devices {
+            ToolbarItem {
+                Button {
+                    Task { await model.refreshTailscale() }
+                } label: {
+                    Label("刷新 Tailscale", systemImage: "arrow.clockwise")
+                }
+                .help("刷新 Tailscale 设备状态")
+                .disabled(model.tailscaleDiscoveryState == .refreshing)
             }
         }
 
