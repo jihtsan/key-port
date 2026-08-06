@@ -161,13 +161,14 @@ struct ContentView: View {
                     canSynchronize: model.canSynchronizePasswords,
                     isSaving: model.isSavingPassword,
                     errorMessage: model.passwordSaveError,
-                    onTest: { password in
-                        await model.testPromptedPassword(password)
+                    onTest: { username, password in
+                        await model.testPromptedPassword(username: username, password: password)
                     },
-                    onSave: { password, synchronizable, authorizeAfterSave, validatedCheck in
+                    onSave: { username, password, synchronizable, authorizeAfterSave, validatedCheck in
                         Task {
                             await model.savePromptedPassword(
-                                password,
+                                username: username,
+                                password: password,
                                 synchronizable: synchronizable,
                                 authorizeAfterSave: authorizeAfterSave,
                                 validatedCheck: validatedCheck
@@ -262,9 +263,9 @@ struct ContentView: View {
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
-                    Task { await model.checkKeySelected() }
+                    Task { await model.synchronizeSSHAuthorizationSelected() }
                 } label: {
-                    Label("检查密钥 SSH", systemImage: "key.horizontal")
+                    Label("同步 SSH 授权", systemImage: "key.horizontal.fill")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
@@ -275,12 +276,6 @@ struct ContentView: View {
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
-                Button {
-                    Task { await model.authorizeSelected() }
-                } label: {
-                    Label("授权此 Mac", systemImage: "key.horizontal")
-                }
-                .disabled(model.selectedServer?.status != .needsAuthorization || model.isBusy)
             }
         }
 
@@ -303,9 +298,9 @@ struct ContentView: View {
                 Button {
                     Task { await model.synchronizeCloud() }
                 } label: {
-                    Label("同步元数据", systemImage: "icloud.and.arrow.up")
+                    Label("同步 CloudKit 元数据", systemImage: "icloud.and.arrow.up")
                 }
-                .help("通过 iCloud 同步非敏感元数据")
+                .help("通过 CloudKit 同步非敏感元数据；不会同步服务器密码或私钥")
             }
         }
     }
@@ -319,15 +314,12 @@ struct KeyPortCommands: Commands {
             Button("检查密码 SSH") { Task { await model.checkPasswordSelected() } }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil)
-            Button("检查密钥 SSH") { Task { await model.checkKeySelected() } }
+            Button("同步 SSH 授权") { Task { await model.synchronizeSSHAuthorizationSelected() } }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil)
             Button("复制 SSH 别名") { model.copySelectedAlias() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(model.selectedServerID == nil)
-            Divider()
-            Button("授权此 Mac") { Task { await model.authorizeSelected() } }
-                .disabled(model.selectedServer?.status != .needsAuthorization)
         }
     }
 }

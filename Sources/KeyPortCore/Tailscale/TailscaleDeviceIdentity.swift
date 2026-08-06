@@ -24,16 +24,35 @@ public struct TailscaleDeviceIdentity: Codable, Hashable, Sendable {
     }
 
     public func matches(host: String) -> Bool {
+        addressMatch(for: host) != nil
+    }
+
+    public func addressMatch(for host: String) -> DeviceAddressMatch? {
         let candidate = TailscaleHostIdentity.normalize(host)
-        guard !candidate.isEmpty else { return false }
-        return TailscaleHostIdentity.normalize(dnsName ?? "") == candidate
-            || addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+        guard !candidate.isEmpty else { return nil }
+        if TailscaleHostIdentity.normalize(dnsName ?? "") == candidate {
+            return .tailscaleMagicDNS
+        }
+        return addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+            ? .tailscaleIP
+            : nil
     }
 }
 
 public extension TailscaleNode {
     func matches(host candidate: String) -> Bool {
-        endpointHosts.contains(TailscaleHostIdentity.normalize(candidate))
+        addressMatch(for: candidate) != nil
+    }
+
+    func addressMatch(for host: String) -> DeviceAddressMatch? {
+        let candidate = TailscaleHostIdentity.normalize(host)
+        guard !candidate.isEmpty else { return nil }
+        if TailscaleHostIdentity.normalize(dnsName ?? "") == candidate {
+            return .tailscaleMagicDNS
+        }
+        return addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+            ? .tailscaleIP
+            : nil
     }
 
     var preferredSSHHost: String? {
@@ -42,9 +61,6 @@ public extension TailscaleNode {
             ?? addresses.compactMap(TailscaleHostIdentity.clean).first
     }
 
-    private var endpointHosts: Set<String> {
-        Set(([dnsName].compactMap { $0 } + addresses).map(TailscaleHostIdentity.normalize).filter { !$0.isEmpty })
-    }
 }
 
 enum TailscaleHostIdentity {

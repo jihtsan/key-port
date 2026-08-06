@@ -193,9 +193,9 @@ struct KeyServerDetailView: View {
                     model.selectedServerID = row.server.id
                     Task { await model.checkKeySelected() }
                 }
-                Button("授权此 Mac") {
+                Button("同步 SSH 授权") {
                     model.selectedServerID = row.server.id
-                    Task { await model.authorizeSelected() }
+                    Task { await model.synchronizeSSHAuthorization(serverID: row.server.id) }
                 }
                 .disabled(row.key == nil || row.server.confirmedHostKeys.isEmpty || !model.hasStoredPassword(serverID: row.server.id) || model.isBusy)
             }

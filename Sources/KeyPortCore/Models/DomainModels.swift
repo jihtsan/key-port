@@ -12,11 +12,12 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
     case authorizationConflict
     case syncPending
     case checking
+    case syncing
 
     public var title: String {
         switch self {
-        case .authorized: "已授权"
-        case .needsAuthorization: "需要授权"
+        case .authorized: "免密可用"
+        case .needsAuthorization: "待授权"
         case .missingLocalKey: "缺少本地密钥"
         case .hostKeyPending: "主机密钥待确认"
         case .hostKeyMismatch: "主机密钥已变更"
@@ -24,8 +25,9 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
         case .passwordAuthenticationFailed: "密码验证失败"
         case .keyAuthenticationFailed: "密钥验证失败"
         case .authorizationConflict: "授权冲突"
-        case .syncPending: "等待同步"
+        case .syncPending: "待检查"
         case .checking: "检查中"
+        case .syncing: "同步中"
         }
     }
 }

@@ -12,9 +12,9 @@ enum CloudSyncState: Equatable, Sendable {
     var title: String {
         switch self {
         case .idle: "未同步"
-        case .syncing: "同步中"
-        case .available: "已是最新"
-        case .unavailable: "不可用"
+        case .syncing: "正在同步 CloudKit"
+        case .available: "CloudKit 已是最新"
+        case .unavailable: "CloudKit 不可用"
         }
     }
 }
