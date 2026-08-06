@@ -21,8 +21,12 @@ public struct DevicePresence: Identifiable, Hashable, Sendable {
     public var isRevoked: Bool { registeredDevice?.isRevoked == true }
 
     public func matches(host: String) -> Bool {
-        tailscaleNode?.matches(host: host) == true
-            || registeredDevice?.tailscaleIdentity?.matches(host: host) == true
+        addressMatch(for: host) != nil
+    }
+
+    public func addressMatch(for host: String) -> DeviceAddressMatch? {
+        tailscaleNode?.addressMatch(for: host)
+            ?? registeredDevice?.tailscaleIdentity?.addressMatch(for: host)
     }
 }
 

@@ -194,11 +194,12 @@ private extension AuthorizationStatus {
         switch self {
         case .authorized: "checkmark.circle.fill"
         case .checking: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .syncing: "arrow.triangle.2.circlepath"
         case .hostKeyMismatch, .authorizationConflict: "exclamationmark.shield.fill"
         case .hostKeyPending: "questionmark.diamond.fill"
         case .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: "xmark.circle.fill"
         case .missingLocalKey: "key.slash"
-        case .syncPending: "icloud"
+        case .syncPending: "arrow.triangle.2.circlepath"
         case .needsAuthorization: "key.horizontal"
         }
     }
@@ -206,7 +207,7 @@ private extension AuthorizationStatus {
     var color: Color {
         switch self {
         case .authorized: .green
-        case .checking, .syncPending: .blue
+        case .checking, .syncing, .syncPending: .blue
         case .hostKeyPending, .needsAuthorization, .missingLocalKey: .orange
         case .hostKeyMismatch, .authorizationConflict, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
         }

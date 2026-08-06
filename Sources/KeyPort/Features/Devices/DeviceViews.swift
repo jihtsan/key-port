@@ -314,12 +314,8 @@ private struct DeviceDetailView: View {
                 Label(server.username, systemImage: "person.crop.circle")
                     .fontWeight(.medium)
                 Spacer()
-                Label(
-                    server.status == .authorized ? "本机已授权" : "本机未授权",
-                    systemImage: server.status == .authorized ? "checkmark.circle.fill" : "key.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(server.status == .authorized ? .green : .secondary)
+                StatusLabel(status: server.status)
+                    .font(.caption)
             }
 
             HStack(spacing: 14) {
@@ -351,9 +347,9 @@ private struct DeviceDetailView: View {
                 if server.status != .authorized {
                     if model.hasStoredPassword(serverID: server.id) {
                         Button {
-                            Task { await model.authorizeCurrentDevice(serverID: server.id) }
+                            Task { await model.synchronizeSSHAuthorization(serverID: server.id) }
                         } label: {
-                            Label("授权本机", systemImage: "key.horizontal")
+                            Label("同步 SSH 授权", systemImage: "key.horizontal.fill")
                         }
                         .disabled(!node.isOnline || model.isBusy)
                     } else {

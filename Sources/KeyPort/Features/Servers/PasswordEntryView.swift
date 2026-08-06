@@ -7,10 +7,11 @@ struct PasswordEntryView: View {
     let canSynchronize: Bool
     let isSaving: Bool
     let errorMessage: String?
-    let onTest: (String) async -> AuthenticationCheck
-    let onSave: (String, Bool, Bool, AuthenticationCheck) -> Void
+    let onTest: (String, String) async -> AuthenticationCheck
+    let onSave: (String, String, Bool, Bool, AuthenticationCheck) -> Void
     let onCancel: () -> Void
 
+    @State private var username: String
     @State private var password = ""
     @State private var synchronizable = false
     @State private var validationGate = PasswordSSHValidationGate()
@@ -18,21 +19,49 @@ struct PasswordEntryView: View {
     @State private var testTask: Task<Void, Never>?
 
     private var currentPasswordPassed: Bool {
-        !password.isEmpty &&
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !password.isEmpty &&
             !isTesting &&
             validationGate.canSave
+    }
+
+    init(
+        server: ServerConnection,
+        canAuthorize: Bool,
+        canSynchronize: Bool,
+        isSaving: Bool,
+        errorMessage: String?,
+        onTest: @escaping (String, String) async -> AuthenticationCheck,
+        onSave: @escaping (String, String, Bool, Bool, AuthenticationCheck) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.server = server
+        self.canAuthorize = canAuthorize
+        self.canSynchronize = canSynchronize
+        self.isSaving = isSaving
+        self.errorMessage = errorMessage
+        self.onTest = onTest
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _username = State(initialValue: server.username)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("SSH 用户密码").font(.title2).fontWeight(.semibold)
-                Text(verbatim: "\(server.username)@\(server.host):\(server.port)").foregroundStyle(.secondary)
+                Text("SSH 用户凭据").font(.title2).fontWeight(.semibold)
+                Text(verbatim: "\(server.name) · \(server.host):\(server.port)").foregroundStyle(.secondary)
             }
 
             Form {
-                SecureField("密码", text: $password)
-                    .disabled(isSaving || isTesting)
+                Section("凭据") {
+                    TextField("用户", text: $username)
+                        .textContentType(.username)
+                        .disabled(isSaving || isTesting)
+
+                    SecureField("密码", text: $password)
+                        .disabled(isSaving || isTesting)
+                }
 
                 Section("密码 SSH 测试") {
                     HStack(alignment: .center, spacing: 12) {
@@ -43,7 +72,7 @@ struct PasswordEntryView: View {
                         } label: {
                             Label("测试密码 SSH", systemImage: "lock.open")
                         }
-                        .disabled(password.isEmpty || isSaving || isTesting)
+                        .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty || isSaving || isTesting)
                     }
 
                     if let testCheck = validationGate.check {
@@ -52,7 +81,7 @@ struct PasswordEntryView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("保存到 Keychain 前，请先测试当前密码。")
+                        Text("保存到 Keychain 前，请先测试当前用户和密码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -100,6 +129,9 @@ struct PasswordEntryView: View {
         .padding(24)
         .frame(width: 500)
         .frame(minHeight: 430)
+        .onChange(of: username) { _, _ in
+            validationGate.inputChanged()
+        }
         .onChange(of: password) { _, _ in
             validationGate.inputChanged()
         }
@@ -136,13 +168,17 @@ struct PasswordEntryView: View {
     }
 
     private func testPassword() {
-        guard !password.isEmpty, !isSaving, !isTesting else { return }
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !password.isEmpty,
+              !isSaving,
+              !isTesting else { return }
         let revision = validationGate.beginTest()
+        let candidateUsername = username
         let candidate = password
         isTesting = true
 
         testTask = Task { @MainActor in
-            let result = await onTest(candidate)
+            let result = await onTest(candidateUsername, candidate)
             guard !Task.isCancelled else { return }
             isTesting = false
             validationGate.finishTest(result, for: revision)
@@ -151,6 +187,6 @@ struct PasswordEntryView: View {
 
     private func save(authorizeAfterSave: Bool) {
         guard currentPasswordPassed, let testCheck = validationGate.check else { return }
-        onSave(password, synchronizable, authorizeAfterSave, testCheck)
+        onSave(username, password, synchronizable, authorizeAfterSave, testCheck)
     }
 }
