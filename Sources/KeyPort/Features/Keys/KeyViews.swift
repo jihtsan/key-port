@@ -153,6 +153,11 @@ struct KeyServerDetailView: View {
                 LabeledContent("Address", value: row.server.host)
                 LabeledContent("Port", value: String(row.server.port))
                 LabeledContent("User", value: row.server.username)
+                if let item = model.devicePresence(for: row.server) {
+                    LabeledContent("Device") {
+                        Button(item.name) { model.showDevice(item.id) }
+                    }
+                }
                 LabeledContent("Status") { StatusLabel(status: row.server.status) }
                 Button("Show in Servers") { model.showServer(row.server.id) }
             }
@@ -255,9 +260,16 @@ struct KeyDetailView: View {
         Form {
             Section("Identity") {
                 LabeledContent("Name", value: model.keyDisplayName(key))
-                LabeledContent("Device", value: model.snapshot.devices.first(where: { $0.id == key.deviceID })?.name ?? "Unknown device")
                 LabeledContent("Type", value: key.kind.rawValue.uppercased())
                 LabeledContent("Origin", value: key.origin.rawValue.capitalized)
+            }
+            Section("Device") {
+                if let item = model.devicePresence(for: key) {
+                    LabeledContent("Name", value: item.name)
+                    Button("Show in Devices") { model.showDevice(item.id) }
+                } else {
+                    LabeledContent("Name", value: "Unknown device")
+                }
             }
             Section("Fingerprint") {
                 Text(key.fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled)
@@ -270,6 +282,32 @@ struct KeyDetailView: View {
             }
             Section("Public Key") {
                 Text(key.publicKey).font(.caption.monospaced()).textSelection(.enabled)
+            }
+            Section("Authorized SSH Accounts") {
+                let servers = model.authorizedServers(for: key)
+                if servers.isEmpty {
+                    Label("This key has no known SSH account authorizations", systemImage: "key.slash")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(servers) { server in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                Text("\(server.username)@\(server.endpoint)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                model.showServer(server.id)
+                            } label: {
+                                Image(systemName: "arrow.right.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Show in Servers")
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

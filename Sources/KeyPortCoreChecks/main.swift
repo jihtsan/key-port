@@ -146,6 +146,9 @@ do {
     try expect(serverSuggestion.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale MagicDNS host match")
     try expect(serverSuggestion.matches(host: "100.64.0.2"), "tailscale IP host match")
     try expect(!serverSuggestion.matches(host: "other.example.ts.net"), "unrelated SSH host matched tailscale node")
+    try expect(peerNode.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale node MagicDNS host match")
+    try expect(peerNode.matches(host: "100.64.0.2"), "tailscale node IP host match")
+    try expect(!peerNode.matches(host: "100.64.0.20"), "tailscale node matched a different IP")
     try expect(serverSuggestion.availableAlias(avoiding: []) == "tailscale-build-server", "unused tailscale alias changed")
     try expect(
         serverSuggestion.availableAlias(avoiding: ["tailscale-build-server", "tailscale-build-server-2"]) == "tailscale-build-server-3",
@@ -228,6 +231,62 @@ do {
     try expect(devicePresences.first?.tailscaleNode?.id == "node-local", "tailscale self was not merged into current device")
     try expect(devicePresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode == nil, "remote KeyPort device inherited a Tailscale peer")
     try expect(devicePresences.first(where: { $0.id == .tailscale("node-peer") })?.registeredDevice == nil, "tailscale peer inherited a KeyPort identity")
+
+    let synchronizedPeer = Device(
+        id: "dev-peer",
+        name: "renamed-build-server",
+        isCurrent: false,
+        tailscaleIdentity: TailscaleDeviceIdentity(node: peerNode)
+    )
+    let linkedDevicePresences = DevicePresenceMerger.merge(
+        devices: [synchronizedPeer, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(linkedDevicePresences.count == 2, "network-linked device was duplicated")
+    let linkedPeer = linkedDevicePresences.first(where: { $0.id == .keyPort("dev-peer") })
+    try expect(linkedPeer?.tailscaleNode?.id == "node-peer", "network-linked device did not inherit its Tailscale node")
+    try expect(linkedPeer?.registeredDevice?.name == "renamed-build-server", "network-linked device lost KeyPort metadata")
+    try expect(linkedPeer?.matches(host: "100.64.0.2") == true, "linked device did not match its server IP")
+
+    let duplicateAddressNode = TailscaleNode(
+        id: "node-duplicate-address",
+        name: "nat-neighbor",
+        dnsName: "nat-neighbor.example.ts.net",
+        operatingSystem: "linux",
+        addresses: ["100.64.0.2"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    let stableIdentityPresences = DevicePresenceMerger.merge(
+        devices: [synchronizedPeer],
+        tailscaleNodes: [duplicateAddressNode, peerNode]
+    )
+    try expect(
+        stableIdentityPresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode?.id == "node-peer",
+        "an address collision overrode the stable Tailscale node identity"
+    )
+
+    let sameAddressChangedNode = TailscaleNode(
+        id: "node-peer-reissued",
+        name: "build-server",
+        dnsName: "new-name.example.ts.net",
+        operatingSystem: "linux",
+        addresses: ["100.64.0.2"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(
+        synchronizedPeer.tailscaleIdentity?.matches(node: sameAddressChangedNode) == true,
+        "device identity did not fall back to an exact IP match"
+    )
 
     let staleLocalRegistration = Device(id: "dev-old-local", name: "LOCAL-MAC", isCurrent: false)
     let deduplicatedDevicePresences = DevicePresenceMerger.merge(
