@@ -20,6 +20,37 @@ do {
     try expect(KeyPortNaming.alias(group: "Prod", name: "Doris DB") == "prod-doris-db", "grouped alias normalization")
     try expect(KeyPortNaming.alias(group: "", name: "CN2 YLY") == "cn2-yly", "ungrouped alias normalization")
     try expect(KeyPortNaming.alias(group: "Asia", name: "") == "asia", "group-only alias normalization")
+    try expect(
+        KeyPortNaming.accountAlias(group: "Prod", name: "Doris DB", username: "root") == "prod-doris-db-root",
+        "account alias omitted username"
+    )
+    try expect(
+        KeyPortNaming.accountAlias(group: "", name: "Build Server", username: "Deploy User") == "build-server-deploy-user",
+        "account alias did not normalize username"
+    )
+    try expect(
+        KeyPortNaming.availableAlias("build-server-root", avoiding: ["build-server-root", "build-server-root-2"]) == "build-server-root-3",
+        "account alias collision was not resolved"
+    )
+    let groupingDate = Date(timeIntervalSince1970: 1_700_000_000)
+    let groupedConnections = ServerConnectionGrouping.groups([
+        ServerConnection(name: "Database", host: "DB.EXAMPLE.COM.", username: "root", alias: "database-root", createdAt: groupingDate),
+        ServerConnection(name: "Legacy Account Label", host: "db.example.com", username: "deploy", alias: "database-deploy", createdAt: groupingDate.addingTimeInterval(1)),
+        ServerConnection(name: "Database Admin", host: "db.example.com", port: 2222, username: "admin", alias: "database-admin")
+    ])
+    try expect(groupedConnections.count == 2, "accounts on the same endpoint were not grouped as one server")
+    try expect(
+        groupedConnections.first(where: { $0.port == 22 })?.accounts.map(\.username) == ["deploy", "root"],
+        "server accounts were not sorted by username"
+    )
+    try expect(
+        groupedConnections.first(where: { $0.port == 2222 })?.accounts.count == 1,
+        "different SSH ports were merged into one server"
+    )
+    try expect(
+        groupedConnections.first(where: { $0.port == 22 })?.representative.name == "Database",
+        "server display identity changed with account sort order"
+    )
     try expect(KeyPortNaming.isValidAlias("cn2-yly"), "native alias rejected")
     try expect(KeyPortNaming.isValidAlias("kp-prod-doris"), "valid alias rejected")
     try expect(KeyPortNaming.isValidAlias("server1"), "alphanumeric alias rejected")
@@ -304,7 +335,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 85 assertions passed")
+    print("KeyPortCoreChecks: all assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
