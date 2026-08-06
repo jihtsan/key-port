@@ -62,33 +62,33 @@ actor SSHKeyService {
         let path = paths.identitiesDirectory.appendingPathComponent(keyID)
         let comment = "keyport:v1:\(keyID):\(KeyPortNaming.deviceIdentifier(name: device.name))"
         let result = try await runner.run("/usr/bin/ssh-keygen", arguments: ["-q", "-t", "ed25519", "-f", path.path, "-N", "", "-C", comment])
-        guard result.succeeded else { throw SSHServiceError.operationFailed("Key generation failed.") }
+        guard result.succeeded else { throw SSHServiceError.operationFailed("密钥生成失败。") }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
         let publicLine = try String(contentsOf: path.appendingPathExtension("pub"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = PublicKeyParser.parse(publicLine) else { throw SSHServiceError.operationFailed("Generated public key is invalid.") }
+        guard let parsed = PublicKeyParser.parse(publicLine) else { throw SSHServiceError.operationFailed("生成的公钥无效。") }
         return SSHKeyRecord(id: keyID, deviceID: device.id, kind: .ed25519, publicKey: publicLine, fingerprint: parsed.fingerprint, privateKeyPath: path.path, isInAgent: false, origin: .generated, isLocallyAvailable: true)
     }
 
     func addToAgent(_ key: SSHKeyRecord) async throws {
-        guard let path = key.privateKeyPath else { throw SSHServiceError.operationFailed("This key has no local private file.") }
+        guard let path = key.privateKeyPath else { throw SSHServiceError.operationFailed("此密钥没有本地私钥文件。") }
         let result = try await runner.run("/usr/bin/ssh-add", arguments: [path])
-        guard result.succeeded else { throw SSHServiceError.operationFailed("ssh-agent rejected the key.") }
+        guard result.succeeded else { throw SSHServiceError.operationFailed("SSH Agent 拒绝了该密钥。") }
     }
 
     func importPrivateKey(from source: URL, device: Device) async throws -> SSHKeyRecord {
         try paths.prepareDirectories()
         let adjacentPublic = source.appendingPathExtension("pub")
         guard FileManager.default.fileExists(atPath: adjacentPublic.path) else {
-            throw SSHServiceError.operationFailed("Select a private key that has a matching .pub file. Encrypted keys without a public companion are not imported automatically.")
+            throw SSHServiceError.operationFailed("请选择带有匹配 .pub 文件的私钥。没有配套公钥文件的加密密钥不会自动导入。")
         }
         let sourcePublic = try String(contentsOf: adjacentPublic, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = PublicKeyParser.parse(sourcePublic), parsed.kind == .ed25519 || parsed.kind == .rsa else {
-            throw SSHServiceError.operationFailed("Only OpenSSH Ed25519 and RSA keys are supported in this release.")
+            throw SSHServiceError.operationFailed("此版本仅支持 OpenSSH Ed25519 和 RSA 密钥。")
         }
         let keyID = KeyPortNaming.newKeyID()
         let destination = paths.identitiesDirectory.appendingPathComponent(keyID)
         guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw SSHServiceError.operationFailed("The destination key already exists.")
+            throw SSHServiceError.operationFailed("目标密钥已存在。")
         }
         try FileManager.default.copyItem(at: source, to: destination)
         do {
