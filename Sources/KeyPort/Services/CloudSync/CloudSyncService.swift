@@ -11,10 +11,10 @@ enum CloudSyncState: Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .idle: "Not synced"
-        case .syncing: "Syncing"
-        case .available: "Up to date"
-        case .unavailable: "Unavailable"
+        case .idle: "未同步"
+        case .syncing: "同步中"
+        case .available: "已是最新"
+        case .unavailable: "不可用"
         }
     }
 }
@@ -29,8 +29,8 @@ enum CloudSyncError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .accountUnavailable: "Sign in to iCloud to synchronize KeyPort metadata."
-        case .malformedRecord: "CloudKit returned an invalid KeyPort metadata record."
+        case .accountUnavailable: "请登录 iCloud 以同步 KeyPort 元数据。"
+        case .malformedRecord: "CloudKit 返回了无效的 KeyPort 元数据记录。"
         }
     }
 }

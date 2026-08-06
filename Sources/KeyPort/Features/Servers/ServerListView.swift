@@ -3,60 +3,161 @@ import SwiftUI
 
 struct ServerListView: View {
     let model: AppModel
+    let onAddAccount: (UUID) -> Void
     let onEdit: (UUID) -> Void
 
     var body: some View {
         @Bindable var model = model
-        Table(model.activeServers, selection: $model.selectedServerID) {
-            TableColumn("Name") { server in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(server.name)
-                        .lineLimit(1)
-                    if let item = model.devicePresence(for: server) {
-                        Label(item.name, systemImage: "desktopcomputer")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        List(selection: $model.selectedServerID) {
+            ForEach(model.activeServerGroups) { group in
+                if group.accounts.count == 1, let account = group.accounts.first {
+                    ServerAccountRow(
+                        account: account,
+                        group: group,
+                        onEdit: onEdit,
+                        onAddAccount: onAddAccount,
+                        onCopyAlias: { model.copyAlias(serverID: $0) },
+                        onDelete: { serverID in Task { await model.deleteServer(serverID) } }
+                    )
+                    .tag(account.id)
+                } else {
+                    Section {
+                        ForEach(group.accounts) { account in
+                            ServerAccountRow(
+                                account: account,
+                                group: nil,
+                                onEdit: onEdit,
+                                onAddAccount: onAddAccount,
+                                onCopyAlias: { model.copyAlias(serverID: $0) },
+                                onDelete: { serverID in Task { await model.deleteServer(serverID) } }
+                            )
+                            .tag(account.id)
+                        }
+                    } header: {
+                        ServerGroupHeader(group: group) {
+                            onAddAccount(group.representative.id)
+                        }
                     }
                 }
             }
-            TableColumn("Endpoint") { server in
-                Text(server.endpoint).foregroundStyle(.secondary)
-            }
-            TableColumn("Password") { server in
-                AuthenticationCheckLabel(check: server.passwordCheck)
-            }
-            .width(min: 92, ideal: 110)
-            TableColumn("Key SSH") { server in
-                AuthenticationCheckLabel(check: server.keyCheck)
-            }
-            .width(min: 92, ideal: 110)
         }
-        .searchable(text: $model.searchText, prompt: "Name, address, user, group")
-        .navigationTitle("Servers")
-        .contextMenu(forSelectionType: UUID.self) { selection in
-            if selection.count == 1, let serverID = selection.first {
-                Button {
-                    onEdit(serverID)
-                } label: {
-                    Label("Edit Server", systemImage: "pencil")
-                }
-                Button {
-                    model.copyAlias(serverID: serverID)
-                } label: {
-                    Label("Copy SSH Alias", systemImage: "doc.on.doc")
-                }
-                Divider()
-                Button(role: .destructive) {
-                    Task { await model.deleteServer(serverID) }
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-            }
-        }
+        .listStyle(.inset)
+        .searchable(text: $model.searchText, prompt: "名称、地址、用户、分组")
+        .navigationTitle("服务器")
         .overlay {
-            if model.activeServers.isEmpty {
-                ContentUnavailableView("No Servers", systemImage: "server.rack", description: Text("Add a server to begin host identity verification."))
+            if model.activeServerGroups.isEmpty {
+                if model.searchText.isEmpty {
+                    ContentUnavailableView("暂无服务器", systemImage: "server.rack", description: Text("请添加服务器和首个 SSH 用户。"))
+                } else {
+                    ContentUnavailableView.search(text: model.searchText)
+                }
+            }
+        }
+    }
+}
+
+private struct ServerGroupHeader: View {
+    let group: ServerConnectionGroup
+    let onAddAccount: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "server.rack")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.representative.name)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                HStack(spacing: 8) {
+                    Text("\(group.host):\(group.port)")
+                        .monospaced()
+                    Text("\(group.accounts.count) 个用户")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let capacity = group.representative.machineConfiguration?.capacitySummary {
+                Text(capacity)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Button(action: onAddAccount) {
+                Image(systemName: "person.badge.plus")
+            }
+            .buttonStyle(.borderless)
+            .help("为此服务器添加 SSH 用户")
+        }
+        .textCase(nil)
+        .padding(.top, 4)
+    }
+}
+
+private struct ServerAccountRow: View {
+    let account: ServerConnection
+    let group: ServerConnectionGroup?
+    let onEdit: (UUID) -> Void
+    let onAddAccount: (UUID) -> Void
+    let onCopyAlias: (UUID) -> Void
+    let onDelete: (UUID) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: group == nil ? "person.crop.circle" : "server.rack")
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                if let group {
+                    Text(group.representative.name)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text("\(group.host):\(group.port) · \(account.username) · \(account.alias)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text(account.username)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(account.alias)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            if let group, let capacity = group.representative.machineConfiguration?.capacitySummary {
+                Text(capacity)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            StatusLabel(status: account.status)
+        }
+        .padding(.vertical, group == nil ? 3 : 5)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                onEdit(account.id)
+            } label: {
+                Label("编辑用户", systemImage: "pencil")
+            }
+            Button {
+                onAddAccount(account.id)
+            } label: {
+                Label("添加用户", systemImage: "person.badge.plus")
+            }
+            Button {
+                onCopyAlias(account.id)
+            } label: {
+                Label("复制 SSH 别名", systemImage: "doc.on.doc")
+            }
+            Divider()
+            Button(role: .destructive) {
+                onDelete(account.id)
+            } label: {
+                Label("删除用户", systemImage: "trash")
             }
         }
     }
@@ -71,7 +172,7 @@ struct AuthenticationCheckLabel: View {
                 .foregroundStyle(check.state.color)
                 .lineLimit(1)
         } else {
-            Label("Not checked", systemImage: "minus.circle")
+            Label("未检查", systemImage: "minus.circle")
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }

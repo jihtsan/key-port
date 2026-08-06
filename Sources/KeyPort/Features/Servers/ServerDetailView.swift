@@ -16,29 +16,105 @@ struct ServerDetailView: View {
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("Key authorization")
+                        Text("密钥授权")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         StatusLabel(status: server.status)
                     }
                 }
 
-                GroupBox("Connection") {
-                    VStack(spacing: 10) {
-                        LabeledContent("SSH alias") {
+                GroupBox("连接") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        LeftAlignedDetailRow("SSH 别名") {
                             HStack(spacing: 6) {
                                 Text(server.alias).monospaced()
                                 Button { model.copySelectedAlias() } label: { Image(systemName: "doc.on.doc") }
                                     .buttonStyle(.borderless)
-                                    .help("Copy SSH alias")
+                                    .help("复制 SSH 别名")
                             }
                         }
-                        LabeledContent("Group", value: server.group.isEmpty ? "None" : server.group)
+                        LeftAlignedDetailRow("主机") {
+                            HStack(spacing: 6) {
+                                Text(server.host).monospaced()
+                                Button { model.copyHost(serverID: server.id) } label: { Image(systemName: "doc.on.doc") }
+                                    .buttonStyle(.borderless)
+                                    .help("复制主机地址")
+                            }
+                        }
+                        LeftAlignedDetailRow("端口") { Text(String(server.port)) }
+                        LeftAlignedDetailRow("用户") { Text(server.username) }
+                        LeftAlignedDetailRow("分组") { Text(server.group.isEmpty ? "无" : server.group) }
+                        if let connection = model.connection(for: server) {
+                            LeftAlignedDetailRow("生效的 SSH 配置") {
+                                Label("已同步", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            }
+                            if !connection.identityFiles.isEmpty {
+                                LeftAlignedDetailRow("身份密钥文件") {
+                                    Text(connection.identityFiles.joined(separator: "\n"))
+                                        .font(.caption.monospaced())
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 5)
                 }
 
-                GroupBox("Device and SSH Accounts") {
+                if let log = model.retainedSSHCheckLog, log.serverID == server.id {
+                    GroupBox(log.title) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if server.passwordCheck?.state == .checking || server.keyCheck?.state == .checking {
+                                Label("正在检查", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                                    .foregroundStyle(.blue)
+                            } else {
+                                Label("最近一次检查未成功完成。", systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(log.lines.joined(separator: "\n"))
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5)
+                    }
+                }
+
+                GroupBox("机器配置") {
+                    if let configuration = server.machineConfiguration {
+                        VStack(alignment: .leading, spacing: 10) {
+                            LeftAlignedDetailRow("主机名") { Text(configuration.hostname) }
+                            LeftAlignedDetailRow("操作系统") { Text(configuration.operatingSystem) }
+                            LeftAlignedDetailRow("内核") { Text(configuration.kernel) }
+                            LeftAlignedDetailRow("架构") { Text(configuration.architecture) }
+                            if let processorCount = configuration.processorCount {
+                                LeftAlignedDetailRow("处理器") { Text(String(processorCount)) }
+                            }
+                            if let memoryBytes = configuration.memoryBytes {
+                                LeftAlignedDetailRow("内存") {
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(memoryBytes), countStyle: .memory))
+                                }
+                            }
+                            LeftAlignedDetailRow("同步时间") {
+                                Text(configuration.synchronizedAt.formatted(date: .abbreviated, time: .shortened))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5)
+                    } else {
+                        Label("成功完成一次 SSH 检查后即可同步此机器的配置。", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                    }
+                }
+
+                GroupBox("设备与 SSH 账户") {
                     if let item = model.devicePresence(for: server) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -48,7 +124,7 @@ struct ServerDetailView: View {
                                 Button {
                                     model.showDevice(item.id)
                                 } label: {
-                                    Label("Show in Devices", systemImage: "arrow.right.circle")
+                                    Label("在设备中显示", systemImage: "arrow.right.circle")
                                 }
                             }
                             if let node = item.tailscaleNode, !node.addresses.isEmpty {
@@ -67,7 +143,7 @@ struct ServerDetailView: View {
                                         .foregroundStyle(.secondary)
                                     Spacer()
                                     if account.id == server.id {
-                                        Text("Current")
+                                        Text("当前")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     } else {
@@ -77,7 +153,7 @@ struct ServerDetailView: View {
                                             Image(systemName: "arrow.right.circle")
                                         }
                                         .buttonStyle(.borderless)
-                                        .help("Show \(account.username) in Servers")
+                                        .help("在服务器中显示 \(account.username)")
                                     }
                                 }
                             }
@@ -85,34 +161,34 @@ struct ServerDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 5)
                     } else {
-                        Label("No device matches this server address", systemImage: "link.badge.plus")
+                        Label("没有匹配此服务器地址的设备", systemImage: "link.badge.plus")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 5)
                     }
                 }
 
-                GroupBox("Server Password") {
+                GroupBox("用户密码") {
                     HStack {
                         if model.hasStoredPassword(serverID: server.id) {
-                            Label("Stored in Keychain", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                            Label("已存储在 Keychain", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                             Spacer()
-                            Button("Update Password") { model.requestPassword(for: server.id) }
+                            Button("更新密码") { model.requestPassword(for: server.id) }
                         } else {
-                            Label("Missing from Keychain", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            Label("Keychain 中缺少密码", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             Spacer()
-                            Button("Add Password") { model.requestPassword(for: server.id) }
+                            Button("添加密码") { model.requestPassword(for: server.id) }
                         }
                     }
                     .padding(.vertical, 5)
                 }
 
-                GroupBox("Authentication Checks") {
+                GroupBox("身份验证检查") {
                     VStack(spacing: 12) {
                         AuthenticationCheckRow(
-                            title: "Password SSH",
+                            title: "密码 SSH",
                             check: server.passwordCheck,
-                            buttonTitle: "Check Password SSH",
+                            buttonTitle: "检查密码 SSH",
                             systemImage: "lock",
                             isDisabled: model.isBusy
                         ) {
@@ -120,9 +196,9 @@ struct ServerDetailView: View {
                         }
                         Divider()
                         AuthenticationCheckRow(
-                            title: "Key SSH",
+                            title: "密钥 SSH",
                             check: server.keyCheck,
-                            buttonTitle: "Check Key SSH",
+                            buttonTitle: "检查密钥 SSH",
                             systemImage: "key.horizontal",
                             isDisabled: model.isBusy
                         ) {
@@ -132,9 +208,9 @@ struct ServerDetailView: View {
                     .padding(.vertical, 5)
                 }
 
-                GroupBox("Host Identity") {
+                GroupBox("主机身份") {
                     if server.confirmedHostKeys.isEmpty {
-                        Label("No host key has been confirmed", systemImage: "exclamationmark.shield")
+                        Label("尚未确认主机密钥", systemImage: "exclamationmark.shield")
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 5)
@@ -152,33 +228,35 @@ struct ServerDetailView: View {
                     }
                 }
 
-                GroupBox("Current Mac") {
+                GroupBox("当前 Mac") {
                     VStack(alignment: .leading, spacing: 10) {
                         if let key = model.key(for: server) {
-                            LabeledContent("Key", value: model.keyDisplayName(key))
-                            LabeledContent("Fingerprint") { Text(key.fingerprint).font(.caption).monospaced().textSelection(.enabled) }
+                            LeftAlignedDetailRow("密钥") { Text(model.keyDisplayName(key)) }
+                            LeftAlignedDetailRow("指纹") {
+                                Text(key.fingerprint).font(.caption).monospaced().textSelection(.enabled)
+                            }
                         } else {
-                            Text("No local private key is available.").foregroundStyle(.secondary)
-                            Button("Generate Ed25519 Key") { Task { await model.generateKey() } }
+                            Text("没有可用的本地私钥。").foregroundStyle(.secondary)
+                            Button("生成 Ed25519 密钥") { Task { await model.generateKey() } }
                         }
 
                         if let detail = server.statusDetail {
                             Divider()
-                            Text(detail).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Text(UserFacingText.localized(detail)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 5)
                 }
 
-                GroupBox("Device Authorizations") {
+                GroupBox("设备授权") {
                     let authorizations = model.snapshot.authorizations.filter { $0.serverID == server.id }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text(authorizations.isEmpty ? "No KeyPort authorizations have been read." : "\(authorizations.count) KeyPort authorization(s)")
+                            Text(authorizations.isEmpty ? "尚未读取到 KeyPort 授权。" : "共 \(authorizations.count) 项 KeyPort 授权")
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            Button("Refresh") { Task { await model.refreshRemoteAuthorizations(serverID: server.id) } }
+                            Button("刷新") { Task { await model.refreshRemoteAuthorizations(serverID: server.id) } }
                                 .disabled(server.status != .authorized || model.isBusy)
                         }
                         ForEach(authorizations) { authorization in
@@ -209,7 +287,7 @@ struct ServerDetailView: View {
                                 } label: {
                                     Image(systemName: "trash")
                                 }
-                                .help("Revoke this exact public key fingerprint")
+                                .help("撤销与此公钥指纹完全匹配的授权")
                             }
                         }
                     }
@@ -221,19 +299,39 @@ struct ServerDetailView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .navigationTitle(server.name)
-        .confirmationDialog("Revoke this device key from the server?", isPresented: Binding(
+        .confirmationDialog("要从服务器撤销此设备密钥吗？", isPresented: Binding(
             get: { pendingRevocationID != nil },
             set: { if !$0 { pendingRevocationID = nil } }
         )) {
-            Button("Revoke Authorization", role: .destructive) {
+            Button("撤销授权", role: .destructive) {
                 guard let id = pendingRevocationID else { return }
                 pendingRevocationID = nil
                 Task { await model.revokeAuthorization(id) }
             }
-            Button("Cancel", role: .cancel) { pendingRevocationID = nil }
+            Button("取消", role: .cancel) { pendingRevocationID = nil }
         } message: {
-            Text("KeyPort will remove only the line whose public key fingerprint matches exactly. Unknown keys are preserved.")
+            Text("KeyPort 只会移除公钥指纹完全匹配的记录，其他未知密钥将保留。")
         }
+    }
+}
+
+private struct LeftAlignedDetailRow<Content: View>: View {
+    let label: String
+    let content: Content
+
+    init(_ label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .frame(width: 124, alignment: .leading)
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -259,7 +357,7 @@ private struct AuthenticationCheckRow: View {
                 .disabled(isDisabled)
             }
             if let check {
-                Text(check.detail)
+                Text(UserFacingText.localized(check.detail))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

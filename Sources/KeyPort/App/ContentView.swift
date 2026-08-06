@@ -5,6 +5,7 @@ struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
     @State private var showsEditServer = false
+    @State private var accountSourceServerID: UUID?
     @State private var tailscaleAccountEditorRequest: TailscaleAccountEditorRequest?
 
     var body: some View {
@@ -26,10 +27,11 @@ struct ContentView: View {
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer) {
             ServerEditorView(
-                title: "添加服务器",
+                title: "添加服务器和用户",
+                initialDraft: model.newServerDraft(),
                 canSynchronize: model.canSynchronizePasswords,
                 onCheck: { draft, password, hostKeys in
-                    await model.validateServerEditor(
+                    return await model.validateServerEditor(
                         draft: draft,
                         password: password,
                         existingServerID: nil,
@@ -41,10 +43,40 @@ struct ContentView: View {
                 }
             )
         }
+        .sheet(isPresented: Binding(
+            get: { accountSourceServerID != nil },
+            set: { if !$0 { accountSourceServerID = nil } }
+        )) {
+            if let sourceServerID = accountSourceServerID,
+               let sourceServer = model.snapshot.servers.first(where: { $0.id == sourceServerID && !$0.isDeleted }),
+               let draft = model.newAccountDraft(for: sourceServerID) {
+                ServerEditorView(
+                    title: "为 \(sourceServer.name) 添加用户",
+                    initialDraft: draft,
+                    initialHostKeys: sourceServer.confirmedHostKeys,
+                    hasStoredPassword: false,
+                    canSynchronize: model.canSynchronizePasswords,
+                    primaryActionTitle: "保存用户",
+                    showsNotes: false,
+                    locksServerFields: true,
+                    onCheck: { draft, password, hostKeys in
+                        await model.validateServerEditor(
+                            draft: draft,
+                            password: password,
+                            existingServerID: nil,
+                            trustedHostKeys: hostKeys
+                        )
+                    },
+                    onSave: { submission in
+                        _ = try await model.saveServerEditor(submission, existingServerID: nil)
+                    }
+                )
+            }
+        }
         .sheet(item: $tailscaleAccountEditorRequest) { request in
             let suggestion = request.suggestion
             let existingServer = request.serverID.flatMap { serverID in
-                model.activeServers.first { $0.id == serverID }
+                model.snapshot.servers.first { $0.id == serverID && !$0.isDeleted }
             }
             ServerEditorView(
                 title: request.authorizesAfterSave
@@ -88,7 +120,7 @@ struct ContentView: View {
         .sheet(isPresented: $showsEditServer) {
             if let server = model.selectedServer {
                 ServerEditorView(
-                    title: "编辑服务器",
+                    title: "编辑服务器和用户",
                     existingServerID: server.id,
                     initialDraft: ServerDraft(server: server),
                     initialHostKeys: server.confirmedHostKeys,
@@ -146,13 +178,13 @@ struct ContentView: View {
                 )
             }
         }
-        .alert("KeyPort could not complete the action", isPresented: Binding(
+        .alert("KeyPort 无法完成此操作", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
-            Button("OK") { model.errorMessage = nil }
+            Button("好") { model.errorMessage = nil }
         } message: {
-            Text(model.errorMessage ?? "Unknown error")
+            Text(model.errorMessage ?? "未知错误")
         }
     }
 
@@ -161,6 +193,9 @@ struct ContentView: View {
         switch model.destination {
         case .servers:
             ServerListView(model: model) { serverID in
+                model.selectedServerID = serverID
+                accountSourceServerID = serverID
+            } onEdit: { serverID in
                 model.selectedServerID = serverID
                 showsEditServer = true
             }
@@ -180,7 +215,7 @@ struct ContentView: View {
             if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)
             } else {
-                ContentUnavailableView("No Server Selected", systemImage: "server.rack", description: Text("Select or add a server connection."))
+                ContentUnavailableView("未选择用户", systemImage: "person.crop.circle", description: Text("请在服务器下选择一个 SSH 用户。"))
             }
         case .keys:
             if let row = model.selectedKeyServerRow {
@@ -190,7 +225,7 @@ struct ContentView: View {
             } else if let key = model.selectedStandaloneKey {
                 KeyDetailView(key: key, model: model)
             } else {
-                ContentUnavailableView("No Server Key Selected", systemImage: "key", description: Text("Select a server connection or local identity."))
+                ContentUnavailableView("未选择服务器密钥", systemImage: "key", description: Text("请选择服务器连接或本地身份密钥。"))
             }
         case .devices:
             DeviceOverviewView(model: model) { request in
@@ -208,35 +243,42 @@ struct ContentView: View {
                 Button {
                     showsAddServer = true
                 } label: {
-                    Label("Add Server", systemImage: "plus")
+                    Label("添加服务器", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
                 Button {
+                    accountSourceServerID = model.selectedServerID
+                } label: {
+                    Label("添加用户", systemImage: "person.badge.plus")
+                }
+                .disabled(model.selectedServerID == nil || model.isBusy)
+
+                Button {
                     Task { await model.checkPasswordSelected() }
                 } label: {
-                    Label("Check Password SSH", systemImage: "lock")
+                    Label("检查密码 SSH", systemImage: "lock")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
                     Task { await model.checkKeySelected() }
                 } label: {
-                    Label("Check Key SSH", systemImage: "key.horizontal")
+                    Label("检查密钥 SSH", systemImage: "key.horizontal")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
                     showsEditServer = true
                 } label: {
-                    Label("Edit Server", systemImage: "pencil")
+                    Label("编辑用户", systemImage: "pencil")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
                     Task { await model.authorizeSelected() }
                 } label: {
-                    Label("Authorize This Mac", systemImage: "key.horizontal")
+                    Label("授权此 Mac", systemImage: "key.horizontal")
                 }
                 .disabled(model.selectedServer?.status != .needsAuthorization || model.isBusy)
             }
@@ -261,9 +303,9 @@ struct ContentView: View {
                 Button {
                     Task { await model.synchronizeCloud() }
                 } label: {
-                    Label("Sync Metadata", systemImage: "icloud.and.arrow.up")
+                    Label("同步元数据", systemImage: "icloud.and.arrow.up")
                 }
-                .help("Synchronize non-secret metadata with iCloud")
+                .help("通过 iCloud 同步非敏感元数据")
             }
         }
     }
@@ -273,18 +315,18 @@ struct KeyPortCommands: Commands {
     let model: AppModel
 
     var body: some Commands {
-        CommandMenu("Server") {
-            Button("Check Password SSH") { Task { await model.checkPasswordSelected() } }
+        CommandMenu("服务器") {
+            Button("检查密码 SSH") { Task { await model.checkPasswordSelected() } }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil)
-            Button("Check Key SSH") { Task { await model.checkKeySelected() } }
+            Button("检查密钥 SSH") { Task { await model.checkKeySelected() } }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil)
-            Button("Copy SSH Alias") { model.copySelectedAlias() }
+            Button("复制 SSH 别名") { model.copySelectedAlias() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(model.selectedServerID == nil)
             Divider()
-            Button("Authorize This Mac") { Task { await model.authorizeSelected() } }
+            Button("授权此 Mac") { Task { await model.authorizeSelected() } }
                 .disabled(model.selectedServer?.status != .needsAuthorization)
         }
     }

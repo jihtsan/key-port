@@ -6,9 +6,9 @@ import UniformTypeIdentifiers
 struct FileSelectionService {
     func selectPrivateKey() async -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Import OpenSSH Private Key"
-        panel.message = "Choose a private key with a matching .pub file."
-        panel.prompt = "Import"
+        panel.title = "导入 OpenSSH 私钥"
+        panel.message = "请选择带有匹配 .pub 文件的私钥。"
+        panel.prompt = "导入"
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.treatsFilePackagesAsDirectories = false
@@ -17,7 +17,7 @@ struct FileSelectionService {
 
     func selectArchiveForImport() async -> URL? {
         let panel = NSOpenPanel()
-        panel.title = "Import KeyPort Archive"
+        panel.title = "导入 KeyPort 归档"
         panel.allowedContentTypes = [.data]
         panel.allowsMultipleSelection = false
         return await panel.begin() == .OK ? panel.url : nil
@@ -25,7 +25,7 @@ struct FileSelectionService {
 
     func selectArchiveDestination() async -> URL? {
         let panel = NSSavePanel()
-        panel.title = "Export KeyPort Metadata"
+        panel.title = "导出 KeyPort 元数据"
         panel.nameFieldStringValue = "KeyPort-Metadata.keyport"
         panel.allowedContentTypes = [.data]
         return await panel.begin() == .OK ? panel.url : nil

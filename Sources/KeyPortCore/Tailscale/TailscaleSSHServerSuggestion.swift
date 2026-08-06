@@ -48,18 +48,11 @@ public struct TailscaleSSHServerSuggestion: Identifiable, Equatable, Sendable {
     }
 
     public func suggestedAlias(username: String, avoiding existingAliases: Set<String>) -> String {
-        let usernameSlug = KeyPortNaming.slug(username)
-        let base = usernameSlug.isEmpty ? alias : "\(alias)-\(usernameSlug)"
-        return availableAlias(base, avoiding: existingAliases)
+        let base = KeyPortNaming.accountAlias(serverAlias: alias, username: username)
+        return KeyPortNaming.availableAlias(base, avoiding: existingAliases)
     }
 
     private func availableAlias(_ base: String, avoiding existingAliases: Set<String>) -> String {
-        guard existingAliases.contains(base) else { return base }
-
-        var suffix = 2
-        while existingAliases.contains("\(base)-\(suffix)") {
-            suffix += 1
-        }
-        return "\(base)-\(suffix)"
+        KeyPortNaming.availableAlias(base, avoiding: existingAliases)
     }
 }
