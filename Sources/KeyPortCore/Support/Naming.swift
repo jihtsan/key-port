@@ -17,6 +17,27 @@ public enum KeyPortNaming {
         return pieces.joined(separator: "-")
     }
 
+    public static func accountAlias(group: String, name: String, username: String) -> String {
+        let serverAlias = alias(group: group, name: name)
+        return accountAlias(serverAlias: serverAlias, username: username)
+    }
+
+    public static func accountAlias(serverAlias: String, username: String) -> String {
+        [slug(serverAlias), slug(username)]
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+    }
+
+    public static func availableAlias(_ base: String, avoiding existingAliases: Set<String>) -> String {
+        guard existingAliases.contains(base) else { return base }
+
+        var suffix = 2
+        while existingAliases.contains("\(base)-\(suffix)") {
+            suffix += 1
+        }
+        return "\(base)-\(suffix)"
+    }
+
     public static func isValidAlias(_ alias: String) -> Bool {
         alias.range(of: #"^[a-z0-9]+(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil
     }

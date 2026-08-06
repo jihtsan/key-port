@@ -26,22 +26,22 @@ struct PasswordEntryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Server Password").font(.title2).fontWeight(.semibold)
-                Text(verbatim: "\(server.name) · \(server.host):\(server.port)").foregroundStyle(.secondary)
+                Text("SSH 用户密码").font(.title2).fontWeight(.semibold)
+                Text(verbatim: "\(server.username)@\(server.host):\(server.port)").foregroundStyle(.secondary)
             }
 
             Form {
-                SecureField("Password", text: $password)
+                SecureField("密码", text: $password)
                     .disabled(isSaving || isTesting)
 
-                Section("Password SSH Test") {
+                Section("密码 SSH 测试") {
                     HStack(alignment: .center, spacing: 12) {
                         passwordTestStatus
                         Spacer()
                         Button {
                             testPassword()
                         } label: {
-                            Label("Test Password SSH", systemImage: "lock.open")
+                            Label("测试密码 SSH", systemImage: "lock.open")
                         }
                         .disabled(password.isEmpty || isSaving || isTesting)
                     }
@@ -52,16 +52,16 @@ struct PasswordEntryView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("Test the current password before saving it to Keychain.")
+                        Text("保存到 Keychain 前，请先测试当前密码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Toggle("Allow iCloud Keychain sync", isOn: $synchronizable)
+                Toggle("允许通过 iCloud Keychain 同步", isOn: $synchronizable)
                     .disabled(!canSynchronize || isSaving || isTesting)
                 if !canSynchronize {
-                    Label("iCloud Keychain sync is unavailable in this build", systemImage: "icloud.slash")
+                    Label("此版本无法使用 iCloud Keychain 同步", systemImage: "icloud.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -79,18 +79,18 @@ struct PasswordEntryView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Button("Cancel", role: .cancel, action: onCancel)
+                Button("取消", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
                     .disabled(isSaving || isTesting)
                 if canAuthorize {
-                    Button("Save") { save(authorizeAfterSave: false) }
+                    Button("保存") { save(authorizeAfterSave: false) }
                         .disabled(!currentPasswordPassed || isSaving)
-                    Button("Save and Authorize") { save(authorizeAfterSave: true) }
+                    Button("保存并授权") { save(authorizeAfterSave: true) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!currentPasswordPassed || isSaving)
                 } else {
-                    Button("Save") { save(authorizeAfterSave: false) }
+                    Button("保存") { save(authorizeAfterSave: false) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!currentPasswordPassed || isSaving)
@@ -112,25 +112,25 @@ struct PasswordEntryView: View {
     @ViewBuilder
     private var passwordTestStatus: some View {
         if isTesting {
-            Label("Checking", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+            Label("检查中", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                 .foregroundStyle(.blue)
         } else if let testCheck = validationGate.check {
             switch testCheck.state {
             case .checking:
-                Label("Checking", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                Label("检查中", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                     .foregroundStyle(.blue)
             case .succeeded:
-                Label("Passed", systemImage: "checkmark.circle.fill")
+                Label("已通过", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             case .failed:
-                Label("Failed", systemImage: "xmark.circle.fill")
+                Label("失败", systemImage: "xmark.circle.fill")
                     .foregroundStyle(.red)
             case .blocked:
-                Label("Blocked", systemImage: "exclamationmark.shield.fill")
+                Label("已阻止", systemImage: "exclamationmark.shield.fill")
                     .foregroundStyle(.orange)
             }
         } else {
-            Label("Not tested", systemImage: "minus.circle")
+            Label("未测试", systemImage: "minus.circle")
                 .foregroundStyle(.secondary)
         }
     }

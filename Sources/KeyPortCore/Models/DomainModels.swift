@@ -15,17 +15,17 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
 
     public var title: String {
         switch self {
-        case .authorized: "Authorized"
-        case .needsAuthorization: "Needs authorization"
-        case .missingLocalKey: "Missing local key"
-        case .hostKeyPending: "Host key pending"
-        case .hostKeyMismatch: "Host key changed"
-        case .unreachable: "Unreachable"
-        case .passwordAuthenticationFailed: "Password failed"
-        case .keyAuthenticationFailed: "Key failed"
-        case .authorizationConflict: "Authorization conflict"
-        case .syncPending: "Sync pending"
-        case .checking: "Checking"
+        case .authorized: "已授权"
+        case .needsAuthorization: "需要授权"
+        case .missingLocalKey: "缺少本地密钥"
+        case .hostKeyPending: "主机密钥待确认"
+        case .hostKeyMismatch: "主机密钥已变更"
+        case .unreachable: "无法连接"
+        case .passwordAuthenticationFailed: "密码验证失败"
+        case .keyAuthenticationFailed: "密钥验证失败"
+        case .authorizationConflict: "授权冲突"
+        case .syncPending: "等待同步"
+        case .checking: "检查中"
         }
     }
 }
@@ -38,10 +38,10 @@ public enum AuthenticationCheckState: String, Codable, Hashable, Sendable {
 
     public var title: String {
         switch self {
-        case .checking: "Checking"
-        case .succeeded: "Passed"
-        case .failed: "Failed"
-        case .blocked: "Blocked"
+        case .checking: "检查中"
+        case .succeeded: "已通过"
+        case .failed: "失败"
+        case .blocked: "已阻止"
         }
     }
 }
@@ -55,6 +55,53 @@ public struct AuthenticationCheck: Codable, Hashable, Sendable {
         self.state = state
         self.detail = detail
         self.checkedAt = checkedAt
+    }
+}
+
+public struct RemoteMachineConfiguration: Codable, Hashable, Sendable {
+    public static let refreshInterval: TimeInterval = 24 * 60 * 60
+
+    public var hostname: String
+    public var operatingSystem: String
+    public var kernel: String
+    public var architecture: String
+    public var processorCount: Int?
+    public var memoryBytes: UInt64?
+    public var synchronizedAt: Date
+
+    public init(
+        hostname: String,
+        operatingSystem: String,
+        kernel: String,
+        architecture: String,
+        processorCount: Int? = nil,
+        memoryBytes: UInt64? = nil,
+        synchronizedAt: Date = .now
+    ) {
+        self.hostname = hostname
+        self.operatingSystem = operatingSystem
+        self.kernel = kernel
+        self.architecture = architecture
+        self.processorCount = processorCount
+        self.memoryBytes = memoryBytes
+        self.synchronizedAt = synchronizedAt
+    }
+
+    public var capacitySummary: String? {
+        var components: [String] = []
+        if let processorCount, processorCount > 0 {
+            components.append("\(processorCount)C")
+        }
+        if let memoryBytes, memoryBytes > 0 {
+            let gibibytes = Double(memoryBytes) / 1_073_741_824
+            if gibibytes >= 1 {
+                components.append("\(Int(gibibytes.rounded()))G")
+            } else {
+                let mebibytes = max(1, Int((Double(memoryBytes) / 1_048_576).rounded()))
+                components.append("\(mebibytes)M")
+            }
+        }
+        return components.isEmpty ? nil : components.joined()
     }
 }
 
@@ -90,12 +137,14 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     public var lastCheckedAt: Date?
     public var passwordCheck: AuthenticationCheck?
     public var keyCheck: AuthenticationCheck?
+    public var machineConfiguration: RemoteMachineConfiguration?
+    public var machineConfigurationRefreshAttemptedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
     public var isDeleted: Bool
     public var version: Int
 
-    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
+    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, machineConfiguration: RemoteMachineConfiguration? = nil, machineConfigurationRefreshAttemptedAt: Date? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
         self.id = id
         self.name = name
         self.host = host
@@ -110,6 +159,8 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
         self.lastCheckedAt = lastCheckedAt
         self.passwordCheck = passwordCheck
         self.keyCheck = keyCheck
+        self.machineConfiguration = machineConfiguration
+        self.machineConfigurationRefreshAttemptedAt = machineConfigurationRefreshAttemptedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
@@ -117,6 +168,18 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var endpoint: String { "\(host):\(port)" }
+
+    public func shouldRefreshMachineConfiguration(at date: Date = .now) -> Bool {
+        let lastRefresh = [
+            machineConfiguration?.synchronizedAt,
+            machineConfigurationRefreshAttemptedAt
+        ]
+        .compactMap { $0 }
+        .max()
+
+        guard let lastRefresh else { return true }
+        return date.timeIntervalSince(lastRefresh) >= RemoteMachineConfiguration.refreshInterval
+    }
 }
 
 public struct Device: Identifiable, Codable, Hashable, Sendable {

@@ -12,6 +12,8 @@ _Avoid_: Server account, login
 A login identity on a device, uniquely identified by its device endpoint, port, and username. Each SSH account is represented as a separate server entry.
 _Avoid_: Device, machine authorization
 
+Server screens group SSH account records by endpoint. The common single-account case uses one compact row that combines the server identity with that account's username, alias, and authorization status; endpoints with multiple accounts show one server header followed by account rows. Aliases, passwords, and local authorization remain account-scoped.
+
 **Current Device**:
 The Mac currently running KeyPort and holding the local private keys used for SSH authorization.
 _Avoid_: Server, remote device
