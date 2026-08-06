@@ -6,7 +6,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case servers, keys, devices, logs
     var id: String { rawValue }
     var title: String {
-        switch self { case .servers: "Servers"; case .keys: "Keys"; case .devices: "Devices"; case .logs: "Audit Log" }
+        switch self { case .servers: "服务器"; case .keys: "密钥"; case .devices: "设备"; case .logs: "审计日志" }
     }
     var systemImage: String {
         switch self { case .servers: "server.rack"; case .keys: "key"; case .devices: "laptopcomputer"; case .logs: "list.bullet.rectangle" }
@@ -38,6 +38,16 @@ struct ServerDraft: Sendable {
         usesSuggestedAlias = false
     }
 
+    init(newAccountFor server: ServerConnection, aliasesToAvoid: Set<String>) {
+        name = server.name
+        host = server.host
+        port = server.port
+        group = server.group
+        notes = server.notes
+        self.aliasesToAvoid = aliasesToAvoid
+        updateSuggestedAlias()
+    }
+
     init(tailscaleSuggestion: TailscaleSSHServerSuggestion, aliasesToAvoid: Set<String>) {
         name = tailscaleSuggestion.name
         host = tailscaleSuggestion.host
@@ -61,7 +71,8 @@ struct ServerDraft: Sendable {
         if let tailscaleSuggestion {
             return tailscaleSuggestion.suggestedAlias(username: username, avoiding: aliasesToAvoid)
         }
-        return KeyPortNaming.alias(group: group, name: name)
+        let base = KeyPortNaming.accountAlias(group: group, name: name, username: username)
+        return KeyPortNaming.availableAlias(base, avoiding: aliasesToAvoid)
     }
 }
 
@@ -77,6 +88,7 @@ struct ServerEditorValidationResult: Sendable {
     let logLines: [String]
     let observedHostKeys: [HostKeyRecord]
     let confirmedHostKeys: [HostKeyRecord]
+    let machineConfiguration: RemoteMachineConfiguration?
 }
 
 struct ServerEditorSubmission: Sendable {
@@ -85,6 +97,13 @@ struct ServerEditorSubmission: Sendable {
     let synchronizable: Bool
     let confirmedHostKeys: [HostKeyRecord]
     let passwordCheck: AuthenticationCheck
+    let machineConfiguration: RemoteMachineConfiguration?
+}
+
+struct SSHCheckLog: Sendable {
+    let serverID: UUID
+    let title: String
+    var lines: [String]
 }
 
 enum TailscaleDiscoveryState: Equatable {
@@ -107,7 +126,7 @@ struct KeyConnectionRow: Identifiable {
     let serverRow: KeyServerRow?
 
     var id: String { serverRow?.id ?? "config:\(connection?.alias ?? "unknown")" }
-    var alias: String { connection?.alias ?? serverRow?.server.alias ?? "Unknown" }
+    var alias: String { connection?.alias ?? serverRow?.server.alias ?? "未知" }
     var host: String { connection?.host ?? serverRow?.server.host ?? "" }
     var port: Int { connection?.port ?? serverRow?.server.port ?? 22 }
 }
@@ -125,8 +144,32 @@ private enum ServerCheckKind: Equatable {
 
     var checkingDetail: String {
         switch self {
-        case .password: "Checking server password authentication..."
-        case .key: "Checking passwordless SSH authentication..."
+        case .password: "正在检查服务器密码身份验证..."
+        case .key: "正在检查免密 SSH 身份验证..."
+        }
+    }
+}
+
+private struct SharedServerFields {
+    let name: String
+    let host: String
+    let port: Int
+    let group: String
+    let notes: String
+    let confirmedHostKeys: [HostKeyRecord]
+    let machineConfiguration: RemoteMachineConfiguration?
+    let machineConfigurationRefreshAttemptedAt: Date
+
+    func apply(to server: inout ServerConnection, preservesMachineConfigurationWhenUnavailable: Bool = false) {
+        server.name = name
+        server.host = host
+        server.port = port
+        server.group = group
+        server.notes = notes
+        server.confirmedHostKeys = confirmedHostKeys
+        if machineConfiguration != nil || !preservesMachineConfigurationWhenUnavailable {
+            server.machineConfiguration = machineConfiguration
+            server.machineConfigurationRefreshAttemptedAt = machineConfigurationRefreshAttemptedAt
         }
     }
 }
@@ -153,6 +196,7 @@ final class AppModel {
     var passwordSaveError: String?
     var isSavingPassword = false
     var discoveredSSHConnections: [DiscoveredSSHConnection] = []
+    var retainedSSHCheckLog: SSHCheckLog?
     var tailscaleStatus: TailscaleStatus?
     var tailscaleDiscoveryState: TailscaleDiscoveryState = .idle
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
@@ -191,12 +235,26 @@ final class AppModel {
     }
 
     var activeServers: [ServerConnection] {
-        snapshot.servers.filter { !$0.isDeleted }.filter { server in
-            guard !searchText.isEmpty else { return true }
-            let needle = searchText.localizedLowercase
-            return [server.name, server.host, server.username, server.group, server.alias]
-                .contains { $0.localizedLowercase.contains(needle) }
-        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        snapshot.servers
+            .filter { !$0.isDeleted }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var activeServerGroups: [ServerConnectionGroup] {
+        let groups = ServerConnectionGrouping.groups(activeServers)
+        guard !searchText.isEmpty else { return groups }
+
+        let needle = searchText.localizedLowercase
+        return groups.filter { group in
+            group.accounts.contains { server in
+                [server.name, server.host, server.username, server.group, server.alias]
+                    .contains { $0.localizedLowercase.contains(needle) }
+            }
+        }
+    }
+
+    private var managedAliases: Set<String> {
+        Set(snapshot.servers.lazy.filter { !$0.isDeleted }.map(\.alias))
     }
 
     var selectedServer: ServerConnection? {
@@ -222,6 +280,19 @@ final class AppModel {
         }
     }
 
+    func newServerDraft() -> ServerDraft {
+        var draft = ServerDraft()
+        draft.aliasesToAvoid = managedAliases
+        return draft
+    }
+
+    func newAccountDraft(for serverID: UUID) -> ServerDraft? {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
+            return nil
+        }
+        return ServerDraft(newAccountFor: server, aliasesToAvoid: managedAliases)
+    }
+
     func tailscaleServerDraft(
         for suggestion: TailscaleSSHServerSuggestion,
         existingServer: ServerConnection? = nil
@@ -229,13 +300,17 @@ final class AppModel {
         guard let existingServer else {
             return ServerDraft(
                 tailscaleSuggestion: suggestion,
-                aliasesToAvoid: Set(activeServers.map(\.alias))
+                aliasesToAvoid: managedAliases
             )
         }
 
         var draft = ServerDraft(server: existingServer)
         draft.tailscaleSuggestion = suggestion
-        draft.aliasesToAvoid = Set(activeServers.lazy.filter { $0.id != existingServer.id }.map(\.alias))
+        draft.aliasesToAvoid = Set(
+            snapshot.servers.lazy
+                .filter { !$0.isDeleted && $0.id != existingServer.id }
+                .map(\.alias)
+        )
         return draft
     }
 
@@ -336,6 +411,7 @@ final class AppModel {
             }
             isLoaded = true
             appendAudit(category: "app", action: "load", result: "success")
+            await refreshMissingMachineConfigurations()
             await persist()
         } catch {
             isLoaded = true
@@ -366,7 +442,8 @@ final class AppModel {
                     check: AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now),
                     logLines: log,
                     observedHostKeys: observed,
-                    confirmedHostKeys: trustedHostKeys
+                    confirmedHostKeys: trustedHostKeys,
+                    machineConfiguration: nil
                 )
             case .changed(let algorithms):
                 let detail = "以下算法的主机密钥已变更：\(algorithms.joined(separator: "、"))。请确认替换后的指纹以继续。"
@@ -376,7 +453,8 @@ final class AppModel {
                     check: AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now),
                     logLines: log,
                     observedHostKeys: observed,
-                    confirmedHostKeys: trustedHostKeys
+                    confirmedHostKeys: trustedHostKeys,
+                    machineConfiguration: nil
                 )
             case .confirmed:
                 log.append("主机身份已确认。")
@@ -409,6 +487,12 @@ final class AppModel {
             }
 
             log.append("密码 SSH 身份验证成功。")
+            let machineConfiguration = try await sshService.inspectMachineWithPassword(server: server, passwordData: passwordData)
+            if machineConfiguration != nil {
+                log.append("远程机器配置已同步。")
+            } else {
+                log.append("身份验证已通过，但无法获取机器配置。")
+            }
             let check = AuthenticationCheck(
                 state: .succeeded,
                 detail: "密码 SSH 身份验证成功。",
@@ -419,10 +503,11 @@ final class AppModel {
                 check: check,
                 logLines: log,
                 observedHostKeys: [],
-                confirmedHostKeys: trustedHostKeys
+                confirmedHostKeys: trustedHostKeys,
+                machineConfiguration: machineConfiguration
             )
         } catch {
-            let message = error.localizedDescription
+            let message = UserFacingText.localizedError(error)
             log.append(message)
             return failedEditorValidation(
                 detail: message,
@@ -466,20 +551,26 @@ final class AppModel {
         let trimmedUsername = submission.draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAlias = submission.draft.alias.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedGroup = submission.draft.group.trimmingCharacters(in: .whitespacesAndNewlines)
+        let peerServerIDs = existingServerID.map(serverIDsSharingEndpoint(with:)) ?? []
+        let sharedFields = SharedServerFields(
+            name: trimmedName,
+            host: trimmedHost,
+            port: submission.draft.port,
+            group: trimmedGroup,
+            notes: submission.draft.notes,
+            confirmedHostKeys: confirmedKeys,
+            machineConfiguration: submission.machineConfiguration,
+            machineConfigurationRefreshAttemptedAt: submission.machineConfiguration?.synchronizedAt ?? now
+        )
 
         if let existingServerID,
            let index = snapshot.servers.firstIndex(where: { $0.id == existingServerID }) {
             let authenticationContextChanged = snapshot.servers[index].host != trimmedHost
                 || snapshot.servers[index].port != submission.draft.port
                 || snapshot.servers[index].username != trimmedUsername
-            snapshot.servers[index].name = trimmedName
-            snapshot.servers[index].host = trimmedHost
-            snapshot.servers[index].port = submission.draft.port
+            sharedFields.apply(to: &snapshot.servers[index])
             snapshot.servers[index].username = trimmedUsername
             snapshot.servers[index].alias = trimmedAlias
-            snapshot.servers[index].group = trimmedGroup
-            snapshot.servers[index].notes = submission.draft.notes
-            snapshot.servers[index].confirmedHostKeys = confirmedKeys
             snapshot.servers[index].passwordCheck = submission.passwordCheck
             if authenticationContextChanged {
                 snapshot.servers[index].keyCheck = nil
@@ -489,6 +580,25 @@ final class AppModel {
             snapshot.servers[index].lastCheckedAt = submission.passwordCheck.checkedAt
             snapshot.servers[index].updatedAt = now
             snapshot.servers[index].version += 1
+
+            for peerID in peerServerIDs where peerID != existingServerID {
+                guard let peerIndex = snapshot.servers.firstIndex(where: { $0.id == peerID }) else { continue }
+                let endpointChanged = snapshot.servers[peerIndex].host != trimmedHost
+                    || snapshot.servers[peerIndex].port != submission.draft.port
+                sharedFields.apply(
+                    to: &snapshot.servers[peerIndex],
+                    preservesMachineConfigurationWhenUnavailable: true
+                )
+                if endpointChanged {
+                    snapshot.servers[peerIndex].passwordCheck = nil
+                    snapshot.servers[peerIndex].keyCheck = nil
+                    snapshot.servers[peerIndex].status = key(for: snapshot.servers[peerIndex]) == nil ? .missingLocalKey : .needsAuthorization
+                    snapshot.servers[peerIndex].statusDetail = "服务器端点已变更，请重新检查此用户的 SSH 授权。"
+                    snapshot.servers[peerIndex].lastCheckedAt = nil
+                }
+                snapshot.servers[peerIndex].updatedAt = now
+                snapshot.servers[peerIndex].version += 1
+            }
             appendAudit(category: "server", action: "update", targetID: existingServerID.uuidString, result: "password-verified")
         } else {
             let server = ServerConnection(
@@ -504,7 +614,9 @@ final class AppModel {
                 status: preferredKey == nil ? .missingLocalKey : .needsAuthorization,
                 statusDetail: "密码 SSH 已验证，现在可以授权此 Mac 的密钥。",
                 lastCheckedAt: submission.passwordCheck.checkedAt,
-                passwordCheck: submission.passwordCheck
+                passwordCheck: submission.passwordCheck,
+                machineConfiguration: submission.machineConfiguration,
+                machineConfigurationRefreshAttemptedAt: submission.machineConfiguration?.synchronizedAt ?? now
             )
             snapshot.servers.append(server)
             appendAudit(category: "server", action: "create", targetID: serverID.uuidString, result: "password-verified")
@@ -598,7 +710,7 @@ final class AppModel {
         do {
             let key = try await keyService.importPrivateKey(from: url, device: device)
             if snapshot.keys.contains(where: { $0.fingerprint == key.fingerprint }) {
-                errorMessage = "That public key fingerprint is already known to KeyPort."
+                errorMessage = "KeyPort 中已存在该公钥指纹。"
                 return
             }
             snapshot.keys.append(key)
@@ -658,7 +770,7 @@ final class AppModel {
         let isRotation = !snapshot.servers[index].confirmedHostKeys.isEmpty
         snapshot.servers[index].confirmedHostKeys = confirmed
         snapshot.servers[index].status = key(for: snapshot.servers[index]) == nil ? .missingLocalKey : .needsAuthorization
-        snapshot.servers[index].statusDetail = "Host key confirmed from the current network response."
+        snapshot.servers[index].statusDetail = "已根据当前网络响应确认主机密钥。"
         snapshot.servers[index].updatedAt = now
         let checkKind = pendingHostKeyCheckKind ?? .key
         pendingHostKeys = []
@@ -713,12 +825,12 @@ final class AppModel {
                 selectedKeyItemID = "identity:\(generated.id)"
                 for index in snapshot.servers.indices where snapshot.servers[index].status == .missingLocalKey {
                     snapshot.servers[index].status = .needsAuthorization
-                    snapshot.servers[index].statusDetail = "This Mac key is ready for authorization."
+                    snapshot.servers[index].statusDetail = "此 Mac 的密钥已准备好授权。"
                 }
                 appendAudit(category: "key", action: "generate", targetID: generated.id, result: "new-device-ed25519")
                 await persist()
             }
-            try await localAuthentication.authorize(reason: "Authorize this Mac on pending KeyPort servers")
+            try await localAuthentication.authorize(reason: "在待处理的 KeyPort 服务器上授权此 Mac")
             for server in activeServers where server.status == .needsAuthorization || server.status == .syncPending {
                 guard let serverKey = key(for: server) else { continue }
                 do { try await authorize(server: server, key: serverKey) }
@@ -767,7 +879,7 @@ final class AppModel {
         isBusy = true
         defer { isBusy = false }
         do {
-            try await localAuthentication.authorize(reason: "Revoke the selected KeyPort server authorization")
+            try await localAuthentication.authorize(reason: "撤销所选 KeyPort 服务器授权")
             let observed = try await hostKeyService.scan(server: server)
             guard HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) == .confirmed else {
                 throw SSHServiceError.hostKeyChanged
@@ -775,7 +887,7 @@ final class AppModel {
             try await sshService.revokePublicKey(server: server, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
             snapshot.authorizations.removeAll { $0.id == authorizationID }
             if authorization.keyID == credentialKey.id {
-                updateServer(id: server.id, status: .needsAuthorization, detail: "This Mac authorization was revoked.")
+                updateServer(id: server.id, status: .needsAuthorization, detail: "此 Mac 的授权已撤销。")
             }
             appendAudit(category: "authorization", action: "revoke", targetID: server.id.uuidString, result: "fingerprint-verified")
             await writeConfig()
@@ -790,20 +902,36 @@ final class AppModel {
         defer { isBusy = false }
         do {
             let previousServers = snapshot.servers
+            let localMachineConfigurationRefreshAttempts = snapshot.servers.reduce(into: [UUID: Date]()) { result, server in
+                if let attemptedAt = server.machineConfigurationRefreshAttemptedAt {
+                    result[server.id] = attemptedAt
+                }
+            }
             snapshot = try await cloudSync.synchronize(snapshot)
+            for index in snapshot.servers.indices {
+                guard let localAttempt = localMachineConfigurationRefreshAttempts[snapshot.servers[index].id] else { continue }
+                let mergedAttempt = snapshot.servers[index].machineConfigurationRefreshAttemptedAt ?? .distantPast
+                if localAttempt > mergedAttempt {
+                    snapshot.servers[index].machineConfigurationRefreshAttemptedAt = localAttempt
+                }
+            }
             ensureCurrentDevice()
             if selectedDeviceItem == nil {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
             }
             normalizeStatusesAfterMetadataMerge(previousServers: previousServers)
             await refreshPasswordAvailability()
+            discoveredSSHConnections = await configService.discoverConnections()
+            reconcileImportedServerAliases()
+            await refreshMissingMachineConfigurations()
             cloudState = .available(.now)
             appendAudit(category: "cloud", action: "sync", result: "success")
             await persist()
         } catch {
-            cloudState = .unavailable(error.localizedDescription)
+            let message = UserFacingText.localizedError(error)
+            cloudState = .unavailable(message)
             appendAudit(category: "cloud", action: "sync", result: "unavailable", level: .warning)
-            errorMessage = error.localizedDescription
+            errorMessage = message
         }
     }
 
@@ -831,6 +959,12 @@ final class AppModel {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
         clipboard.copy(server.alias)
         appendAudit(category: "server", action: "copy-alias", targetID: serverID.uuidString, result: "success")
+    }
+
+    func copyHost(serverID: UUID) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        clipboard.copy(server.host)
+        appendAudit(category: "server", action: "copy-host", targetID: serverID.uuidString, result: "success")
     }
 
     func clearAuditLog() async {
@@ -906,7 +1040,7 @@ final class AppModel {
         }
 
         guard KeyPortNaming.isValidAlias(connection.alias) else {
-            errorMessage = "This SSH alias contains characters that KeyPort cannot safely manage."
+            errorMessage = "此 SSH 别名包含 KeyPort 无法安全管理的字符。"
             return
         }
 
@@ -916,7 +1050,7 @@ final class AppModel {
             port: connection.port,
             username: connection.username,
             alias: connection.alias,
-            notes: "Imported from SSH Config host \(connection.alias)."
+            notes: "从 SSH Config 主机 \(connection.alias) 导入。"
         )
         snapshot.servers.append(server)
         selectedServerID = server.id
@@ -943,7 +1077,7 @@ final class AppModel {
 
     func testPromptedPassword(_ password: String) async -> AuthenticationCheck {
         guard let server = promptedPasswordServer, !password.isEmpty else {
-            return AuthenticationCheck(state: .failed, detail: "Enter a password before testing.", checkedAt: .now)
+            return AuthenticationCheck(state: .failed, detail: "测试前请输入密码。", checkedAt: .now)
         }
 
         do {
@@ -951,11 +1085,11 @@ final class AppModel {
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) {
             case .pending:
                 let detail = server.confirmedHostKeys.isEmpty
-                    ? "Confirm this server's host key before testing password authentication."
-                    : "The endpoint presented an unconfirmed host key algorithm. Password authentication was blocked."
+                    ? "测试密码身份验证前，请先确认此服务器的主机密钥。"
+                    : "端点提供了尚未确认的主机密钥算法，密码身份验证已被阻止。"
                 return AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now)
             case .changed(let algorithms):
-                let detail = "Host key changed for \(algorithms.joined(separator: ", ")). Password authentication was blocked."
+                let detail = "以下算法的主机密钥已变更：\(algorithms.joined(separator: "、"))。密码身份验证已被阻止。"
                 return AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now)
             case .confirmed:
                 var passwordData = Data(password.utf8)
@@ -964,13 +1098,13 @@ final class AppModel {
                 return AuthenticationCheck(
                     state: authenticated ? .succeeded : .failed,
                     detail: authenticated
-                        ? "Password-only SSH authentication succeeded. Public keys and SSH Agent were disabled."
-                        : "The server rejected this password using password-only SSH authentication.",
+                        ? "仅使用密码的 SSH 身份验证成功，公钥和 SSH Agent 已禁用。"
+                        : "服务器在仅使用密码的 SSH 身份验证中拒绝了该密码。",
                     checkedAt: .now
                 )
             }
         } catch {
-            return AuthenticationCheck(state: .failed, detail: error.localizedDescription, checkedAt: .now)
+            return AuthenticationCheck(state: .failed, detail: UserFacingText.localizedError(error), checkedAt: .now)
         }
     }
 
@@ -982,7 +1116,7 @@ final class AppModel {
     ) async {
         guard let server = promptedPasswordServer, !password.isEmpty, !isSavingPassword else { return }
         guard validatedCheck.state == .succeeded, validatedCheck.checkedAt != nil else {
-            passwordSaveError = "Test the current password with Password SSH before saving."
+            passwordSaveError = "保存前，请使用密码 SSH 测试当前密码。"
             return
         }
         isSavingPassword = true
@@ -1002,7 +1136,7 @@ final class AppModel {
                 await authorizeSelected()
             }
         } catch {
-            passwordSaveError = error.localizedDescription
+            passwordSaveError = UserFacingText.localizedError(error)
         }
     }
 
@@ -1071,6 +1205,15 @@ final class AppModel {
         URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL.path
     }
 
+    private func isImportedSSHConfigNote(_ note: String, alias: String? = nil) -> Bool {
+        if let alias {
+            return note.hasPrefix("Imported from SSH Config host \(alias).")
+                || note.hasPrefix("从 SSH Config 主机 \(alias) 导入。")
+        }
+        return note.hasPrefix("Imported from SSH Config host ")
+            || note.hasPrefix("从 SSH Config 主机 ")
+    }
+
     private func reconcileImportedServerAliases() {
         for index in snapshot.servers.indices where !snapshot.servers[index].isDeleted {
             guard let connection = discoveredSSHConnections.first(where: {
@@ -1078,7 +1221,7 @@ final class AppModel {
                 $0.host == snapshot.servers[index].host &&
                 $0.port == snapshot.servers[index].port &&
                 $0.username == snapshot.servers[index].username
-            }), snapshot.servers[index].notes.hasPrefix("Imported from SSH Config host \(connection.alias)."),
+            }), isImportedSSHConfigNote(snapshot.servers[index].notes, alias: connection.alias),
             snapshot.servers[index].alias != connection.alias,
             !snapshot.servers.contains(where: { $0.id != snapshot.servers[index].id && !$0.isDeleted && $0.alias == connection.alias }) else {
                 continue
@@ -1092,11 +1235,11 @@ final class AppModel {
     private func migrateImportedConnectionKeyStatusIfNeeded() {
         guard snapshot.schemaVersion < 2 else { return }
         for index in snapshot.servers.indices where !snapshot.servers[index].isDeleted {
-            guard snapshot.servers[index].notes.hasPrefix("Imported from SSH Config host "),
+            guard isImportedSSHConfigNote(snapshot.servers[index].notes),
                   connection(for: snapshot.servers[index]) != nil,
                   snapshot.servers[index].status == .needsAuthorization else { continue }
             snapshot.servers[index].status = .syncPending
-            snapshot.servers[index].statusDetail = "The configured SSH identity changed. Check this connection before authorizing it."
+            snapshot.servers[index].statusDetail = "已配置的 SSH 身份密钥发生变化，请在授权前检查此连接。"
             snapshot.servers[index].lastCheckedAt = nil
         }
         snapshot.schemaVersion = 2
@@ -1110,19 +1253,19 @@ final class AppModel {
             case .authorized:
                 snapshot.servers[index].keyCheck = AuthenticationCheck(
                     state: .succeeded,
-                    detail: snapshot.servers[index].statusDetail ?? "Passwordless SSH authentication succeeded.",
+                    detail: snapshot.servers[index].statusDetail ?? "免密 SSH 身份验证成功。",
                     checkedAt: checkedAt
                 )
             case .needsAuthorization, .keyAuthenticationFailed:
                 snapshot.servers[index].keyCheck = AuthenticationCheck(
                     state: .failed,
-                    detail: snapshot.servers[index].statusDetail ?? "The current Mac key is not authorized.",
+                    detail: snapshot.servers[index].statusDetail ?? "当前 Mac 的密钥尚未授权。",
                     checkedAt: checkedAt
                 )
             case .hostKeyPending, .hostKeyMismatch:
                 snapshot.servers[index].keyCheck = AuthenticationCheck(
                     state: .blocked,
-                    detail: snapshot.servers[index].statusDetail ?? "Host key confirmation is required.",
+                    detail: snapshot.servers[index].statusDetail ?? "需要确认主机密钥。",
                     checkedAt: checkedAt
                 )
             default:
@@ -1135,26 +1278,34 @@ final class AppModel {
     private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
         guard let initial = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
         if ownsBusyState { isBusy = true }
+        retainedSSHCheckLog = SSHCheckLog(
+            serverID: serverID,
+            title: kind == .password ? "密码 SSH 检查" : "密钥 SSH 检查",
+            lines: ["正在连接 \(initial.username)@\(initial.endpoint)...", "正在扫描服务器主机密钥..."]
+        )
         updateAuthenticationCheck(id: serverID, kind: kind, state: .checking, detail: kind.checkingDetail, checkedAt: nil)
         if kind == .key {
-            updateServer(id: serverID, status: .checking, detail: "Fetching host keys before the key login check.")
+            updateServer(id: serverID, status: .checking, detail: "密钥登录检查前正在获取主机密钥。")
         }
         defer { if ownsBusyState { isBusy = false } }
         do {
             let observed = try await hostKeyService.scan(server: initial)
+            appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: initial.confirmedHostKeys) {
             case .pending:
-                let detail = "Review the host key fingerprints before authentication."
+                let detail = "身份验证前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+                appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = kind
                 appendAudit(category: "host-key", action: kind.auditAction, targetID: serverID.uuidString, result: "pending-confirmation", level: .warning)
             case .changed(let algorithms):
-                let detail = "Changed algorithms: \(algorithms.joined(separator: ", ")). Authentication was blocked."
+                let detail = "发生变更的算法：\(algorithms.joined(separator: "、"))。身份验证已被阻止。"
                 updateServer(id: serverID, status: .hostKeyMismatch, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+                appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = kind
@@ -1168,18 +1319,28 @@ final class AppModel {
                 }
             }
         } catch {
-            updateAuthenticationCheck(id: serverID, kind: kind, state: .failed, detail: error.localizedDescription)
+            let message = UserFacingText.localizedError(error)
+            updateAuthenticationCheck(id: serverID, kind: kind, state: .failed, detail: message)
+            appendSSHCheckLog(message, serverID: serverID)
             if kind == .key {
-                updateServer(id: serverID, status: .unreachable, detail: error.localizedDescription)
+                updateServer(id: serverID, status: .unreachable, detail: message)
             }
             appendAudit(category: "ssh-auth", action: kind.auditAction, targetID: serverID.uuidString, result: "failed", level: .warning)
         }
         await persist()
+        let finalCheck = snapshot.servers.first(where: { $0.id == serverID }).flatMap {
+            kind == .password ? $0.passwordCheck : $0.keyCheck
+        }
+        if finalCheck?.state == .succeeded {
+            retainedSSHCheckLog = nil
+        } else if let detail = finalCheck?.detail {
+            appendSSHCheckLog(detail, serverID: serverID)
+        }
     }
 
     private func checkPasswordAuthentication(server: ServerConnection) async throws {
         guard await keychain.hasServerPassword(serverID: server.id) else {
-            let detail = "Enter and test a server password before checking Password SSH."
+            let detail = "检查密码 SSH 前，请输入并测试服务器密码。"
             updateAuthenticationCheck(id: server.id, kind: .password, state: .blocked, detail: detail)
             passwordSaveError = nil
             passwordPromptServerID = server.id
@@ -1189,8 +1350,16 @@ final class AppModel {
         var passwordData = try await keychain.serverPasswordData(serverID: server.id)
         defer { passwordData.resetBytes(in: passwordData.indices) }
         let authenticated = try await sshService.testPassword(server: server, passwordData: passwordData)
-        let detail = authenticated ? "Server password authentication succeeded." : "The stored server password was rejected."
+        let detail = authenticated ? "服务器密码身份验证成功。" : "服务器拒绝了已存储的密码。"
         updateAuthenticationCheck(id: server.id, kind: .password, state: authenticated ? .succeeded : .failed, detail: detail)
+        appendSSHCheckLog(detail, serverID: server.id)
+        if authenticated {
+            markMachineConfigurationRefreshAttempt(serverID: server.id)
+            if let configuration = try? await sshService.inspectMachineWithPassword(server: server, passwordData: passwordData) {
+                updateMachineConfiguration(configuration, serverID: server.id)
+                appendSSHCheckLog("远程机器配置已同步。", serverID: server.id)
+            }
+        }
         appendAudit(
             category: "ssh-auth",
             action: ServerCheckKind.password.auditAction,
@@ -1202,15 +1371,23 @@ final class AppModel {
 
     private func checkKeyAuthentication(server: ServerConnection) async throws {
         guard let key = key(for: server) else {
-            let detail = "No local private key is available for this Mac."
+            let detail = "此 Mac 没有可用的本地私钥。"
             updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: detail)
             updateServer(id: server.id, status: .missingLocalKey, detail: detail)
             appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "missing-key", level: .warning)
             return
         }
         let authenticated = try await sshService.testPublicKey(server: server, key: key)
-        let detail = authenticated ? "Passwordless SSH authentication succeeded." : "The current Mac key is not authorized."
+        let detail = authenticated ? "免密 SSH 身份验证成功。" : "当前 Mac 的密钥尚未授权。"
         updateAuthenticationCheck(id: server.id, kind: .key, state: authenticated ? .succeeded : .failed, detail: detail)
+        appendSSHCheckLog(detail, serverID: server.id)
+        if authenticated {
+            markMachineConfigurationRefreshAttempt(serverID: server.id)
+            if let configuration = try? await sshService.inspectMachineWithPublicKey(server: server, key: key) {
+                updateMachineConfiguration(configuration, serverID: server.id)
+                appendSSHCheckLog("远程机器配置已同步。", serverID: server.id)
+            }
+        }
         updateServer(id: server.id, status: authenticated ? .authorized : .needsAuthorization, detail: detail)
         appendAudit(
             category: "ssh-auth",
@@ -1233,23 +1410,23 @@ final class AppModel {
         }
         do {
             try await sshService.installPublicKey(server: server, key: key, passwordData: passwordData)
-            updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "Server password authentication succeeded during authorization.")
+            updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "授权期间服务器密码身份验证成功。")
             appendAudit(category: "ssh-auth", action: ServerCheckKind.password.auditAction, targetID: server.id.uuidString, result: "succeeded-during-authorization")
         } catch SSHServiceError.passwordAuthenticationRejected {
-            updateAuthenticationCheck(id: server.id, kind: .password, state: .failed, detail: "The stored server password was rejected.")
+            updateAuthenticationCheck(id: server.id, kind: .password, state: .failed, detail: "服务器拒绝了已存储的密码。")
             appendAudit(category: "ssh-auth", action: ServerCheckKind.password.auditAction, targetID: server.id.uuidString, result: "rejected-during-authorization", level: .warning)
             await persist()
             throw SSHServiceError.passwordAuthenticationRejected
         }
         guard try await sshService.testPublicKey(server: server, key: key) else {
-            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "The key was installed, but passwordless SSH verification failed.")
-            throw SSHServiceError.operationFailed("The key was installed but verification failed.")
+            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "密钥已安装，但免密 SSH 验证失败。")
+            throw SSHServiceError.operationFailed("密钥已安装，但验证失败。")
         }
-        updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "Passwordless SSH authentication succeeded after authorization.")
+        updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "授权后免密 SSH 身份验证成功。")
         let authorization = Authorization(serverID: server.id, keyID: key.id, fingerprint: key.fingerprint, remoteComment: key.publicKeyComment ?? "", status: .authorized, authorizedAt: .now, lastVerifiedAt: .now)
         snapshot.authorizations.removeAll { $0.serverID == server.id && $0.keyID == key.id }
         snapshot.authorizations.append(authorization)
-        updateServer(id: server.id, status: .authorized, detail: "Public key installed and verified.")
+        updateServer(id: server.id, status: .authorized, detail: "公钥已安装并通过验证。")
         try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
         appendAudit(category: "authorization", action: "install", targetID: server.id.uuidString, result: "verified")
         appendAudit(category: "ssh-config", action: "write", targetID: server.id.uuidString, result: "success")
@@ -1274,7 +1451,7 @@ final class AppModel {
             return value
         }
         if !snapshot.devices.contains(where: { $0.id == deviceID }) {
-            let name = Host.current().localizedName ?? "This Mac"
+            let name = Host.current().localizedName ?? "此 Mac"
             snapshot.devices.append(Device(id: deviceID, name: name, isCurrent: true))
         }
     }
@@ -1294,13 +1471,13 @@ final class AppModel {
             }
             if snapshot.servers[index].confirmedHostKeys.isEmpty {
                 snapshot.servers[index].status = .hostKeyPending
-                snapshot.servers[index].statusDetail = "Confirm this endpoint on the current network before authentication."
+                snapshot.servers[index].statusDetail = "身份验证前，请在当前网络上确认此端点。"
             } else if !hasLocalKey {
                 snapshot.servers[index].status = .missingLocalKey
-                snapshot.servers[index].statusDetail = "Synced metadata has no private key for this Mac."
+                snapshot.servers[index].statusDetail = "同步的元数据中没有此 Mac 的私钥。"
             } else {
                 snapshot.servers[index].status = .syncPending
-                snapshot.servers[index].statusDetail = "Run a local check before relying on this authorization."
+                snapshot.servers[index].statusDetail = "依赖此授权前，请先运行本地检查。"
             }
             snapshot.servers[index].lastCheckedAt = nil
             snapshot.servers[index].passwordCheck = nil
@@ -1327,6 +1504,49 @@ final class AppModel {
         serverIDsWithStoredPassword = available
     }
 
+    private func refreshMissingMachineConfigurations() async {
+        let refreshDate = Date()
+        let servers = activeServers.filter {
+            $0.status == .authorized && $0.shouldRefreshMachineConfiguration(at: refreshDate)
+        }
+
+        for server in servers {
+            guard let key = key(for: server),
+                  key.isLocallyAvailable,
+                  key.privateKeyPath != nil else { continue }
+
+            markMachineConfigurationRefreshAttempt(serverID: server.id, at: refreshDate)
+            await persist()
+            do {
+                guard let configuration = try await sshService.inspectMachineWithPublicKey(server: server, key: key) else {
+                    appendAudit(
+                        category: "machine-config",
+                        action: "refresh",
+                        targetID: server.id.uuidString,
+                        result: "unavailable",
+                        level: .warning
+                    )
+                    continue
+                }
+                updateMachineConfiguration(configuration, serverID: server.id)
+                appendAudit(
+                    category: "machine-config",
+                    action: "refresh",
+                    targetID: server.id.uuidString,
+                    result: "success"
+                )
+            } catch {
+                appendAudit(
+                    category: "machine-config",
+                    action: "refresh",
+                    targetID: server.id.uuidString,
+                    result: "failed",
+                    level: .warning
+                )
+            }
+        }
+    }
+
     private func mergeImported(_ imported: AppSnapshot) {
         for server in imported.servers {
             if let index = snapshot.servers.firstIndex(where: { $0.id == server.id }) {
@@ -1351,6 +1571,13 @@ final class AppModel {
         }
     }
 
+    private func serverIDsSharingEndpoint(with serverID: UUID) -> [UUID] {
+        ServerConnectionGrouping.groups(activeServers)
+            .first { group in group.accounts.contains { $0.id == serverID } }?
+            .accounts
+            .map(\.id) ?? []
+    }
+
     private func validateEditorDraft(_ draft: ServerDraft, existingServerID: UUID?) async throws {
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let host = draft.host.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1372,17 +1599,21 @@ final class AppModel {
             throw SSHServiceError.operationFailed("Tailscale SSH 账户的主机必须属于当前设备。")
         }
         let normalizedHost = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let peerServerIDs = Set(existingServerID.map(serverIDsSharingEndpoint(with:)) ?? [])
+        var movedUsernames = [username]
+        movedUsernames.append(contentsOf: activeServers.lazy
+            .filter { peerServerIDs.contains($0.id) && $0.id != existingServerID }
+            .map(\.username))
+        guard Set(movedUsernames).count == movedUsernames.count else {
+            throw SSHServiceError.operationFailed("该服务器上的 SSH 用户已由 KeyPort 管理。")
+        }
         let hasDuplicateAccount = activeServers.contains { server in
             guard server.id != existingServerID,
+                  !peerServerIDs.contains(server.id),
                   server.port == draft.port,
-                  server.username == username else { return false }
+                  movedUsernames.contains(server.username) else { return false }
             if let suggestion = draft.tailscaleSuggestion {
-                return suggestion.matchesAccount(
-                    host: host,
-                    port: draft.port,
-                    username: username,
-                    server: server
-                )
+                return suggestion.matches(host: server.host)
             }
             let existingHost = server.host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
             return existingHost == normalizedHost
@@ -1417,6 +1648,7 @@ final class AppModel {
             lastCheckedAt: existing?.lastCheckedAt,
             passwordCheck: existing?.passwordCheck,
             keyCheck: existing?.keyCheck,
+            machineConfiguration: existing?.machineConfiguration,
             createdAt: existing?.createdAt ?? .now,
             updatedAt: existing?.updatedAt ?? .now,
             version: existing?.version ?? 1
@@ -1433,8 +1665,27 @@ final class AppModel {
             check: AuthenticationCheck(state: .failed, detail: detail, checkedAt: .now),
             logLines: log,
             observedHostKeys: [],
-            confirmedHostKeys: confirmedHostKeys
+            confirmedHostKeys: confirmedHostKeys,
+            machineConfiguration: nil
         )
+    }
+
+    private func appendSSHCheckLog(_ line: String, serverID: UUID) {
+        guard retainedSSHCheckLog?.serverID == serverID,
+              retainedSSHCheckLog?.lines.last != line else { return }
+        retainedSSHCheckLog?.lines.append(line)
+    }
+
+    private func updateMachineConfiguration(_ configuration: RemoteMachineConfiguration, serverID: UUID) {
+        guard let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) else { return }
+        snapshot.servers[index].machineConfiguration = configuration
+        snapshot.servers[index].machineConfigurationRefreshAttemptedAt = configuration.synchronizedAt
+        snapshot.servers[index].updatedAt = .now
+    }
+
+    private func markMachineConfigurationRefreshAttempt(serverID: UUID, at date: Date = .now) {
+        guard let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) else { return }
+        snapshot.servers[index].machineConfigurationRefreshAttemptedAt = date
     }
 
     private func updateServer(id: UUID, status: AuthorizationStatus, detail: String) {
@@ -1473,6 +1724,6 @@ final class AppModel {
     }
 
     private func present(_ error: Error) {
-        errorMessage = error.localizedDescription
+        errorMessage = UserFacingText.localizedError(error)
     }
 }

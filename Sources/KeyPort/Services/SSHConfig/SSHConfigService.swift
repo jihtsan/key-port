@@ -5,7 +5,7 @@ enum SSHConfigError: LocalizedError {
     case aliasConflict(String)
 
     var errorDescription: String? {
-        switch self { case .aliasConflict(let alias): "The SSH alias '\(alias)' already exists in ~/.ssh/config." }
+        switch self { case .aliasConflict(let alias): "SSH 别名“\(alias)”已存在于 ~/.ssh/config 中。" }
     }
 }
 
