@@ -74,6 +74,169 @@ do {
     try expect(discovered.identityFiles == ["~/.ssh/id_ed25519", "/Users/example/Keys/production key"], "effective identities parse")
     try expect(SSHConfigDiscoveryParser.parse(alias: "broken", output: "hostname example.com\nport invalid\nuser root\n") == nil, "invalid effective port accepted")
 
+    let tailscaleStatusJSON = """
+    {
+      "BackendState": "Running",
+      "MagicDNSSuffix": "example.ts.net",
+      "CurrentTailnet": {
+        "Name": "example@example.com",
+        "MagicDNSSuffix": "example.ts.net",
+        "MagicDNSEnabled": true
+      },
+      "Self": {
+        "ID": "node-local",
+        "HostName": "local-mac",
+        "DNSName": "local-mac.example.ts.net.",
+        "OS": "macOS",
+        "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"],
+        "Online": true,
+        "Relay": "sfo"
+      },
+      "Peer": {
+        "nodekey:peer": {
+          "ID": "node-peer",
+          "HostName": "build-server",
+          "DNSName": "build-server.example.ts.net.",
+          "OS": "linux",
+          "TailscaleIPs": ["100.64.0.2"],
+          "Online": false,
+          "LastSeen": "2026-08-01T00:24:58.1Z",
+          "Relay": "fra",
+          "ExitNodeOption": true
+        }
+      }
+    }
+    """
+    let tailscaleStatus = try TailscaleStatusParser.parse(tailscaleStatusJSON)
+    try expect(tailscaleStatus.backendState == "Running", "tailscale backend state")
+    try expect(tailscaleStatus.tailnetName == "example@example.com", "tailscale tailnet name")
+    try expect(tailscaleStatus.nodes.count == 2, "tailscale node count")
+    var nonJSONTailscaleError: Error?
+    do {
+        _ = try TailscaleStatusParser.parse("Tailscale is not ready")
+    } catch {
+        nonJSONTailscaleError = error
+    }
+    guard let nonJSONTailscaleError else {
+        throw CheckFailure.failed("tailscale non-JSON command output was accepted")
+    }
+    try expect(!String(describing: nonJSONTailscaleError).contains("DecodingError"), "tailscale parser exposed decoder internals")
+    guard let localNode = tailscaleStatus.nodes.first(where: \.isCurrent) else {
+        throw CheckFailure.failed("tailscale current node missing")
+    }
+    try expect(localNode.id == "node-local", "tailscale current node identity")
+    try expect(localNode.dnsName == "local-mac.example.ts.net", "tailscale DNS name normalization")
+    try expect(localNode.addresses == ["100.64.0.1", "fd7a:115c:a1e0::1"], "tailscale addresses")
+    guard let peerNode = tailscaleStatus.nodes.first(where: { !$0.isCurrent }) else {
+        throw CheckFailure.failed("tailscale peer node missing")
+    }
+    try expect(peerNode.name == "build-server" && !peerNode.isOnline, "tailscale peer summary")
+    try expect(peerNode.lastSeen != nil && peerNode.isExitNodeOption, "tailscale peer metadata")
+    guard let serverSuggestion = TailscaleSSHServerSuggestion(node: peerNode) else {
+        throw CheckFailure.failed("tailscale peer did not produce an SSH server suggestion")
+    }
+    try expect(
+        serverSuggestion.name == "build-server"
+            && serverSuggestion.host == "build-server.example.ts.net"
+            && serverSuggestion.port == 22
+            && serverSuggestion.group == "Tailscale"
+            && serverSuggestion.alias == "tailscale-build-server",
+        "tailscale SSH server suggestion"
+    )
+    try expect(serverSuggestion.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale MagicDNS host match")
+    try expect(serverSuggestion.matches(host: "100.64.0.2"), "tailscale IP host match")
+    try expect(!serverSuggestion.matches(host: "other.example.ts.net"), "unrelated SSH host matched tailscale node")
+    try expect(serverSuggestion.availableAlias(avoiding: []) == "tailscale-build-server", "unused tailscale alias changed")
+    try expect(
+        serverSuggestion.availableAlias(avoiding: ["tailscale-build-server", "tailscale-build-server-2"]) == "tailscale-build-server-3",
+        "tailscale alias collision was not resolved"
+    )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "root", avoiding: []) == "tailscale-build-server-root",
+        "tailscale account alias omitted username"
+    )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "Deploy User", avoiding: []) == "tailscale-build-server-deploy-user",
+        "tailscale account alias did not normalize username"
+    )
+    try expect(
+        serverSuggestion.suggestedAlias(username: "root", avoiding: ["tailscale-build-server-root"]) == "tailscale-build-server-root-2",
+        "tailscale account alias collision was not resolved"
+    )
+    let matchingTailscaleAccount = ServerConnection(
+        name: "Build Server Root",
+        host: "100.64.0.2",
+        username: "root",
+        alias: "tailscale-build-server-root"
+    )
+    try expect(
+        serverSuggestion.matchesAccount(
+            host: "build-server.example.ts.net",
+            port: 22,
+            username: "root",
+            server: matchingTailscaleAccount
+        ),
+        "tailscale account identity did not match the same node"
+    )
+    try expect(
+        !serverSuggestion.matchesAccount(
+            host: "other.example.ts.net",
+            port: 22,
+            username: "root",
+            server: matchingTailscaleAccount
+        ),
+        "tailscale account identity ignored a moved draft host"
+    )
+    try expect(TailscaleSSHServerSuggestion(node: localNode) == nil, "tailscale self was offered as a server")
+    let unroutableNode = TailscaleNode(
+        id: "node-unroutable",
+        name: "unroutable",
+        dnsName: nil,
+        operatingSystem: "linux",
+        addresses: [],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(TailscaleSSHServerSuggestion(node: unroutableNode) == nil, "unroutable tailscale node was offered as a server")
+    let addressOnlyNode = TailscaleNode(
+        id: "node-address-only",
+        name: "address-only",
+        dnsName: nil,
+        operatingSystem: "linux",
+        addresses: ["fd7a:115c:a1e0::3", "100.64.0.3"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(TailscaleSSHServerSuggestion(node: addressOnlyNode)?.host == "100.64.0.3", "tailscale IPv4 fallback host")
+
+    let registeredLocal = Device(id: "dev-local", name: "local-mac", isCurrent: true)
+    let registeredSameNamePeer = Device(id: "dev-peer", name: "build-server", isCurrent: false)
+    let devicePresences = DevicePresenceMerger.merge(
+        devices: [registeredSameNamePeer, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(devicePresences.count == 3, "tailscale peer was incorrectly merged by display name")
+    try expect(devicePresences.first?.id == .keyPort("dev-local"), "current KeyPort device was not first")
+    try expect(devicePresences.first?.tailscaleNode?.id == "node-local", "tailscale self was not merged into current device")
+    try expect(devicePresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode == nil, "remote KeyPort device inherited a Tailscale peer")
+    try expect(devicePresences.first(where: { $0.id == .tailscale("node-peer") })?.registeredDevice == nil, "tailscale peer inherited a KeyPort identity")
+
+    let staleLocalRegistration = Device(id: "dev-old-local", name: "LOCAL-MAC", isCurrent: false)
+    let deduplicatedDevicePresences = DevicePresenceMerger.merge(
+        devices: [registeredSameNamePeer, staleLocalRegistration, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(deduplicatedDevicePresences.count == 3, "stale local device registration was displayed separately")
+    try expect(deduplicatedDevicePresences.first(where: { $0.id == .keyPort("dev-old-local") }) == nil, "stale local device registration was not suppressed")
+
     let old = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:old", knownHostsLine: "host ssh-ed25519 old")
     let new = HostKeyRecord(algorithm: "ssh-ed25519", fingerprint: "SHA256:new", knownHostsLine: "host ssh-ed25519 new")
     let unconfirmedRSA = HostKeyRecord(algorithm: "ssh-rsa", fingerprint: "SHA256:rsa", knownHostsLine: "host ssh-rsa rsa")
@@ -141,7 +304,7 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    print("KeyPortCoreChecks: 54 assertions passed")
+    print("KeyPortCoreChecks: 85 assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
     exit(1)
