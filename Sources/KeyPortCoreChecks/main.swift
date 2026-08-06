@@ -105,6 +105,54 @@ do {
     try expect(discovered.identityFiles == ["~/.ssh/id_ed25519", "/Users/example/Keys/production key"], "effective identities parse")
     try expect(SSHConfigDiscoveryParser.parse(alias: "broken", output: "hostname example.com\nport invalid\nuser root\n") == nil, "invalid effective port accepted")
 
+    let machineOutput = """
+    hostname\tdb-01
+    operating_system\tUbuntu 24.04.1 LTS
+    kernel\tLinux 6.8.0
+    architecture\tx86_64
+    processor_count\t8
+    memory_bytes\t17179869184
+    """
+    guard let machine = RemoteMachineConfigurationParser.parse(machineOutput, synchronizedAt: Date(timeIntervalSince1970: 1_700_000_000)) else {
+        throw CheckFailure.failed("remote machine configuration parse")
+    }
+    try expect(machine.hostname == "db-01" && machine.operatingSystem == "Ubuntu 24.04.1 LTS", "remote machine identity parse")
+    try expect(machine.processorCount == 8 && machine.memoryBytes == 17_179_869_184, "remote machine capacity parse")
+    try expect(machine.capacitySummary == "8C16G", "remote machine capacity summary")
+    let compactMachine = RemoteMachineConfiguration(
+        hostname: "app-01",
+        operatingSystem: "Linux",
+        kernel: "Linux 6.8",
+        architecture: "arm64",
+        processorCount: 2,
+        memoryBytes: 4_294_967_296,
+        synchronizedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    try expect(compactMachine.capacitySummary == "2C4G", "two-core four-gibibyte summary")
+    try expect(RemoteMachineConfigurationParser.parse("hostname\tonly\n") == nil, "incomplete remote machine configuration accepted")
+
+    let refreshDate = Date(timeIntervalSince1970: 1_700_000_000)
+    let configuredServer = ServerConnection(
+        name: "Configured",
+        host: "configured.example",
+        username: "root",
+        alias: "configured",
+        machineConfiguration: compactMachine
+    )
+    try expect(!configuredServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval - 1)), "machine configuration refreshed too early")
+    try expect(configuredServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval)), "stale machine configuration was not refreshed")
+    var attemptedServer = ServerConnection(
+        name: "Attempted",
+        host: "attempted.example",
+        username: "root",
+        alias: "attempted",
+        machineConfigurationRefreshAttemptedAt: refreshDate
+    )
+    try expect(!attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval - 1)), "failed daily refresh was retried too early")
+    try expect(attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate.addingTimeInterval(RemoteMachineConfiguration.refreshInterval)), "failed daily refresh did not retry on the next day")
+    attemptedServer.machineConfigurationRefreshAttemptedAt = nil
+    try expect(attemptedServer.shouldRefreshMachineConfiguration(at: refreshDate), "server without refresh history was skipped")
+
     let tailscaleStatusJSON = """
     {
       "BackendState": "Running",

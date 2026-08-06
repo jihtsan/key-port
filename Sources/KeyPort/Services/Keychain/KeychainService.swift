@@ -9,10 +9,10 @@ enum KeychainError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .status(let status):
-            return SecCopyErrorMessageString(status, nil) as String? ?? "Keychain error \(status)"
-        case .invalidData: return "Keychain returned invalid password data."
+            return SecCopyErrorMessageString(status, nil) as String? ?? "Keychain 错误 \(status)"
+        case .invalidData: return "Keychain 返回了无效的密码数据。"
         case .synchronizableUnavailable:
-            return "iCloud Keychain sync is unavailable in this build. Turn off sync to save the password in this Mac's Keychain."
+            return "此版本无法使用 iCloud Keychain 同步。请关闭同步，将密码保存到此 Mac 的 Keychain。"
         }
     }
 }

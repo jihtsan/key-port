@@ -10,6 +10,7 @@ struct ServerEditorView: View {
     let canSynchronize: Bool
     let primaryActionTitle: String
     let showsNotes: Bool
+    let locksServerFields: Bool
     let onCheck: (ServerDraft, String, [HostKeyRecord]) async -> ServerEditorValidationResult
     let onSave: (ServerEditorSubmission) async throws -> Void
 
@@ -33,6 +34,7 @@ struct ServerEditorView: View {
         canSynchronize: Bool,
         primaryActionTitle: String = "保存",
         showsNotes: Bool = true,
+        locksServerFields: Bool = false,
         onCheck: @escaping (ServerDraft, String, [HostKeyRecord]) async -> ServerEditorValidationResult,
         onSave: @escaping (ServerEditorSubmission) async throws -> Void
     ) {
@@ -42,6 +44,7 @@ struct ServerEditorView: View {
         self.canSynchronize = canSynchronize
         self.primaryActionTitle = primaryActionTitle
         self.showsNotes = showsNotes
+        self.locksServerFields = locksServerFields
         self.onCheck = onCheck
         self.onSave = onSave
         _draft = State(initialValue: initialDraft)
@@ -57,7 +60,7 @@ struct ServerEditorView: View {
                 .padding([.top, .horizontal])
 
             Form {
-                Section("连接") {
+                Section("服务器") {
                     TextField("名称", text: $draft.name)
                         .onChange(of: draft.name) { _, _ in
                             draft.updateSuggestedAlias()
@@ -65,13 +68,19 @@ struct ServerEditorView: View {
                         }
                     TextField("主机或 IP", text: $draft.host)
                         .onChange(of: draft.host) { _, _ in invalidateValidation(resetHostKeys: true) }
-                    TextField("用户", text: $draft.username)
-                        .onChange(of: draft.username) { _, _ in
+                    TextField("分组", text: $draft.group)
+                        .onChange(of: draft.group) { _, _ in
                             draft.updateSuggestedAlias()
                             invalidateValidation()
                         }
-                    TextField("分组", text: $draft.group)
-                        .onChange(of: draft.group) { _, _ in
+                    Stepper("端口：\(draft.port)", value: $draft.port, in: 1...65_535)
+                        .onChange(of: draft.port) { _, _ in invalidateValidation(resetHostKeys: true) }
+                }
+                .disabled(locksServerFields)
+
+                Section("SSH 用户") {
+                    TextField("用户名", text: $draft.username)
+                        .onChange(of: draft.username) { _, _ in
                             draft.updateSuggestedAlias()
                             invalidateValidation()
                         }
@@ -81,8 +90,6 @@ struct ServerEditorView: View {
                             draft.noteAliasEdit()
                             invalidateValidation()
                         }
-                    Stepper("端口：\(draft.port)", value: $draft.port, in: 1...65_535)
-                        .onChange(of: draft.port) { _, _ in invalidateValidation(resetHostKeys: true) }
                 }
 
                 Section("凭据") {
@@ -292,7 +299,8 @@ struct ServerEditorView: View {
             password: password,
             synchronizable: synchronizable,
             confirmedHostKeys: trustedHostKeys,
-            passwordCheck: validation.check
+            passwordCheck: validation.check,
+            machineConfiguration: validation.machineConfiguration
         )
         Task { @MainActor in
             do {
@@ -300,7 +308,7 @@ struct ServerEditorView: View {
                 dismiss()
             } catch {
                 isSaving = false
-                let message = error.localizedDescription
+                let message = UserFacingText.localizedError(error)
                 saveError = message
                 logLines.append("保存失败：\(message)")
             }

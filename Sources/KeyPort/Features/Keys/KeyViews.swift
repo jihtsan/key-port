@@ -8,7 +8,7 @@ struct KeyListView: View {
         @Bindable var model = model
         List(selection: $model.selectedKeyItemID) {
             if !model.keyConnectionRows.isEmpty {
-                Section("SSH Connections") {
+                Section("SSH 连接") {
                     ForEach(model.keyConnectionRows) { row in
                         KeyConnectionListRow(
                             row: row,
@@ -25,7 +25,7 @@ struct KeyListView: View {
             }
 
             if !model.snapshot.keys.isEmpty {
-                Section("Local Identities") {
+                Section("本地身份密钥") {
                     ForEach(model.snapshot.keys) { key in
                         let itemID = "identity:\(key.id)"
                         LocalIdentityListRow(
@@ -39,16 +39,16 @@ struct KeyListView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("Keys")
+        .navigationTitle("密钥")
         .onChange(of: model.selectedKeyItemID) { _, _ in model.synchronizeKeySelection() }
         .toolbar {
-            Button { Task { await model.generateKey() } } label: { Label("Generate Key", systemImage: "plus") }
-            Button { Task { await model.importKey() } } label: { Label("Import Key", systemImage: "square.and.arrow.down") }
-            Button { Task { try? await model.refreshKeys() } } label: { Label("Scan Keys", systemImage: "arrow.clockwise") }
+            Button { Task { await model.generateKey() } } label: { Label("生成密钥", systemImage: "plus") }
+            Button { Task { await model.importKey() } } label: { Label("导入密钥", systemImage: "square.and.arrow.down") }
+            Button { Task { try? await model.refreshKeys() } } label: { Label("扫描密钥", systemImage: "arrow.clockwise") }
         }
         .overlay {
             if model.keyConnectionRows.isEmpty && model.snapshot.keys.isEmpty {
-                ContentUnavailableView("No SSH Keys", systemImage: "key", description: Text("Add a server or generate an identity for this Mac."))
+                ContentUnavailableView("暂无 SSH 密钥", systemImage: "key", description: Text("请添加服务器，或为此 Mac 生成身份密钥。"))
             }
         }
     }
@@ -77,11 +77,13 @@ private struct KeyConnectionListRow: View {
                 if !hasPassword && server.status != .authorized {
                     Image(systemName: "lock.trianglebadge.exclamationmark")
                         .foregroundStyle(.orange)
-                        .help("Server password is missing from Keychain")
+                        .frame(width: 22, height: 22)
+                        .help("Keychain 中缺少服务器密码")
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                        .help("Available in Servers")
+                        .frame(width: 22, height: 22)
+                        .help("已添加到服务器")
                 }
             } else {
                 Button(action: onAddToServers) {
@@ -91,8 +93,8 @@ private struct KeyConnectionListRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 22, height: 22)
                 .contentShape(Rectangle())
-                .accessibilityLabel("Add \(row.alias) to Servers")
-                .help("Add \(row.alias) to Servers")
+                .accessibilityLabel("将 \(row.alias) 添加到服务器")
+                .help("将 \(row.alias) 添加到服务器")
             }
         }
         .padding(.vertical, 4)
@@ -147,46 +149,46 @@ struct KeyServerDetailView: View {
 
     var body: some View {
         Form {
-            Section("SSH Connection") {
-                LabeledContent("Name", value: row.server.name)
-                LabeledContent("SSH alias", value: row.server.alias)
-                LabeledContent("Address", value: row.server.host)
-                LabeledContent("Port", value: String(row.server.port))
-                LabeledContent("User", value: row.server.username)
-                LabeledContent("Status") { StatusLabel(status: row.server.status) }
-                Button("Show in Servers") { model.showServer(row.server.id) }
+            Section("SSH 连接") {
+                LabeledContent("名称", value: row.server.name)
+                LabeledContent("SSH 别名", value: row.server.alias)
+                LabeledContent("地址", value: row.server.host)
+                LabeledContent("端口", value: String(row.server.port))
+                LabeledContent("用户", value: row.server.username)
+                LabeledContent("状态") { StatusLabel(status: row.server.status) }
+                Button("在服务器中显示") { model.showServer(row.server.id) }
             }
 
-            Section("Server Password") {
+            Section("服务器密码") {
                 if model.hasStoredPassword(serverID: row.server.id) {
-                    Label("Stored in Keychain", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    Button("Update Password") { model.requestPassword(for: row.server.id) }
+                    Label("已存储在 Keychain", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Button("更新密码") { model.requestPassword(for: row.server.id) }
                 } else {
-                    Label("Missing from Keychain", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Button("Add Password") { model.requestPassword(for: row.server.id) }
+                    Label("Keychain 中缺少密码", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Button("添加密码") { model.requestPassword(for: row.server.id) }
                 }
             }
 
-            Section("Current Mac Key") {
+            Section("当前 Mac 密钥") {
                 if let key = row.key {
-                    LabeledContent("Name", value: model.keyDisplayName(key))
-                    LabeledContent("Type", value: key.kind.rawValue.uppercased())
-                    LabeledContent("Fingerprint") {
+                    LabeledContent("名称", value: model.keyDisplayName(key))
+                    LabeledContent("类型", value: key.kind.rawValue.uppercased())
+                    LabeledContent("指纹") {
                         Text(key.fingerprint).font(.caption.monospaced()).textSelection(.enabled)
                     }
-                    LabeledContent("Authorization", value: row.authorization == nil ? "Not installed" : "Installed")
+                    LabeledContent("授权", value: row.authorization == nil ? "未安装" : "已安装")
                 } else {
-                    Text("No local private key is available for this Mac.").foregroundStyle(.secondary)
-                    Button("Generate Ed25519 Key") { Task { await model.generateKey() } }
+                    Text("此 Mac 没有可用的本地私钥。").foregroundStyle(.secondary)
+                    Button("生成 Ed25519 密钥") { Task { await model.generateKey() } }
                 }
             }
 
-            Section("Actions") {
-                Button("Check Connection") {
+            Section("操作") {
+                Button("检查连接") {
                     model.selectedServerID = row.server.id
                     Task { await model.checkKeySelected() }
                 }
-                Button("Authorize This Mac") {
+                Button("授权此 Mac") {
                     model.selectedServerID = row.server.id
                     Task { await model.authorizeSelected() }
                 }
@@ -204,40 +206,40 @@ struct SSHConfigConnectionDetailView: View {
 
     var body: some View {
         Form {
-            Section("SSH Connection") {
-                LabeledContent("SSH name", value: connection.alias)
-                LabeledContent("Address", value: connection.host)
-                LabeledContent("Port", value: String(connection.port))
-                LabeledContent("User", value: connection.username)
+            Section("SSH 连接") {
+                LabeledContent("SSH 名称", value: connection.alias)
+                LabeledContent("地址", value: connection.host)
+                LabeledContent("端口", value: String(connection.port))
+                LabeledContent("用户", value: connection.username)
             }
 
-            Section("Configured Identity") {
+            Section("已配置的身份密钥") {
                 if let key = model.key(for: connection) {
-                    LabeledContent("Key", value: model.keyDisplayName(key))
-                    LabeledContent("Fingerprint") {
+                    LabeledContent("密钥", value: model.keyDisplayName(key))
+                    LabeledContent("指纹") {
                         Text(key.fingerprint).font(.caption.monospaced()).textSelection(.enabled)
                     }
                 } else {
-                    Label("No matching local key was found", systemImage: "key.slash")
+                    Label("未找到匹配的本地密钥", systemImage: "key.slash")
                         .foregroundStyle(.orange)
                 }
                 ForEach(connection.identityFiles, id: \.self) { path in
-                    LabeledContent("Identity file", value: path)
+                    LabeledContent("身份密钥文件", value: path)
                 }
             }
 
-            Section("Servers") {
+            Section("服务器") {
                 if let server = model.server(matching: connection) {
-                    Label("Synced to Servers", systemImage: "checkmark.circle.fill")
+                    Label("已同步到服务器", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                    Button("Show in Servers") { model.showServer(server.id) }
+                    Button("在服务器中显示") { model.showServer(server.id) }
                 } else {
-                    Label("Not in Servers", systemImage: "arrow.triangle.2.circlepath")
+                    Label("尚未添加到服务器", systemImage: "arrow.triangle.2.circlepath")
                         .foregroundStyle(.secondary)
                     Button {
                         Task { await model.addDiscoveredConnectionToServers(connection) }
                     } label: {
-                        Label("Add to Servers", systemImage: "plus")
+                        Label("添加到服务器", systemImage: "plus")
                     }
                 }
             }
@@ -253,26 +255,37 @@ struct KeyDetailView: View {
 
     var body: some View {
         Form {
-            Section("Identity") {
-                LabeledContent("Name", value: model.keyDisplayName(key))
-                LabeledContent("Device", value: model.snapshot.devices.first(where: { $0.id == key.deviceID })?.name ?? "Unknown device")
-                LabeledContent("Type", value: key.kind.rawValue.uppercased())
-                LabeledContent("Origin", value: key.origin.rawValue.capitalized)
+            Section("身份密钥") {
+                LabeledContent("名称", value: model.keyDisplayName(key))
+                LabeledContent("设备", value: model.snapshot.devices.first(where: { $0.id == key.deviceID })?.name ?? "未知设备")
+                LabeledContent("类型", value: key.kind.rawValue.uppercased())
+                LabeledContent("来源", value: key.origin.displayTitle)
             }
-            Section("Fingerprint") {
+            Section("指纹") {
                 Text(key.fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled)
             }
-            Section("Local Availability") {
-                LabeledContent("Private key", value: key.privateKeyPath ?? "Not present on this Mac")
-                LabeledContent("SSH Agent", value: key.isInAgent ? "Loaded" : "Not detected")
-                Button("Load into SSH Agent") { Task { await model.addSelectedKeyToAgent() } }
+            Section("本地可用性") {
+                LabeledContent("私钥", value: key.privateKeyPath ?? "此 Mac 上不存在")
+                LabeledContent("SSH Agent", value: key.isInAgent ? "已加载" : "未检测到")
+                Button("加载到 SSH Agent") { Task { await model.addSelectedKeyToAgent() } }
                     .disabled(key.privateKeyPath == nil || key.isInAgent)
             }
-            Section("Public Key") {
+            Section("公钥") {
                 Text(key.publicKey).font(.caption.monospaced()).textSelection(.enabled)
             }
         }
         .formStyle(.grouped)
         .navigationTitle(model.keyDisplayName(key))
+    }
+}
+
+private extension SSHKeyOrigin {
+    var displayTitle: String {
+        switch self {
+        case .generated: "生成"
+        case .scanned: "扫描发现"
+        case .imported: "导入"
+        case .agent: "SSH Agent"
+        }
     }
 }

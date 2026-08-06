@@ -6,8 +6,8 @@ enum LocalAuthenticationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: "Local authentication is unavailable on this Mac."
-        case .denied: "Local authentication was not completed."
+        case .unavailable: "此 Mac 无法使用本地身份验证。"
+        case .denied: "未完成本地身份验证。"
         }
     }
 }
