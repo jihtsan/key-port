@@ -8,7 +8,18 @@ struct ServerListView: View {
     var body: some View {
         @Bindable var model = model
         Table(model.activeServers, selection: $model.selectedServerID) {
-            TableColumn("Name", value: \.name)
+            TableColumn("Name") { server in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(server.name)
+                        .lineLimit(1)
+                    if let item = model.devicePresence(for: server) {
+                        Label(item.name, systemImage: "desktopcomputer")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
             TableColumn("Endpoint") { server in
                 Text(server.endpoint).foregroundStyle(.secondary)
             }

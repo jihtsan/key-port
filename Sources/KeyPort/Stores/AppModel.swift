@@ -112,6 +112,31 @@ struct KeyConnectionRow: Identifiable {
     var port: Int { connection?.port ?? serverRow?.server.port ?? 22 }
 }
 
+private struct SSHAccountSortKey: Comparable {
+    let username: String
+    let port: Int
+    let alias: String
+
+    init(_ server: ServerConnection) {
+        username = server.username
+        port = server.port
+        alias = server.alias
+    }
+
+    init(_ connection: DiscoveredSSHConnection) {
+        username = connection.username
+        port = connection.port
+        alias = connection.alias
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        let usernameOrder = lhs.username.localizedCaseInsensitiveCompare(rhs.username)
+        if usernameOrder != .orderedSame { return usernameOrder == .orderedAscending }
+        if lhs.port != rhs.port { return lhs.port < rhs.port }
+        return lhs.alias.localizedCaseInsensitiveCompare(rhs.alias) == .orderedAscending
+    }
+}
+
 private enum ServerCheckKind: Equatable {
     case password
     case key
@@ -215,11 +240,62 @@ final class AppModel {
 
     func managedServers(for suggestion: TailscaleSSHServerSuggestion) -> [ServerConnection] {
         snapshot.servers.filter {
-            !$0.isDeleted && $0.port == suggestion.port && suggestion.matches(host: $0.host)
+            !$0.isDeleted && suggestion.matches(host: $0.host)
         }.sorted {
-            let usernameOrder = $0.username.localizedCaseInsensitiveCompare($1.username)
-            return usernameOrder == .orderedSame ? $0.alias < $1.alias : usernameOrder == .orderedAscending
+            SSHAccountSortKey($0) < SSHAccountSortKey($1)
         }
+    }
+
+    func devicePresence(for server: ServerConnection) -> DevicePresence? {
+        deviceListItems.first { $0.matches(host: server.host) }
+    }
+
+    func devicePresence(for key: SSHKeyRecord) -> DevicePresence? {
+        deviceListItems.first { $0.registeredDevice?.id == key.deviceID }
+    }
+
+    func servers(for item: DevicePresence) -> [ServerConnection] {
+        activeServers.filter { item.matches(host: $0.host) }.sorted {
+            SSHAccountSortKey($0) < SSHAccountSortKey($1)
+        }
+    }
+
+    func unmanagedSSHConnections(for item: DevicePresence) -> [DiscoveredSSHConnection] {
+        let managedAccounts = servers(for: item)
+        return discoveredSSHConnections.filter { connection in
+            item.matches(host: connection.host)
+                && !managedAccounts.contains {
+                    $0.port == connection.port && $0.username == connection.username
+                }
+        }.sorted {
+            SSHAccountSortKey($0) < SSHAccountSortKey($1)
+        }
+    }
+
+    func keys(for item: DevicePresence) -> [SSHKeyRecord] {
+        guard let deviceID = item.registeredDevice?.id else { return [] }
+        return snapshot.keys.filter { $0.deviceID == deviceID }.sorted {
+            keyDisplayName($0).localizedCaseInsensitiveCompare(keyDisplayName($1)) == .orderedAscending
+        }
+    }
+
+    func authorizedServers(for key: SSHKeyRecord) -> [ServerConnection] {
+        authorizedServers(matching: [key.id])
+    }
+
+    func authorizedServers(for item: DevicePresence) -> [ServerConnection] {
+        authorizedServers(matching: Set(keys(for: item).map(\.id)))
+    }
+
+    private func authorizedServers(matching keyIDs: Set<String>) -> [ServerConnection] {
+        let serverIDs = Set(snapshot.authorizations.lazy.filter { keyIDs.contains($0.keyID) }.map(\.serverID))
+        return activeServers.filter { serverIDs.contains($0.id) }.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    func key(for authorization: Authorization) -> SSHKeyRecord? {
+        snapshot.keys.first { $0.id == authorization.keyID }
     }
 
     func tailscaleServerDraft(
@@ -335,6 +411,7 @@ final class AppModel {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
             }
             isLoaded = true
+            await refreshTailscale()
             appendAudit(category: "app", action: "load", result: "success")
             await persist()
         } catch {
@@ -567,6 +644,7 @@ final class AppModel {
         reconcileImportedServerAliases()
         migrateImportedConnectionKeyStatusIfNeeded()
         migrateLegacyAuthenticationChecksIfNeeded()
+        migrateDeviceNetworkIdentitySchemaIfNeeded()
         let existingByFingerprint = Dictionary(uniqueKeysWithValues: snapshot.keys.map { ($0.fingerprint, $0) })
         let merged = scanned.map { key -> SSHKeyRecord in
             guard let existing = existingByFingerprint[key.fingerprint] else { return key }
@@ -811,7 +889,9 @@ final class AppModel {
         guard tailscaleDiscoveryState != .refreshing else { return }
         tailscaleDiscoveryState = .refreshing
         do {
-            tailscaleStatus = try await tailscaleService.status()
+            let status = try await tailscaleService.status()
+            tailscaleStatus = status
+            await recordCurrentDeviceIdentity(from: status)
             tailscaleDiscoveryState = .available
             if selectedDeviceItem == nil {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
@@ -1011,6 +1091,17 @@ final class AppModel {
         selectedServerID = serverID
     }
 
+    func showDevice(_ itemID: DevicePresence.ID) {
+        destination = .devices
+        selectedDeviceItemID = itemID
+    }
+
+    func showKey(_ keyID: String) {
+        destination = .keys
+        selectedKeyID = keyID
+        selectedKeyItemID = "identity:\(keyID)"
+    }
+
     func synchronizeKeySelection() {
         if let key = selectedKeyServerRow?.key ?? selectedDiscoveredSSHConnection.flatMap({ key(for: $0) }) ?? selectedStandaloneKey {
             selectedKeyID = key.id
@@ -1130,6 +1221,11 @@ final class AppModel {
             }
         }
         snapshot.schemaVersion = 3
+    }
+
+    private func migrateDeviceNetworkIdentitySchemaIfNeeded() {
+        guard snapshot.schemaVersion < 4 else { return }
+        snapshot.schemaVersion = 4
     }
 
     private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
@@ -1277,6 +1373,14 @@ final class AppModel {
             let name = Host.current().localizedName ?? "This Mac"
             snapshot.devices.append(Device(id: deviceID, name: name, isCurrent: true))
         }
+    }
+
+    private func recordCurrentDeviceIdentity(from status: TailscaleStatus) async {
+        guard let node = status.nodes.first(where: \.isCurrent),
+              let index = snapshot.devices.firstIndex(where: \.isCurrent) else { return }
+        snapshot.devices[index].tailscaleIdentity = TailscaleDeviceIdentity(node: node)
+        snapshot.devices[index].lastActiveAt = .now
+        await persist()
     }
 
     private func normalizeStatusesAfterMetadataMerge(previousServers: [ServerConnection]) {

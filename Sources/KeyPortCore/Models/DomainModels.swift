@@ -126,14 +126,16 @@ public struct Device: Identifiable, Codable, Hashable, Sendable {
     public var registeredAt: Date
     public var lastActiveAt: Date
     public var isRevoked: Bool
+    public var tailscaleIdentity: TailscaleDeviceIdentity?
 
-    public init(id: String, name: String, isCurrent: Bool, registeredAt: Date = .now, lastActiveAt: Date = .now, isRevoked: Bool = false) {
+    public init(id: String, name: String, isCurrent: Bool, registeredAt: Date = .now, lastActiveAt: Date = .now, isRevoked: Bool = false, tailscaleIdentity: TailscaleDeviceIdentity? = nil) {
         self.id = id
         self.name = name
         self.isCurrent = isCurrent
         self.registeredAt = registeredAt
         self.lastActiveAt = lastActiveAt
         self.isRevoked = isRevoked
+        self.tailscaleIdentity = tailscaleIdentity
     }
 }
 
@@ -209,7 +211,7 @@ public struct AuditEvent: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct AppSnapshot: Codable, Sendable {
-    public var schemaVersion = 3
+    public var schemaVersion = 4
     public var servers: [ServerConnection] = []
     public var devices: [Device] = []
     public var keys: [SSHKeyRecord] = []

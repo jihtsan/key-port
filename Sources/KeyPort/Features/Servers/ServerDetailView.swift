@@ -38,6 +38,60 @@ struct ServerDetailView: View {
                     .padding(.vertical, 5)
                 }
 
+                GroupBox("Device and SSH Accounts") {
+                    if let item = model.devicePresence(for: server) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Label(item.name, systemImage: item.isCurrent ? "laptopcomputer" : "desktopcomputer")
+                                    .fontWeight(.medium)
+                                Spacer()
+                                Button {
+                                    model.showDevice(item.id)
+                                } label: {
+                                    Label("Show in Devices", systemImage: "arrow.right.circle")
+                                }
+                            }
+                            if let node = item.tailscaleNode, !node.addresses.isEmpty {
+                                Text(node.addresses.joined(separator: " · "))
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+
+                            Divider()
+                            ForEach(model.servers(for: item)) { account in
+                                HStack {
+                                    Label(account.username, systemImage: "person.crop.circle")
+                                    Text(verbatim: ":\(account.port)")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    if account.id == server.id {
+                                        Text("Current")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Button {
+                                            model.showServer(account.id)
+                                        } label: {
+                                            Image(systemName: "arrow.right.circle")
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Show \(account.username) in Servers")
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 5)
+                    } else {
+                        Label("No device matches this server address", systemImage: "link.badge.plus")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                    }
+                }
+
                 GroupBox("Server Password") {
                     HStack {
                         if model.hasStoredPassword(serverID: server.id) {
@@ -131,10 +185,25 @@ struct ServerDetailView: View {
                             Divider()
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(authorization.remoteComment).font(.callout).lineLimit(1)
+                                    if let key = model.key(for: authorization) {
+                                        let deviceName = model.devicePresence(for: key)?.name ?? "Unknown device"
+                                        Text(deviceName).font(.callout).fontWeight(.medium).lineLimit(1)
+                                        Text(model.keyDisplayName(key)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    } else {
+                                        Text(authorization.remoteComment).font(.callout).lineLimit(1)
+                                    }
                                     Text(authorization.fingerprint).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
+                                if let key = model.key(for: authorization) {
+                                    Button {
+                                        model.showKey(key.id)
+                                    } label: {
+                                        Image(systemName: "key.horizontal")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Show key")
+                                }
                                 Button(role: .destructive) {
                                     pendingRevocationID = authorization.id
                                 } label: {
