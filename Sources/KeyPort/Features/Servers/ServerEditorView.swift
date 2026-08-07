@@ -15,6 +15,7 @@ struct ServerEditorView: View {
     let onSave: (ServerEditorSubmission) async throws -> Void
 
     @State private var draft: ServerDraft
+    @State private var portText: String
     @State private var password = ""
     @State private var synchronizable = false
     @State private var trustedHostKeys: [HostKeyRecord]
@@ -48,6 +49,7 @@ struct ServerEditorView: View {
         self.onCheck = onCheck
         self.onSave = onSave
         _draft = State(initialValue: initialDraft)
+        _portText = State(initialValue: String(initialDraft.port))
         _trustedHostKeys = State(initialValue: initialHostKeys)
     }
 
@@ -73,17 +75,15 @@ struct ServerEditorView: View {
                             draft.updateSuggestedAlias()
                             invalidateValidation()
                         }
-                    Stepper("端口：\(draft.port)", value: $draft.port, in: 1...65_535)
-                        .onChange(of: draft.port) { _, _ in invalidateValidation(resetHostKeys: true) }
+                    TextField("端口", text: $portText)
+                        .frame(width: 120)
+                        .onChange(of: portText) { _, newValue in
+                            updatePort(from: newValue)
+                        }
                 }
                 .disabled(locksServerFields)
 
                 Section("SSH 用户") {
-                    TextField("用户名", text: $draft.username)
-                        .onChange(of: draft.username) { _, _ in
-                            draft.updateSuggestedAlias()
-                            invalidateValidation()
-                        }
                     TextField("SSH 别名", text: $draft.alias)
                         .textContentType(.URL)
                         .onChange(of: draft.alias) { _, _ in
@@ -93,6 +93,11 @@ struct ServerEditorView: View {
                 }
 
                 Section("凭据") {
+                    TextField("用户", text: $draft.username)
+                        .onChange(of: draft.username) { _, _ in
+                            draft.updateSuggestedAlias()
+                            invalidateValidation()
+                        }
                     SecureField(hasStoredPassword ? "新密码（留空则保留当前密码）" : "密码", text: $password)
                         .disabled(isChecking || isSaving)
                         .onChange(of: password) { _, _ in invalidateValidation() }
@@ -251,7 +256,17 @@ struct ServerEditorView: View {
         !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
             && !draft.host.trimmingCharacters(in: .whitespaces).isEmpty
             && !draft.username.trimmingCharacters(in: .whitespaces).isEmpty
+            && (1...65_535).contains(draft.port)
             && KeyPortNaming.isValidAlias(draft.alias)
+    }
+
+    private func updatePort(from value: String) {
+        let digits = value.filter { $0.isNumber }
+        if digits != value {
+            portText = digits
+        }
+        draft.port = Int(digits) ?? 0
+        invalidateValidation(resetHostKeys: true)
     }
 
     private func checkConnection() {

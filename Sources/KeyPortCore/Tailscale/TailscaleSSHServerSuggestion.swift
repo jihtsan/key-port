@@ -15,11 +15,7 @@ public struct TailscaleSSHServerSuggestion: Identifiable, Equatable, Sendable {
     public init?(node: TailscaleNode) {
         guard !node.isCurrent else { return nil }
 
-        let dnsHost = node.dnsName.flatMap(Self.cleanedHost)
-        let addressHosts = node.addresses.compactMap(Self.cleanedHost)
-        guard let preferredHost = dnsHost
-            ?? addressHosts.first(where: { !$0.contains(":") })
-            ?? addressHosts.first else { return nil }
+        guard let preferredHost = node.preferredSSHHost else { return nil }
 
         let suggestedName = node.name.trimmingCharacters(in: .whitespacesAndNewlines)
         nodeID = node.id
@@ -28,11 +24,11 @@ public struct TailscaleSSHServerSuggestion: Identifiable, Equatable, Sendable {
         port = 22
         group = "Tailscale"
         alias = KeyPortNaming.alias(group: group, name: name)
-        normalizedHosts = Set(([dnsHost].compactMap { $0 } + addressHosts).map(Self.normalizedHost))
+        normalizedHosts = Set(([node.dnsName].compactMap { $0 } + node.addresses).map(TailscaleHostIdentity.normalize))
     }
 
     public func matches(host candidate: String) -> Bool {
-        normalizedHosts.contains(Self.normalizedHost(candidate))
+        normalizedHosts.contains(TailscaleHostIdentity.normalize(candidate))
     }
 
     public func matchesAccount(
@@ -58,15 +54,5 @@ public struct TailscaleSSHServerSuggestion: Identifiable, Equatable, Sendable {
 
     private func availableAlias(_ base: String, avoiding existingAliases: Set<String>) -> String {
         KeyPortNaming.availableAlias(base, avoiding: existingAliases)
-    }
-
-    private static func cleanedHost(_ value: String) -> String? {
-        var host = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        while host.hasSuffix(".") { host.removeLast() }
-        return host.isEmpty ? nil : host
-    }
-
-    private static func normalizedHost(_ value: String) -> String {
-        cleanedHost(value)?.lowercased() ?? ""
     }
 }

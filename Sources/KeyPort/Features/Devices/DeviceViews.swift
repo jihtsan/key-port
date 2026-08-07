@@ -161,6 +161,10 @@ private struct DeviceDetailView: View {
                     tailscaleSSHManagement(node: node, suggestion: suggestion)
                 }
 
+                if item.registeredDevice != nil {
+                    deviceKeyAccess
+                }
+
                 if item.isCurrent {
                     GroupBox("设备授权") {
                         VStack(alignment: .leading, spacing: 10) {
@@ -182,20 +186,83 @@ private struct DeviceDetailView: View {
         }
     }
 
+    private var deviceKeyAccess: some View {
+        let keys = model.keys(for: item)
+        let authorizedServers = model.authorizedServers(for: item)
+        return GroupBox("密钥与访问") {
+            VStack(alignment: .leading, spacing: 10) {
+                if keys.isEmpty {
+                    Label("这台设备还没有同步的 SSH 密钥", systemImage: "key.slash")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(keys.enumerated()), id: \.element.id) { index, key in
+                        if index > 0 { Divider() }
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(model.keyDisplayName(key)).fontWeight(.medium)
+                                Text("已授权到 \(model.authorizedServers(for: key).count) 个 SSH 账户")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                model.showKey(key.id)
+                            } label: {
+                                Image(systemName: "arrow.right.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("查看密钥")
+                        }
+                    }
+                }
+
+                if !authorizedServers.isEmpty {
+                    Divider()
+                    Text("可访问的 SSH 账户")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(authorizedServers) { server in
+                        HStack {
+                            Label(server.username, systemImage: "person.crop.circle")
+                            Text(server.name)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            Button {
+                                model.showServer(server.id)
+                            } label: {
+                                Image(systemName: "arrow.right.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("在服务器中查看")
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 5)
+        }
+    }
+
     private func tailscaleSSHManagement(
         node: TailscaleNode,
         suggestion: TailscaleSSHServerSuggestion
     ) -> some View {
         let servers = model.managedServers(for: suggestion)
+        let unmanagedConnections = model.unmanagedSSHConnections(for: item)
         return GroupBox("SSH 管理") {
             VStack(alignment: .leading, spacing: 10) {
-                if servers.isEmpty {
+                if servers.isEmpty && unmanagedConnections.isEmpty {
                     Label("尚未添加 SSH 账户", systemImage: "person.crop.circle.badge.questionmark")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(servers.enumerated()), id: \.element.id) { index, server in
                         if index > 0 { Divider() }
                         tailscaleAccountRow(server, node: node, suggestion: suggestion)
+                    }
+                    ForEach(Array(unmanagedConnections.enumerated()), id: \.element.alias) { index, connection in
+                        if !servers.isEmpty || index > 0 { Divider() }
+                        discoveredAccountRow(connection)
                     }
                 }
 
@@ -213,6 +280,30 @@ private struct DeviceDetailView: View {
         }
     }
 
+    private func discoveredAccountRow(_ connection: DiscoveredSSHConnection) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(connection.username, systemImage: "person.crop.circle")
+                    .fontWeight(.medium)
+                Spacer()
+                Label("SSH Config", systemImage: "doc.text")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text("\(connection.alias) · \(connection.host):\(connection.port)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .textSelection(.enabled)
+            Button {
+                Task { await model.addDiscoveredConnectionToServers(connection) }
+            } label: {
+                Label("添加到服务器", systemImage: "plus.circle")
+            }
+            .disabled(model.isBusy)
+        }
+    }
+
     private func tailscaleAccountRow(
         _ server: ServerConnection,
         node: TailscaleNode,
@@ -223,12 +314,8 @@ private struct DeviceDetailView: View {
                 Label(server.username, systemImage: "person.crop.circle")
                     .fontWeight(.medium)
                 Spacer()
-                Label(
-                    server.status == .authorized ? "本机已授权" : "本机未授权",
-                    systemImage: server.status == .authorized ? "checkmark.circle.fill" : "key.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(server.status == .authorized ? .green : .secondary)
+                StatusLabel(status: server.status)
+                    .font(.caption)
             }
 
             HStack(spacing: 14) {
@@ -237,7 +324,7 @@ private struct DeviceDetailView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 Label(
-                    model.hasStoredPassword(serverID: server.id) ? "密码可用" : "需要密码",
+                    model.hasStoredPassword(serverID: server.id) ? "本机密码可用" : "本机需要密码",
                     systemImage: model.hasStoredPassword(serverID: server.id) ? "key.fill" : "key.slash"
                 )
                 .font(.caption)
@@ -260,9 +347,9 @@ private struct DeviceDetailView: View {
                 if server.status != .authorized {
                     if model.hasStoredPassword(serverID: server.id) {
                         Button {
-                            Task { await model.authorizeCurrentDevice(serverID: server.id) }
+                            Task { await model.synchronizeSSHAuthorization(serverID: server.id) }
                         } label: {
-                            Label("授权本机", systemImage: "key.horizontal")
+                            Label("同步 SSH 授权", systemImage: "key.horizontal.fill")
                         }
                         .disabled(!node.isOnline || model.isBusy)
                     } else {

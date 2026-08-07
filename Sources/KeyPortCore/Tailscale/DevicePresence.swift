@@ -19,6 +19,15 @@ public struct DevicePresence: Identifiable, Hashable, Sendable {
     public var name: String { registeredDevice?.name ?? tailscaleNode?.name ?? "未知设备" }
     public var isCurrent: Bool { registeredDevice?.isCurrent == true || tailscaleNode?.isCurrent == true }
     public var isRevoked: Bool { registeredDevice?.isRevoked == true }
+
+    public func matches(host: String) -> Bool {
+        addressMatch(for: host) != nil
+    }
+
+    public func addressMatch(for host: String) -> DeviceAddressMatch? {
+        tailscaleNode?.addressMatch(for: host)
+            ?? registeredDevice?.tailscaleIdentity?.addressMatch(for: host)
+    }
 }
 
 public enum DevicePresenceMerger {
@@ -33,7 +42,15 @@ public enum DevicePresenceMerger {
             device.isCurrent || !localDeviceNames.contains(normalizedName(device.name))
         }
         var items = visibleDevices.map { device -> DevicePresence in
-            let matchedNode = device.isCurrent ? localNode : nil
+            let matchedNode: TailscaleNode?
+            if device.isCurrent {
+                matchedNode = localNode
+            } else if let identity = device.tailscaleIdentity {
+                matchedNode = unmatchedNodes[identity.nodeID]
+                    ?? unmatchedNodes.values.first(where: { identity.matches(node: $0) })
+            } else {
+                matchedNode = nil
+            }
             if let matchedNode { unmatchedNodes.removeValue(forKey: matchedNode.id) }
             return DevicePresence(id: .keyPort(device.id), registeredDevice: device, tailscaleNode: matchedNode)
         }
