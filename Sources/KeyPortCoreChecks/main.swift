@@ -225,6 +225,9 @@ do {
     try expect(serverSuggestion.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale MagicDNS host match")
     try expect(serverSuggestion.matches(host: "100.64.0.2"), "tailscale IP host match")
     try expect(!serverSuggestion.matches(host: "other.example.ts.net"), "unrelated SSH host matched tailscale node")
+    try expect(peerNode.matches(host: "BUILD-SERVER.EXAMPLE.TS.NET."), "tailscale node MagicDNS host match")
+    try expect(peerNode.matches(host: "100.64.0.2"), "tailscale node IP host match")
+    try expect(!peerNode.matches(host: "100.64.0.20"), "tailscale node matched a different IP")
     try expect(serverSuggestion.availableAlias(avoiding: []) == "tailscale-build-server", "unused tailscale alias changed")
     try expect(
         serverSuggestion.availableAlias(avoiding: ["tailscale-build-server", "tailscale-build-server-2"]) == "tailscale-build-server-3",
@@ -308,6 +311,108 @@ do {
     try expect(devicePresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode == nil, "remote KeyPort device inherited a Tailscale peer")
     try expect(devicePresences.first(where: { $0.id == .tailscale("node-peer") })?.registeredDevice == nil, "tailscale peer inherited a KeyPort identity")
 
+    let synchronizedPeer = Device(
+        id: "dev-peer",
+        name: "renamed-build-server",
+        isCurrent: false,
+        tailscaleIdentity: TailscaleDeviceIdentity(node: peerNode)
+    )
+    let linkedDevicePresences = DevicePresenceMerger.merge(
+        devices: [synchronizedPeer, registeredLocal],
+        tailscaleNodes: tailscaleStatus.nodes
+    )
+    try expect(linkedDevicePresences.count == 2, "network-linked device was duplicated")
+    let linkedPeer = linkedDevicePresences.first(where: { $0.id == .keyPort("dev-peer") })
+    try expect(linkedPeer?.tailscaleNode?.id == "node-peer", "network-linked device did not inherit its Tailscale node")
+    try expect(linkedPeer?.registeredDevice?.name == "renamed-build-server", "network-linked device lost KeyPort metadata")
+    try expect(linkedPeer?.matches(host: "100.64.0.2") == true, "linked device did not match its server IP")
+    try expect(
+        linkedPeer?.addressMatch(for: "BUILD-SERVER.EXAMPLE.TS.NET.") == .some(.tailscaleMagicDNS),
+        "MagicDNS association evidence was not preserved"
+    )
+    try expect(
+        linkedPeer?.addressMatch(for: "[100.64.0.2]") == .some(.tailscaleIP),
+        "Tailscale IP association evidence was not preserved"
+    )
+    let publicEndpointDevice = Device(
+        id: "dev-public-endpoint",
+        name: "build-server",
+        isCurrent: false,
+        tailscaleIdentity: TailscaleDeviceIdentity(node: peerNode)
+    )
+    let publicEndpointPresence = DevicePresenceMerger.merge(
+        devices: [publicEndpointDevice],
+        tailscaleNodes: [peerNode]
+    ).first
+    try expect(
+        publicEndpointPresence?.matches(host: "203.0.113.42") == false,
+        "public IPv4 was incorrectly inferred from a Tailscale identity"
+    )
+    try expect(
+        publicEndpointPresence?.addressMatch(for: "203.0.113.42") == nil,
+        "public IPv4 received an unsupported association explanation"
+    )
+    try expect(
+        !serverSuggestion.matches(host: "203.0.113.42"),
+        "public IPv4 was treated as a Tailscale service address"
+    )
+    let publicAddressServer = ServerConnection(
+        name: "Build Public",
+        host: "203.0.113.42",
+        username: "root",
+        alias: "build-public"
+    )
+    let tailscaleAddressServer = ServerConnection(
+        name: "Build Tailnet",
+        host: "100.64.0.2",
+        username: "root",
+        alias: "build-tailnet"
+    )
+    try expect(
+        ServerConnectionGrouping.groups([publicAddressServer, tailscaleAddressServer]).count == 2,
+        "public and Tailscale endpoint addresses were automatically merged"
+    )
+
+    let duplicateAddressNode = TailscaleNode(
+        id: "node-duplicate-address",
+        name: "nat-neighbor",
+        dnsName: "nat-neighbor.example.ts.net",
+        operatingSystem: "linux",
+        addresses: ["100.64.0.2"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    let stableIdentityPresences = DevicePresenceMerger.merge(
+        devices: [synchronizedPeer],
+        tailscaleNodes: [duplicateAddressNode, peerNode]
+    )
+    try expect(
+        stableIdentityPresences.first(where: { $0.id == .keyPort("dev-peer") })?.tailscaleNode?.id == "node-peer",
+        "an address collision overrode the stable Tailscale node identity"
+    )
+
+    let sameAddressChangedNode = TailscaleNode(
+        id: "node-peer-reissued",
+        name: "build-server",
+        dnsName: "new-name.example.ts.net",
+        operatingSystem: "linux",
+        addresses: ["100.64.0.2"],
+        isOnline: true,
+        isCurrent: false,
+        lastSeen: nil,
+        relay: nil,
+        isExitNode: false,
+        isExitNodeOption: false
+    )
+    try expect(
+        synchronizedPeer.tailscaleIdentity?.matches(node: sameAddressChangedNode) == true,
+        "device identity did not fall back to an exact IP match"
+    )
+
     let staleLocalRegistration = Device(id: "dev-old-local", name: "LOCAL-MAC", isCurrent: false)
     let deduplicatedDevicePresences = DevicePresenceMerger.merge(
         devices: [registeredSameNamePeer, staleLocalRegistration, registeredLocal],
@@ -337,6 +442,43 @@ do {
     try expect(containsSSHOption(keyPolicy, "PasswordAuthentication=no"), "key check did not disable password auth")
     try expect(containsSSHOption(keyPolicy, "KbdInteractiveAuthentication=no"), "key check did not disable keyboard-interactive auth")
     try expect(containsSSHOption(keyPolicy, "IdentityAgent=none"), "key check did not disable SSH Agent")
+
+    try expect(
+        SSHAuthenticationRecovery.action(hasStoredPassword: true) == .authorizeWithStoredPassword,
+        "key failure did not select password authorization fallback"
+    )
+    try expect(
+        SSHAuthenticationRecovery.action(hasStoredPassword: false) == .manualAuthorization,
+        "key failure attempted password authorization without a stored password"
+    )
+    try expect(
+        AuthorizationStatus.needsAuthorization.primaryAction(hasStoredPassword: true, hasLocalKey: true)
+            == .synchronizeAuthorization,
+        "authorized account did not offer the SSH authorization sync action"
+    )
+    try expect(
+        AuthorizationStatus.needsAuthorization.primaryAction(hasStoredPassword: false, hasLocalKey: true)
+            == .addAndVerifyPassword,
+        "missing password did not block authorization sync"
+    )
+    try expect(
+        AuthorizationStatus.missingLocalKey.primaryAction(hasStoredPassword: true, hasLocalKey: false)
+            == .generateLocalKey,
+        "missing local key did not offer key generation"
+    )
+    try expect(
+        AuthorizationStatus.hostKeyMismatch.primaryAction(hasStoredPassword: true, hasLocalKey: true)
+            == .confirmHostKey,
+        "host key mismatch did not remain a confirmation block"
+    )
+    try expect(
+        AuthorizationStatus.authorized.title == "免密可用",
+        "authorized status was not presented as passwordless availability"
+    )
+    try expect(
+        AuthorizationStatus.syncing.isInFlight,
+        "SSH authorization syncing state was not marked in flight"
+    )
 
     let legacyServerData = try JSONEncoder().encode(ServerConnection(name: "Legacy", host: "legacy.example", username: "root", alias: "legacy"))
     let decodedLegacyServer = try JSONDecoder().decode(ServerConnection.self, from: legacyServerData)

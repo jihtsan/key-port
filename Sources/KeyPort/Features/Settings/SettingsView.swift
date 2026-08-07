@@ -23,10 +23,10 @@ struct SettingsView: View {
             .tabItem { Label("通用", systemImage: "gearshape") }
 
             Form {
-                Section("元数据") {
-                    Toggle("通过 iCloud 同步非敏感元数据", isOn: $cloudSyncEnabled)
+                Section("CloudKit 元数据") {
+                    Toggle("通过 CloudKit 同步非敏感元数据", isOn: $cloudSyncEnabled)
                     LabeledContent("状态", value: model.cloudState.title)
-                    Button("立即同步") { Task { await model.synchronizeCloud() } }
+                    Button("同步 CloudKit 元数据") { Task { await model.synchronizeCloud() } }
                         .disabled(!cloudSyncEnabled || model.isBusy)
                 }
                 Section("密码") {

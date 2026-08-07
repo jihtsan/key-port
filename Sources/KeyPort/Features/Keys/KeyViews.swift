@@ -155,6 +155,11 @@ struct KeyServerDetailView: View {
                 LabeledContent("地址", value: row.server.host)
                 LabeledContent("端口", value: String(row.server.port))
                 LabeledContent("用户", value: row.server.username)
+                if let item = model.devicePresence(for: row.server) {
+                    LabeledContent("设备") {
+                        Button(item.name) { model.showDevice(item.id) }
+                    }
+                }
                 LabeledContent("状态") { StatusLabel(status: row.server.status) }
                 Button("在服务器中显示") { model.showServer(row.server.id) }
             }
@@ -188,9 +193,9 @@ struct KeyServerDetailView: View {
                     model.selectedServerID = row.server.id
                     Task { await model.checkKeySelected() }
                 }
-                Button("授权此 Mac") {
+                Button("同步 SSH 授权") {
                     model.selectedServerID = row.server.id
-                    Task { await model.authorizeSelected() }
+                    Task { await model.synchronizeSSHAuthorization(serverID: row.server.id) }
                 }
                 .disabled(row.key == nil || row.server.confirmedHostKeys.isEmpty || !model.hasStoredPassword(serverID: row.server.id) || model.isBusy)
             }
@@ -260,6 +265,9 @@ struct KeyDetailView: View {
                 LabeledContent("设备", value: model.snapshot.devices.first(where: { $0.id == key.deviceID })?.name ?? "未知设备")
                 LabeledContent("类型", value: key.kind.rawValue.uppercased())
                 LabeledContent("来源", value: key.origin.displayTitle)
+                if let item = model.devicePresence(for: key) {
+                    Button("在设备中显示：\(item.name)") { model.showDevice(item.id) }
+                }
             }
             Section("指纹") {
                 Text(key.fingerprint).font(.system(.body, design: .monospaced)).textSelection(.enabled)
@@ -272,6 +280,32 @@ struct KeyDetailView: View {
             }
             Section("公钥") {
                 Text(key.publicKey).font(.caption.monospaced()).textSelection(.enabled)
+            }
+            Section("Authorized SSH Accounts") {
+                let servers = model.authorizedServers(for: key)
+                if servers.isEmpty {
+                    Label("This key has no known SSH account authorizations", systemImage: "key.slash")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(servers) { server in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                Text("\(server.username)@\(server.endpoint)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                model.showServer(server.id)
+                            } label: {
+                                Image(systemName: "arrow.right.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Show in Servers")
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

@@ -17,6 +17,11 @@ enum KeychainError: LocalizedError {
     }
 }
 
+struct ServerCredential: Sendable {
+    let username: String
+    var passwordData: Data
+}
+
 actor KeychainService {
     static let serverPasswordService = "com.jihtsan.KeyPort.server-password"
 
@@ -28,8 +33,17 @@ actor KeychainService {
         return !groups.isEmpty
     }
 
-    func saveServerPassword(_ password: String, serverID: UUID, synchronizable: Bool) throws {
-        guard !synchronizable || Self.synchronizableItemsAvailable else {
+    func saveServerCredential(
+        username: String,
+        passwordData: Data,
+        serverID: UUID,
+        synchronizable: Bool?
+    ) throws {
+        let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty, !passwordData.isEmpty else {
+            throw KeychainError.invalidData
+        }
+        if synchronizable == true, !Self.synchronizableItemsAvailable {
             throw KeychainError.synchronizableUnavailable
         }
         let account = serverID.uuidString.lowercased()
@@ -40,15 +54,18 @@ actor KeychainService {
             kSecAttrSynchronizable: kSecAttrSynchronizableAny,
         ]
 
-        let updateAttributes: [CFString: Any] = [
-            kSecAttrSynchronizable: synchronizable,
+        var updateAttributes: [CFString: Any] = [
+            kSecAttrGeneric: Data(username.utf8),
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
-            kSecValueData: Data(password.utf8),
+            kSecValueData: passwordData,
         ]
+        if let synchronizable {
+            updateAttributes[kSecAttrSynchronizable] = synchronizable
+        }
         let updateStatus = SecItemUpdate(matchQuery as CFDictionary, updateAttributes as CFDictionary)
         if updateStatus == errSecSuccess { return }
         guard updateStatus == errSecItemNotFound else {
-            if synchronizable, updateStatus == errSecMissingEntitlement {
+            if synchronizable == true, updateStatus == errSecMissingEntitlement {
                 throw KeychainError.synchronizableUnavailable
             }
             throw KeychainError.status(updateStatus)
@@ -58,18 +75,19 @@ actor KeychainService {
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.serverPasswordService,
             kSecAttrAccount: account,
-            kSecAttrSynchronizable: synchronizable,
+            kSecAttrSynchronizable: synchronizable ?? false,
+            kSecAttrGeneric: Data(username.utf8),
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlock,
-            kSecValueData: Data(password.utf8),
+            kSecValueData: passwordData,
         ]
         let status = SecItemAdd(addQuery as CFDictionary, nil)
-        if synchronizable, status == errSecMissingEntitlement {
+        if synchronizable == true, status == errSecMissingEntitlement {
             throw KeychainError.synchronizableUnavailable
         }
         guard status == errSecSuccess else { throw KeychainError.status(status) }
     }
 
-    func hasServerPassword(serverID: UUID) -> Bool {
+    func hasServerCredential(serverID: UUID) -> Bool {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.serverPasswordService,
@@ -81,23 +99,37 @@ actor KeychainService {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
-    func serverPasswordData(serverID: UUID) throws -> Data {
+    func serverCredential(serverID: UUID) throws -> ServerCredential {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.serverPasswordService,
             kSecAttrAccount: serverID.uuidString.lowercased(),
             kSecAttrSynchronizable: kSecAttrSynchronizableAny,
+            kSecReturnAttributes: true,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess else { throw KeychainError.status(status) }
-        guard let data = result as? Data else { throw KeychainError.invalidData }
-        return data
+        guard let item = result as? [String: Any],
+              let passwordData = item[kSecValueData as String] as? Data else {
+            throw KeychainError.invalidData
+        }
+        let username: String
+        if let usernameData = item[kSecAttrGeneric as String] as? Data {
+            username = String(data: usernameData, encoding: .utf8) ?? ""
+        } else if let storedUsername = item[kSecAttrGeneric as String] as? String {
+            username = storedUsername
+        } else {
+            // Password-only entries from older versions remain readable and are
+            // upgraded with a username the next time the credential is saved.
+            username = ""
+        }
+        return ServerCredential(username: username, passwordData: passwordData)
     }
 
-    func deleteServerPassword(serverID: UUID) throws {
+    func deleteServerCredential(serverID: UUID) throws {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.serverPasswordService,
