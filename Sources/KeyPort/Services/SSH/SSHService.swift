@@ -194,6 +194,7 @@ actor OpenSSHService {
             "SSH_ASKPASS": askPassPath,
             "SSH_ASKPASS_REQUIRE": "force",
             "DISPLAY": "keyport",
+            "KEYPORT_ASKPASS_MODE": "1",
             "KEYPORT_PASSWORD_PIPE": broker.path,
         ]
     }

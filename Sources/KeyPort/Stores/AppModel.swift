@@ -249,7 +249,8 @@ final class AppModel {
         let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
         let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/KeyPortAskPass").path
         let siblingHelper = executableDirectory?.appendingPathComponent("KeyPortAskPass").path ?? bundledHelper
-        let helper = FileManager.default.isExecutableFile(atPath: bundledHelper) ? bundledHelper : siblingHelper
+        let helperCandidates = [bundledHelper, siblingHelper, Bundle.main.executablePath].compactMap { $0 }
+        let helper = helperCandidates.first(where: FileManager.default.isExecutableFile(atPath:)) ?? bundledHelper
 
         self.store = SnapshotStore(paths: paths)
         self.keychain = KeychainService()

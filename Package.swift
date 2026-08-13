@@ -23,7 +23,8 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "KeyPortAskPass"
+            name: "KeyPortAskPass",
+            dependencies: ["KeyPortCore"]
         ),
         .executableTarget(name: "KeyPortCoreChecks", dependencies: ["KeyPortCore"]),
     ],

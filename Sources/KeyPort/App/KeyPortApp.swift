@@ -1,8 +1,19 @@
 import AppKit
+import Darwin
+import KeyPortCore
 import OSLog
 import SwiftUI
 
 @main
+enum KeyPortMain {
+    static func main() {
+        if ProcessInfo.processInfo.environment["KEYPORT_ASKPASS_MODE"] == "1" {
+            exit(AskPassRunner.run())
+        }
+        KeyPortApp.main()
+    }
+}
+
 struct KeyPortApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model: AppModel

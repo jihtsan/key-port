@@ -37,7 +37,7 @@ KeyPort 将连接元数据、密码和私钥分开处理：
 - 服务器密码只保存到 macOS Keychain。密码值不会进入 CloudKit、应用快照、命令参数或普通日志；同步密码需要带有正确团队签名和 Keychain entitlement 的构建。
 - 每台 Mac 使用自己的私钥。私钥保存在本机 `~/.ssh/keyport/identities/`，不上传 CloudKit，也不放入元数据归档。
 - SSH 认证使用 KeyPort 专用的 `known_hosts` 和严格 Host Key 校验。Host Key 未确认或不匹配时，操作会被阻止。
-- 密码认证通过 LocalAuthentication 后由主应用从 Keychain 读取，再经权限为 `0600` 的一次性 FIFO 交给 `KeyPortAskPass` helper；密码不会作为命令行参数传递。
+- 密码认证通过 LocalAuthentication 后由主应用从 Keychain 读取，再经权限为 `0600` 的一次性 FIFO 交给 `KeyPortAskPass` helper；开发构建缺少独立 helper 时由主程序的受限 AskPass 入口处理。密码不会作为命令行参数或环境变量传递。
 - 远端 `authorized_keys` 更新会按公钥内容查重，保留未知行和选项，写入前创建受限备份，使用同目录临时文件原子替换，并在操作后重新验证。
 - SSH 操作限定为 Host Key 扫描、认证检查、机器信息读取和授权文件维护，不开启交互式 Shell 或 PTY。
 
