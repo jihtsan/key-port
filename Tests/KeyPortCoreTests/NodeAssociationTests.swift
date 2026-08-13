@@ -14,6 +14,100 @@ final class NodeAssociationTests: XCTestCase {
         XCTAssertEqual(result.association.target?.nodeID, "node-1")
     }
 
+    func testUniqueTxCloudLogicalNameAutomaticallyLinks() throws {
+        let result = try evaluateLogicalName(
+            testCaseNodeID: "tx-cloud",
+            serverName: "tx-cloud",
+            matchingServerCount: 1,
+            nodes: [node(id: "node-1", hostName: "tx-cloud")]
+        )
+        XCTAssertEqual(result.association.state, .linked)
+        XCTAssertEqual(result.association.testCaseNodeID, "tx-cloud")
+        XCTAssertEqual(result.association.target?.nodeID, "node-1")
+        XCTAssertEqual(result.association.evidenceKinds, [.exactLogicalName])
+    }
+
+    func testLogicalNameNormalizationIgnoresCaseWhitespaceAndTrailingDot() throws {
+        let result = try evaluateLogicalName(
+            testCaseNodeID: " TX-CLOUD. ",
+            serverName: " tx-cloud. ",
+            matchingServerCount: 1,
+            nodes: [node(id: "node-1", hostName: "Tx-Cloud.")]
+        )
+        XCTAssertEqual(result.association.state, .linked)
+        XCTAssertEqual(result.association.testCaseNodeID, "tx-cloud")
+        XCTAssertEqual(result.association.target?.nodeID, "node-1")
+    }
+
+    func testDuplicateLogicalNamesNeverAutomaticallyLink() throws {
+        let duplicateServers = try evaluateLogicalName(
+            testCaseNodeID: "tx-cloud",
+            serverName: "tx-cloud",
+            matchingServerCount: 2,
+            nodes: [node(id: "node-1", hostName: "tx-cloud")]
+        )
+        XCTAssertEqual(duplicateServers.association.state, .pendingConfirmation)
+        XCTAssertEqual(duplicateServers.association.reasonCodes, [.multipleStrongMatches])
+        XCTAssertNil(duplicateServers.association.target)
+
+        let duplicateNodes = try evaluateLogicalName(
+            testCaseNodeID: "tx-cloud",
+            serverName: "tx-cloud",
+            matchingServerCount: 1,
+            nodes: [
+                node(id: "node-1", hostName: "tx-cloud"),
+                node(id: "node-2", hostName: "TX-CLOUD."),
+            ]
+        )
+        XCTAssertEqual(duplicateNodes.association.state, .pendingConfirmation)
+        XCTAssertEqual(duplicateNodes.association.reasonCodes, [.multipleStrongMatches])
+        XCTAssertNil(duplicateNodes.association.target)
+    }
+
+    func testLogicalNameRenameRequiresReview() throws {
+        let linked = try evaluateLogicalName(
+            testCaseNodeID: "tx-cloud",
+            serverName: "tx-cloud",
+            matchingServerCount: 1,
+            nodes: [node(id: "node-1", hostName: "tx-cloud")]
+        ).association
+        let renamed = try NodeAssociationEngine.evaluate(
+            testCaseNodeID: "tx-cloud",
+            serverID: serverID,
+            route: EffectiveSSHRoute(hostname: "public.example"),
+            status: status(nodes: [node(id: "node-1", hostName: "tx-cloud-renamed")]),
+            sourceState: .complete,
+            logicalNameContext: LogicalNameMatchContext(serverName: "tx-cloud", matchingServerCount: 1),
+            existing: linked,
+            now: now.addingTimeInterval(60)
+        )
+        XCTAssertEqual(renamed.association.state, .reviewRequired)
+        XCTAssertEqual(renamed.association.reasonCodes, [.logicalNameChanged])
+        XCTAssertEqual(renamed.association.target?.nodeID, "node-1")
+    }
+
+    func testPersistedLogicalNameAssociationReusesStableNodeID() throws {
+        let linked = try evaluateLogicalName(
+            testCaseNodeID: "tx-cloud",
+            serverName: "tx-cloud",
+            matchingServerCount: 1,
+            nodes: [node(id: "node-1", hostName: "tx-cloud", dns: "old.tail.example", addresses: ["100.64.0.1"])]
+        ).association
+        let refreshed = try NodeAssociationEngine.evaluate(
+            testCaseNodeID: "tx-cloud",
+            serverID: serverID,
+            route: EffectiveSSHRoute(hostname: "public.example"),
+            status: status(nodes: [node(id: "node-1", hostName: "tx-cloud", dns: "new.tail.example", addresses: ["100.64.0.9"])]),
+            sourceState: .complete,
+            logicalNameContext: LogicalNameMatchContext(serverName: "tx-cloud", matchingServerCount: 1),
+            existing: linked,
+            now: now.addingTimeInterval(60)
+        )
+        XCTAssertEqual(refreshed.association.state, .linked)
+        XCTAssertEqual(refreshed.association.target, linked.target)
+        XCTAssertEqual(refreshed.association.lastVerifiedAt, now.addingTimeInterval(60))
+    }
+
     func testUniqueIPv6AutomaticallyLinksAfterNormalization() throws {
         let result = try evaluate(host: "[fd7a:115c:a1e0:0:0:0:0:1]", nodes: [node(id: "node-1", addresses: ["fd7a:115c:a1e0::1"])])
         XCTAssertEqual(result.association.state, .linked)
@@ -78,6 +172,13 @@ final class NodeAssociationTests: XCTestCase {
         )
         XCTAssertEqual(result.association.state, .unlinked)
         XCTAssertTrue(result.candidates.isEmpty)
+    }
+
+    func testTailscaleParserPreservesRawHostNameForLogicalMatching() throws {
+        let json = #"{"BackendState":"Running","CurrentTailnet":{"Name":"Tail.Example"},"Peer":{"nodekey:abc":{"ID":"node-1","HostName":"tx-cloud","DNSName":"tx-cloud.tail.example.","TailscaleIPs":["100.64.0.1"]}}}"#
+        let parsed = try TailscaleStatusParser.parse(json)
+        XCTAssertEqual(parsed.nodes.first?.hostName, "tx-cloud")
+        XCTAssertEqual(parsed.nodes.first?.dnsName, "tx-cloud.tail.example")
     }
 
     func testManualConfirmRevisionConflictAndUnlinkTombstone() throws {
@@ -325,14 +426,40 @@ final class NodeAssociationTests: XCTestCase {
         )
     }
 
+    private func evaluateLogicalName(
+        testCaseNodeID: String,
+        serverName: String,
+        matchingServerCount: Int,
+        nodes: [TailscaleNode]
+    ) throws -> NodeAssociationEvaluation {
+        try NodeAssociationEngine.evaluate(
+            testCaseNodeID: testCaseNodeID,
+            serverID: serverID,
+            route: EffectiveSSHRoute(hostname: "public.example"),
+            status: status(nodes: nodes),
+            sourceState: .complete,
+            logicalNameContext: LogicalNameMatchContext(
+                serverName: serverName,
+                matchingServerCount: matchingServerCount
+            ),
+            now: now
+        )
+    }
+
     private func status(nodes: [TailscaleNode]) -> TailscaleStatus {
         TailscaleStatus(backendState: "Running", tailnetName: "Tail.Example.", magicDNSSuffix: nil, nodes: nodes)
     }
 
-    private func node(id: String, dns: String? = nil, addresses: [String] = []) -> TailscaleNode {
+    private func node(
+        id: String,
+        hostName: String? = nil,
+        dns: String? = nil,
+        addresses: [String] = []
+    ) -> TailscaleNode {
         TailscaleNode(
             id: id,
             name: id,
+            hostName: hostName,
             dnsName: dns,
             operatingSystem: "linux",
             addresses: addresses,

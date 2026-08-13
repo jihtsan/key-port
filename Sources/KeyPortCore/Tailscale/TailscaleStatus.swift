@@ -31,6 +31,7 @@ public struct TailscaleNode: Identifiable, Hashable, Sendable {
     public let id: String
     public let stableNodeID: String?
     public let name: String
+    public let hostName: String?
     public let dnsName: String?
     public let operatingSystem: String?
     public let addresses: [String]
@@ -44,6 +45,7 @@ public struct TailscaleNode: Identifiable, Hashable, Sendable {
     public init(
         id: String,
         name: String,
+        hostName: String? = nil,
         dnsName: String?,
         operatingSystem: String?,
         addresses: [String],
@@ -58,6 +60,7 @@ public struct TailscaleNode: Identifiable, Hashable, Sendable {
         self.id = id
         self.stableNodeID = stableNodeID
         self.name = name
+        self.hostName = hostName
         self.dnsName = dnsName
         self.operatingSystem = operatingSystem
         self.addresses = addresses
@@ -122,6 +125,7 @@ public enum TailscaleStatusParser {
         return TailscaleNode(
             id: id,
             name: name,
+            hostName: nonEmpty(raw.hostName),
             dnsName: dnsName,
             operatingSystem: nonEmpty(raw.operatingSystem),
             addresses: raw.tailscaleIPs,

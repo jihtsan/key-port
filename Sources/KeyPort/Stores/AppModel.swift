@@ -323,11 +323,12 @@ final class AppModel {
     }
 
     func nodeAssociation(testCaseNodeID: String) -> NodeAssociation? {
-        snapshot.nodeAssociations.first { $0.testCaseNodeID == testCaseNodeID }
+        let normalizedID = LogicalNodeName.normalize(testCaseNodeID)
+        return snapshot.nodeAssociations.first { $0.testCaseNodeID == normalizedID }
     }
 
     func candidates(for testCaseNodeID: String) -> [NodeAssociationCandidate] {
-        nodeAssociationCandidates[testCaseNodeID] ?? []
+        nodeAssociationCandidates[LogicalNodeName.normalize(testCaseNodeID)] ?? []
     }
 
     var stableAssociationTargets: [(target: ActualNodeReference, node: TailscaleNode)] {
@@ -340,7 +341,8 @@ final class AppModel {
     }
 
     func canExecuteTestCaseNode(_ testCaseNodeID: String) -> Bool {
-        guard let association = snapshot.nodeAssociations.first(where: { $0.testCaseNodeID == testCaseNodeID }),
+        let normalizedID = LogicalNodeName.normalize(testCaseNodeID)
+        guard let association = snapshot.nodeAssociations.first(where: { $0.testCaseNodeID == normalizedID }),
               association.allowsExecution,
               let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else {
             return false
@@ -367,6 +369,7 @@ final class AppModel {
                 route: effectiveSSHRoute(for: server),
                 status: tailscaleStatus,
                 sourceState: tailscaleStatus?.isCompleteAssociationSnapshot == true ? .complete : .unavailable,
+                logicalNameContext: logicalNameContext(for: server),
                 existing: existing,
                 hostKeyChanged: server.status == .hostKeyMismatch
             )
@@ -396,7 +399,7 @@ final class AppModel {
         guard !isBusy else { return nil }
         isBusy = true
         defer { isBusy = false }
-        let logicalID = testCaseNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let logicalID = LogicalNodeName.normalize(testCaseNodeID)
         guard !logicalID.isEmpty else {
             present(NodeAssociationMutationError.invalidTestCaseNodeID)
             return nil
@@ -458,6 +461,7 @@ final class AppModel {
                 route: effectiveSSHRoute(for: server),
                 status: tailscaleStatus,
                 sourceState: tailscaleStatus?.isCompleteAssociationSnapshot == true ? .complete : .unavailable,
+                logicalNameContext: logicalNameContext(for: server),
                 existing: resumed,
                 hostKeyChanged: server.status == .hostKeyMismatch
             )
@@ -1355,6 +1359,7 @@ final class AppModel {
             tailscaleStatus = status
             await recordCurrentDeviceIdentity(from: status)
             if status.isCompleteAssociationSnapshot {
+                await discoverLogicalNameAssociations(using: status)
                 await revalidateNodeAssociations(status: status, sourceState: .complete)
                 tailscaleDiscoveryState = .available
             } else {
@@ -1972,6 +1977,7 @@ final class AppModel {
                 route: effectiveSSHRoute(for: server),
                 status: status,
                 sourceState: sourceState,
+                logicalNameContext: logicalNameContext(for: server),
                 existing: association,
                 hostKeyChanged: server.status == .hostKeyMismatch
             ) else { continue }
@@ -1990,6 +1996,38 @@ final class AppModel {
             proxyJump: connection.proxyJump,
             proxyCommand: connection.proxyCommand
         )
+    }
+
+    private func logicalNameContext(for server: ServerConnection) -> LogicalNameMatchContext {
+        let normalizedName = LogicalNodeName.normalize(server.name)
+        let matchingServerCount = activeServers.filter {
+            LogicalNodeName.normalize($0.name) == normalizedName
+        }.count
+        return LogicalNameMatchContext(
+            serverName: server.name,
+            matchingServerCount: matchingServerCount
+        )
+    }
+
+    private func discoverLogicalNameAssociations(using status: TailscaleStatus) async {
+        let associatedServerIDs = Set(snapshot.nodeAssociations.map(\.serverID))
+        for server in activeServers where !associatedServerIDs.contains(server.id) {
+            let logicalID = LogicalNodeName.normalize(server.name)
+            let context = logicalNameContext(for: server)
+            guard !logicalID.isEmpty, context.matchingServerCount == 1 else { continue }
+            guard let evaluation = try? NodeAssociationEngine.evaluate(
+                testCaseNodeID: logicalID,
+                serverID: server.id,
+                route: effectiveSSHRoute(for: server),
+                status: status,
+                sourceState: .complete,
+                logicalNameContext: context,
+                hostKeyChanged: server.status == .hostKeyMismatch
+            ), evaluation.association.state != .unlinked else { continue }
+            nodeAssociationCandidates[logicalID] = evaluation.candidates
+            upsertNodeAssociation(evaluation.association)
+        }
+        await persist()
     }
 
     private func upsertNodeAssociation(_ association: NodeAssociation) {

@@ -14,7 +14,9 @@ struct NodeAssociationEditorView: View {
         self.server = server
         self.model = model
         self.existingAssociation = existingAssociation
-        _testCaseNodeID = State(initialValue: existingAssociation?.testCaseNodeID ?? "")
+        _testCaseNodeID = State(
+            initialValue: existingAssociation?.testCaseNodeID ?? LogicalNodeName.normalize(server.name)
+        )
         _selectedTargetID = State(initialValue: existingAssociation?.target?.id ?? "")
         _observedRevision = State(initialValue: existingAssociation?.revision)
     }
@@ -48,7 +50,7 @@ struct NodeAssociationEditorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Test Case 节点 ID 必须由上游提供。KeyPort 不会从主机名、IP、SSH alias 或其他弱线索生成该 ID。")
+            Text("一期默认使用标准化后的 Server 名称作为逻辑节点键；仅与同一 tailnet 中唯一的 Tailscale HostName 精确同名时自动关联。未来接入上游后可改用其稳定节点 ID。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -144,13 +146,14 @@ struct NodeAssociationEditorView: View {
     }
 
     private var normalizedTestCaseNodeID: String {
-        testCaseNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        LogicalNodeName.normalize(testCaseNodeID)
     }
 }
 
 private extension NodeAssociationEvidence {
     var candidateTitle: String {
         switch self {
+        case .exactLogicalName: "逻辑节点名称精确一致"
         case .exactMagicDNS: "MagicDNS 精确一致"
         case .exactTailscaleIP: "Tailscale IP 精确一致"
         }

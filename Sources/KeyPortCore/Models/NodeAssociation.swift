@@ -20,6 +20,14 @@ public struct ActualNodeReference: Codable, Hashable, Sendable {
     }
 }
 
+public enum LogicalNodeName {
+    public static func normalize(_ value: String) -> String {
+        var result = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        while result.hasSuffix(".") { result.removeLast() }
+        return result
+    }
+}
+
 public enum NodeAssociationState: String, Codable, CaseIterable, Sendable {
     case unlinked
     case pendingConfirmation = "pending_confirmation"
@@ -34,6 +42,7 @@ public enum NodeAssociationMethod: String, Codable, Sendable {
 }
 
 public enum NodeAssociationEvidence: String, Codable, CaseIterable, Sendable {
+    case exactLogicalName = "exact_logical_name"
     case exactMagicDNS = "exact_magicdns"
     case exactTailscaleIP = "exact_tailscale_ip"
 }
@@ -49,6 +58,7 @@ public enum NodeAssociationReason: String, Codable, CaseIterable, Sendable {
     case nodeIdentityChanged = "node_identity_changed"
     case hostKeyChanged = "host_key_changed"
     case endpointConflict = "endpoint_conflict"
+    case logicalNameChanged = "logical_name_changed"
     case manuallyUnlinked = "manually_unlinked"
 }
 
@@ -81,7 +91,7 @@ public struct NodeAssociation: Identifiable, Codable, Hashable, Sendable {
         updatedAt: Date = .now,
         revision: Int = 1
     ) {
-        self.testCaseNodeID = testCaseNodeID
+        self.testCaseNodeID = LogicalNodeName.normalize(testCaseNodeID)
         self.serverID = serverID
         self.target = target
         self.state = state
@@ -140,6 +150,16 @@ public struct NodeAssociationEvaluation: Sendable {
     public let candidates: [NodeAssociationCandidate]
 }
 
+public struct LogicalNameMatchContext: Hashable, Sendable {
+    public let serverName: String
+    public let matchingServerCount: Int
+
+    public init(serverName: String, matchingServerCount: Int) {
+        self.serverName = serverName
+        self.matchingServerCount = matchingServerCount
+    }
+}
+
 public enum NodeAssociationMutationError: LocalizedError, Equatable, Sendable {
     case invalidTestCaseNodeID
     case invalidTarget
@@ -163,11 +183,12 @@ public enum NodeAssociationEngine {
         route: EffectiveSSHRoute,
         status: TailscaleStatus?,
         sourceState: NodeAssociationSourceState,
+        logicalNameContext: LogicalNameMatchContext? = nil,
         existing: NodeAssociation? = nil,
         hostKeyChanged: Bool = false,
         now: Date = .now
     ) throws -> NodeAssociationEvaluation {
-        let logicalID = testCaseNodeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let logicalID = LogicalNodeName.normalize(testCaseNodeID)
         guard !logicalID.isEmpty else { throw NodeAssociationMutationError.invalidTestCaseNodeID }
 
         var association = existing ?? NodeAssociation(testCaseNodeID: logicalID, serverID: serverID, updatedAt: now)
@@ -188,13 +209,28 @@ public enum NodeAssociationEngine {
             return NodeAssociationEvaluation(association: association, candidates: [])
         }
 
-        let candidates = candidates(route: route, status: status)
+        let candidates = candidates(
+            logicalID: logicalID,
+            route: route,
+            status: status,
+            logicalNameContext: logicalNameContext
+        )
         if let target = association.target {
             if association.method == .automatic, !route.isDirect {
                 association = reviewRequired(association, reason: .proxiedRoute, now: now)
                 return NodeAssociationEvaluation(association: association, candidates: candidates)
             }
             if status.nodes.contains(where: { $0.stableNodeID == target.nodeID }) {
+                if association.evidenceKinds.contains(.exactLogicalName) {
+                    guard logicalNameContext?.matchingServerCount == 1,
+                          LogicalNodeName.normalize(logicalNameContext?.serverName ?? "") == logicalID,
+                          candidates.count == 1,
+                          candidates.first?.target == target,
+                          candidates.first?.evidenceKinds.contains(.exactLogicalName) == true else {
+                        association = reviewRequired(association, reason: .logicalNameChanged, now: now)
+                        return NodeAssociationEvaluation(association: association, candidates: candidates)
+                    }
+                }
                 if association.method == .automatic,
                    !candidates.contains(where: { $0.target == target }) {
                     applyState(
@@ -232,6 +268,19 @@ public enum NodeAssociationEngine {
             applyState(
                 .pendingConfirmation,
                 reasons: [.proxiedRoute],
+                to: &association,
+                now: now,
+                incrementsRevision: existing != nil
+            )
+            return NodeAssociationEvaluation(association: association, candidates: candidates)
+        }
+
+        if let logicalNameContext,
+           LogicalNodeName.normalize(logicalNameContext.serverName) == logicalID,
+           logicalNameContext.matchingServerCount > 1 {
+            applyState(
+                .pendingConfirmation,
+                reasons: [.multipleStrongMatches],
                 to: &association,
                 now: now,
                 incrementsRevision: existing != nil
@@ -373,16 +422,30 @@ public enum NodeAssociationEngine {
         return result
     }
 
-    private static func candidates(route: EffectiveSSHRoute, status: TailscaleStatus) -> [NodeAssociationCandidate] {
+    private static func candidates(
+        logicalID: String,
+        route: EffectiveSSHRoute,
+        status: TailscaleStatus,
+        logicalNameContext: LogicalNameMatchContext?
+    ) -> [NodeAssociationCandidate] {
         guard let tailnetKey = status.tailnetKey else { return [] }
+        let serverNameMatches = logicalNameContext?.matchingServerCount == 1
+            && LogicalNodeName.normalize(logicalNameContext?.serverName ?? "") == logicalID
         return status.nodes.compactMap { node in
-            guard let nodeID = node.stableNodeID,
-                  let match = node.addressMatch(for: route.hostname) else { return nil }
-            let evidence: NodeAssociationEvidence = match == .tailscaleMagicDNS ? .exactMagicDNS : .exactTailscaleIP
+            guard let nodeID = node.stableNodeID else { return nil }
+            var evidenceKinds: [NodeAssociationEvidence] = []
+            if serverNameMatches,
+               LogicalNodeName.normalize(node.hostName ?? "") == logicalID {
+                evidenceKinds.append(.exactLogicalName)
+            }
+            if let match = node.addressMatch(for: route.hostname) {
+                evidenceKinds.append(match == .tailscaleMagicDNS ? .exactMagicDNS : .exactTailscaleIP)
+            }
+            guard !evidenceKinds.isEmpty else { return nil }
             return NodeAssociationCandidate(
                 target: ActualNodeReference(tailnetKey: tailnetKey, nodeID: nodeID),
                 node: node,
-                evidenceKinds: [evidence]
+                evidenceKinds: evidenceKinds
             )
         }
     }
