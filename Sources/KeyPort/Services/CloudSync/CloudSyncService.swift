@@ -100,6 +100,10 @@ actor CloudKitSyncService: CloudSyncing {
             copy.lastCheckedAt = nil
             copy.passwordCheck = nil
             copy.keyCheck = nil
+            copy.lastKeySuccessAt = nil
+            copy.lastAutomaticKeyCheckAt = nil
+            copy.verifiedKeyContext = nil
+            copy.lastObservedHostKeys = nil
             return copy
         }
         value.devices = value.devices.map { device in

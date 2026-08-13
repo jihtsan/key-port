@@ -61,7 +61,7 @@ private struct ServerGroupHeader: View {
     let onAddAccount: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "server.rack")
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
@@ -113,10 +113,22 @@ private struct ServerAccountRow: View {
                     Text(group.representative.name)
                         .fontWeight(.medium)
                         .lineLimit(1)
-                    Text("\(group.host):\(group.port) · \(account.username) · \(account.alias)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(verbatim: "\(group.host):\(group.port)")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(0)
+                        Text(account.username)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .layoutPriority(2)
+                        Text(account.alias)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
                 } else {
                     Text(account.username)
                         .fontWeight(.medium)
@@ -127,13 +139,35 @@ private struct ServerAccountRow: View {
                         .lineLimit(1)
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer()
-            if let group, let capacity = group.representative.machineConfiguration?.capacitySummary {
-                Text(capacity)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            if account.passwordCheck?.state == .checking {
+                Label("密码测试中", systemImage: "lock.open")
+                    .foregroundStyle(.blue)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityValue("正在测试密码 SSH")
+            } else if account.keyCheck?.state == .checking {
+                Label("免密测试中", systemImage: "key.horizontal")
+                    .foregroundStyle(.blue)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .accessibilityValue("正在测试免密 SSH")
+            } else {
+                StatusLabel(status: account.status)
+                    .fixedSize()
+                    .accessibilityValue(accountStatusAccessibilityValue)
             }
-            StatusLabel(status: account.status)
+            Button {
+                onCopyAlias(account.id)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .fixedSize()
+            .help("复制 SSH 别名")
+            .accessibilityLabel("复制 SSH 别名 \(account.alias)")
         }
         .padding(.vertical, group == nil ? 3 : 5)
         .contentShape(Rectangle())
@@ -160,6 +194,13 @@ private struct ServerAccountRow: View {
                 Label("删除用户", systemImage: "trash")
             }
         }
+    }
+
+    private var accountStatusAccessibilityValue: String {
+        if let detail = account.statusDetail {
+            return "\(account.status.title)，\(UserFacingText.localized(detail))"
+        }
+        return account.status.title
     }
 }
 

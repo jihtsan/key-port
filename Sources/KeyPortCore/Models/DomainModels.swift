@@ -23,7 +23,7 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
         case .hostKeyMismatch: "主机密钥已变更"
         case .unreachable: "无法连接"
         case .passwordAuthenticationFailed: "密码验证失败"
-        case .keyAuthenticationFailed: "密钥验证失败"
+        case .keyAuthenticationFailed: "免密验证失败"
         case .authorizationConflict: "授权冲突"
         case .syncPending: "待检查"
         case .checking: "检查中"
@@ -139,6 +139,10 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     public var lastCheckedAt: Date?
     public var passwordCheck: AuthenticationCheck?
     public var keyCheck: AuthenticationCheck?
+    public var lastKeySuccessAt: Date?
+    public var lastAutomaticKeyCheckAt: Date?
+    public var verifiedKeyContext: SSHKeyVerificationContext?
+    public var lastObservedHostKeys: [HostKeyRecord]?
     public var machineConfiguration: RemoteMachineConfiguration?
     public var machineConfigurationRefreshAttemptedAt: Date?
     public var createdAt: Date
@@ -146,7 +150,7 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     public var isDeleted: Bool
     public var version: Int
 
-    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, machineConfiguration: RemoteMachineConfiguration? = nil, machineConfigurationRefreshAttemptedAt: Date? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
+    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, lastKeySuccessAt: Date? = nil, lastAutomaticKeyCheckAt: Date? = nil, verifiedKeyContext: SSHKeyVerificationContext? = nil, lastObservedHostKeys: [HostKeyRecord]? = nil, machineConfiguration: RemoteMachineConfiguration? = nil, machineConfigurationRefreshAttemptedAt: Date? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
         self.id = id
         self.name = name
         self.host = host
@@ -161,6 +165,10 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
         self.lastCheckedAt = lastCheckedAt
         self.passwordCheck = passwordCheck
         self.keyCheck = keyCheck
+        self.lastKeySuccessAt = lastKeySuccessAt
+        self.lastAutomaticKeyCheckAt = lastAutomaticKeyCheckAt
+        self.verifiedKeyContext = verifiedKeyContext
+        self.lastObservedHostKeys = lastObservedHostKeys
         self.machineConfiguration = machineConfiguration
         self.machineConfigurationRefreshAttemptedAt = machineConfigurationRefreshAttemptedAt
         self.createdAt = createdAt
@@ -276,7 +284,7 @@ public struct AuditEvent: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct AppSnapshot: Codable, Sendable {
-    public var schemaVersion = 5
+    public var schemaVersion = 6
     public var servers: [ServerConnection] = []
     public var devices: [Device] = []
     public var keys: [SSHKeyRecord] = []
@@ -305,5 +313,16 @@ public struct AppSnapshot: Codable, Sendable {
         guard schemaVersion < 5 else { return }
         nodeAssociations = []
         schemaVersion = 5
+    }
+
+    public mutating func migrateSSHKeyVerificationSchemaIfNeeded() {
+        guard schemaVersion < 6 else { return }
+        for index in servers.indices {
+            if servers[index].lastKeySuccessAt == nil,
+               servers[index].keyCheck?.state == .succeeded {
+                servers[index].lastKeySuccessAt = servers[index].keyCheck?.checkedAt
+            }
+        }
+        schemaVersion = 6
     }
 }

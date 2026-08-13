@@ -636,6 +636,7 @@ final class AppModel {
             snapshot = try await store.load()
             ensureCurrentDevice()
             try await refreshKeys(recordAudit: false)
+            invalidateChangedKeyVerificationContexts()
             await refreshPasswordAvailability()
             if selectedServerID == nil { selectedServerID = activeServers.first?.id }
             if selectedKeyItemID == nil {
@@ -826,6 +827,8 @@ final class AppModel {
             snapshot.servers[index].passwordCheck = submission.passwordCheck
             if authenticationContextChanged {
                 snapshot.servers[index].keyCheck = nil
+                snapshot.servers[index].lastKeySuccessAt = nil
+                snapshot.servers[index].verifiedKeyContext = nil
                 snapshot.servers[index].status = key(for: snapshot.servers[index]) == nil ? .missingLocalKey : .needsAuthorization
                 snapshot.servers[index].statusDetail = "连接信息已变更。密码 SSH 已验证，请重新检查密钥授权。"
             }
@@ -933,6 +936,7 @@ final class AppModel {
         migrateLegacyAuthenticationChecksIfNeeded()
         migrateDeviceNetworkIdentitySchemaIfNeeded()
         snapshot.migrateNodeAssociationsSchemaIfNeeded()
+        snapshot.migrateSSHKeyVerificationSchemaIfNeeded()
         let existingByFingerprint = Dictionary(uniqueKeysWithValues: snapshot.keys.map { ($0.fingerprint, $0) })
         let merged = scanned.map { key -> SSHKeyRecord in
             guard let existing = existingByFingerprint[key.fingerprint] else { return key }
@@ -941,8 +945,18 @@ final class AppModel {
             value.deviceID = existing.deviceID
             return value
         }
-        let remoteOnly = snapshot.keys.filter { existing in !merged.contains(where: { $0.fingerprint == existing.fingerprint }) }
+        let remoteOnly = snapshot.keys
+            .filter { existing in !merged.contains(where: { $0.fingerprint == existing.fingerprint }) }
+            .map { existing -> SSHKeyRecord in
+                guard existing.deviceID == device.id else { return existing }
+                var unavailable = existing
+                unavailable.privateKeyPath = nil
+                unavailable.isInAgent = false
+                unavailable.isLocallyAvailable = false
+                return unavailable
+            }
         snapshot.keys = remoteOnly + merged
+        invalidateChangedKeyVerificationContexts()
         if recordAudit { appendAudit(category: "key", action: "scan", result: "found-\(merged.count)") }
         await persist()
     }
@@ -1003,6 +1017,26 @@ final class AppModel {
         await check(serverID: serverID, kind: .key)
     }
 
+    func runAutomaticKeyChecksIfNeeded(now: Date = .now) async {
+        guard isLoaded, !isBusy else { return }
+        let serverIDs = activeServers.filter {
+            SSHKeyVerificationPolicy.shouldRunAutomaticCheck(
+                lastAttemptAt: $0.lastAutomaticKeyCheckAt,
+                now: now
+            )
+        }.map(\.id)
+
+        guard !serverIDs.isEmpty else { return }
+        isBusy = true
+        defer { isBusy = false }
+        for serverID in serverIDs {
+            guard let index = snapshot.servers.firstIndex(where: { $0.id == serverID && !$0.isDeleted }) else { continue }
+            snapshot.servers[index].lastAutomaticKeyCheckAt = now
+            await persist()
+            await check(serverID: serverID, kind: .key, ownsBusyState: false)
+        }
+    }
+
     func synchronizeSSHAuthorizationSelected() async {
         guard let id = selectedServerID else { return }
         await synchronizeSSHAuthorization(serverID: id)
@@ -1031,6 +1065,7 @@ final class AppModel {
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
                 pendingHostKeys = observed
+                setLastObservedHostKeys(observed, serverID: serverID)
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = .key
                 appendSSHCheckLog(detail, serverID: serverID)
@@ -1042,6 +1077,7 @@ final class AppModel {
                 updateServer(id: serverID, status: .hostKeyMismatch, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
                 pendingHostKeys = observed
+                setLastObservedHostKeys(observed, serverID: serverID)
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = .key
                 appendSSHCheckLog(detail, serverID: serverID)
@@ -1166,6 +1202,7 @@ final class AppModel {
         }
         let isRotation = !snapshot.servers[index].confirmedHostKeys.isEmpty
         snapshot.servers[index].confirmedHostKeys = confirmed
+        snapshot.servers[index].lastObservedHostKeys = nil
         snapshot.servers[index].status = key(for: snapshot.servers[index]) == nil ? .missingLocalKey : .needsAuthorization
         snapshot.servers[index].statusDetail = "已根据当前网络响应确认主机密钥。"
         snapshot.servers[index].updatedAt = now
@@ -1383,8 +1420,14 @@ final class AppModel {
 
     func copyAlias(serverID: UUID) {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(server.alias)
+        clipboard.copy(SSHCopyValue.alias.content(alias: server.alias))
         appendAudit(category: "server", action: "copy-alias", targetID: serverID.uuidString, result: "success")
+    }
+
+    func copySSHCommand(serverID: UUID) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        clipboard.copy(SSHCopyValue.command.content(alias: server.alias))
+        appendAudit(category: "server", action: "copy-command", targetID: serverID.uuidString, result: "success")
     }
 
     func copyHost(serverID: UUID) {
@@ -1410,7 +1453,7 @@ final class AppModel {
     func key(for connection: DiscoveredSSHConnection) -> SSHKeyRecord? {
         let configuredPaths = Set(connection.identityFiles.map(normalizedIdentityPath))
         return snapshot.keys.first { key in
-            guard let path = key.privateKeyPath else { return false }
+            guard key.isLocallyAvailable, let path = key.privateKeyPath else { return false }
             return configuredPaths.contains(normalizedIdentityPath(path))
         }
     }
@@ -1763,7 +1806,10 @@ final class AppModel {
 
     private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
         guard let initial = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        if ownsBusyState { isBusy = true }
+        if ownsBusyState {
+            guard !isBusy else { return }
+            isBusy = true
+        }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
             title: kind == .password ? "密码 SSH 检查" : "密钥 SSH 检查",
@@ -1784,6 +1830,7 @@ final class AppModel {
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
                 appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
+                setLastObservedHostKeys(observed, serverID: serverID)
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = kind
                 appendAudit(category: "host-key", action: kind.auditAction, targetID: serverID.uuidString, result: "pending-confirmation", level: .warning)
@@ -1793,6 +1840,7 @@ final class AppModel {
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
                 appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
+                setLastObservedHostKeys(observed, serverID: serverID)
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = kind
                 appendAudit(category: "host-key", action: kind.auditAction, targetID: serverID.uuidString, result: "mismatch-blocked", level: .error)
@@ -1809,7 +1857,15 @@ final class AppModel {
             updateAuthenticationCheck(id: serverID, kind: kind, state: .failed, detail: message)
             appendSSHCheckLog(message, serverID: serverID)
             if kind == .key {
-                updateServer(id: serverID, status: .unreachable, detail: message)
+                applyKeyCheckResult(
+                    SSHKeyVerificationPolicy.result(
+                        for: .transportFailure,
+                        previousSuccessAt: initial.lastKeySuccessAt,
+                        checkedAt: .now
+                    ),
+                    serverID: serverID,
+                    detail: message
+                )
             }
             appendAudit(category: "ssh-auth", action: kind.auditAction, targetID: serverID.uuidString, result: "failed", level: .warning)
         }
@@ -1876,7 +1932,15 @@ final class AppModel {
         guard let key = key(for: server) else {
             let detail = "此 Mac 没有可用的本地私钥。"
             updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: detail)
-            updateServer(id: server.id, status: .missingLocalKey, detail: detail)
+            applyKeyCheckResult(
+                SSHKeyVerificationPolicy.result(
+                    for: .missingLocalKey,
+                    previousSuccessAt: server.lastKeySuccessAt,
+                    checkedAt: .now
+                ),
+                serverID: server.id,
+                detail: detail
+            )
             appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "missing-key", level: .warning)
             return
         }
@@ -1885,14 +1949,35 @@ final class AppModel {
         updateAuthenticationCheck(id: server.id, kind: .key, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
         if authenticated {
+            let checkedAt = snapshot.servers.first(where: { $0.id == server.id })?.keyCheck?.checkedAt ?? .now
+            let result = SSHKeyVerificationPolicy.result(
+                for: .succeeded,
+                previousSuccessAt: server.lastKeySuccessAt,
+                checkedAt: checkedAt
+            )
+            if let index = snapshot.servers.firstIndex(where: { $0.id == server.id }) {
+                snapshot.servers[index].lastKeySuccessAt = result.lastSuccessAt
+                snapshot.servers[index].verifiedKeyContext = SSHKeyVerificationPolicy.context(
+                    for: server,
+                    keyFingerprint: key.fingerprint
+                )
+            }
             markMachineConfigurationRefreshAttempt(serverID: server.id)
-            updateServer(id: server.id, status: .authorized, detail: detail)
+            updateServer(id: server.id, status: result.status, detail: detail)
             upsertAuthorization(serverID: server.id, key: key, authorizedAt: nil)
             await synchronizeMachineConfigurationWithKey(server: server, key: key)
             return
         }
 
-        updateServer(id: server.id, status: .needsAuthorization, detail: detail)
+        applyKeyCheckResult(
+            SSHKeyVerificationPolicy.result(
+                for: .rejected,
+                previousSuccessAt: server.lastKeySuccessAt,
+                checkedAt: .now
+            ),
+            serverID: server.id,
+            detail: detail
+        )
         appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "not-authorized", level: .warning)
     }
 
@@ -2065,6 +2150,9 @@ final class AppModel {
                 snapshot.servers[index].lastCheckedAt = previous.lastCheckedAt
                 snapshot.servers[index].passwordCheck = previous.passwordCheck
                 snapshot.servers[index].keyCheck = previous.keyCheck
+                snapshot.servers[index].lastKeySuccessAt = previous.lastKeySuccessAt
+                snapshot.servers[index].lastAutomaticKeyCheckAt = previous.lastAutomaticKeyCheckAt
+                snapshot.servers[index].verifiedKeyContext = previous.verifiedKeyContext
                 continue
             }
             if snapshot.servers[index].confirmedHostKeys.isEmpty {
@@ -2080,6 +2168,8 @@ final class AppModel {
             snapshot.servers[index].lastCheckedAt = nil
             snapshot.servers[index].passwordCheck = nil
             snapshot.servers[index].keyCheck = nil
+            snapshot.servers[index].lastKeySuccessAt = nil
+            snapshot.servers[index].verifiedKeyContext = nil
         }
     }
 
@@ -2090,6 +2180,32 @@ final class AppModel {
         let lhsHostKeys = Set(lhs.confirmedHostKeys.map { "\($0.algorithm):\($0.fingerprint)" })
         let rhsHostKeys = Set(rhs.confirmedHostKeys.map { "\($0.algorithm):\($0.fingerprint)" })
         return lhsHostKeys == rhsHostKeys
+    }
+
+    private func invalidateChangedKeyVerificationContexts() {
+        for index in snapshot.servers.indices where !snapshot.servers[index].isDeleted {
+            guard let verifiedContext = snapshot.servers[index].verifiedKeyContext else { continue }
+            guard let key = key(for: snapshot.servers[index]) else {
+                snapshot.servers[index].status = .missingLocalKey
+                snapshot.servers[index].statusDetail = "上次验证使用的本地私钥当前不可用。"
+                snapshot.servers[index].keyCheck = nil
+                snapshot.servers[index].lastKeySuccessAt = nil
+                continue
+            }
+            let currentContext = SSHKeyVerificationPolicy.context(
+                for: snapshot.servers[index],
+                keyFingerprint: key.fingerprint
+            )
+            guard SSHKeyVerificationPolicy.contextChanged(
+                verified: verifiedContext,
+                current: currentContext
+            ) else { continue }
+            snapshot.servers[index].status = .syncPending
+            snapshot.servers[index].statusDetail = "连接身份或实际使用的密钥已变更，请重新测试免密 SSH。"
+            snapshot.servers[index].keyCheck = nil
+            snapshot.servers[index].lastKeySuccessAt = nil
+            snapshot.servers[index].verifiedKeyContext = nil
+        }
     }
 
     private func refreshPasswordAvailability() async {
@@ -2354,6 +2470,17 @@ final class AppModel {
                 )
             }
         }
+    }
+
+    private func applyKeyCheckResult(_ result: SSHKeyCheckResult, serverID: UUID, detail: String) {
+        guard let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) else { return }
+        snapshot.servers[index].lastKeySuccessAt = result.lastSuccessAt
+        updateServer(id: serverID, status: result.status, detail: detail)
+    }
+
+    private func setLastObservedHostKeys(_ keys: [HostKeyRecord], serverID: UUID) {
+        guard let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) else { return }
+        snapshot.servers[index].lastObservedHostKeys = keys
     }
 
     private func updateAuthenticationCheck(

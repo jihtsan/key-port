@@ -1,3 +1,4 @@
+import AppKit
 import KeyPortCore
 import SwiftUI
 
@@ -6,6 +7,8 @@ struct ServerDetailView: View {
     let model: AppModel
     @State private var pendingRevocationID: String?
     @State private var associationEditorSelection: AssociationEditorSelection?
+    @State private var securityDetailsExpanded = false
+    @State private var copiedValue: CopiedSSHValue?
 
     private var localKey: SSHKeyRecord? {
         guard let key = model.key(for: server),
@@ -25,10 +28,9 @@ struct ServerDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 accountHeader
-                authorizationOverview
-                verificationResults
+                accessSummary
                 sshOperationLog
-                authorizationPrerequisites
+                validationAndSecurityDetails
                 deviceAssociation
                 testCaseNodeAssociation
                 machineConfiguration
@@ -39,6 +41,8 @@ struct ServerDetailView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .navigationTitle(server.name)
+        .onAppear { expandSecurityDetailsForHostRisk() }
+        .onChange(of: server.status) { _, _ in expandSecurityDetailsForHostRisk() }
         .confirmationDialog("要从服务器撤销此设备密钥吗？", isPresented: Binding(
             get: { pendingRevocationID != nil },
             set: { if !$0 { pendingRevocationID = nil } }
@@ -73,17 +77,13 @@ struct ServerDetailView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusLabel(status: server.status)
             }
-            Text("当前 SSH 账户的免密授权状态与操作")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
     }
 
-    private var authorizationOverview: some View {
-        GroupBox("SSH 免密授权") {
-            VStack(alignment: .leading, spacing: 10) {
+    private var accessSummary: some View {
+        GroupBox("SSH 访问") {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .firstTextBaseline) {
                     StatusLabel(status: server.status)
                     Spacer()
@@ -106,37 +106,58 @@ struct ServerDetailView: View {
                 Text(UserFacingText.localized(server.statusDetail ?? defaultStatusDetail))
                     .fixedSize(horizontal: false, vertical: true)
 
-                if let key = localKey {
-                    LabeledContent("当前公钥指纹") {
-                        Text(key.fingerprint)
-                            .font(.caption.monospaced())
-                            .textSelection(.enabled)
-                    }
-                }
-
-                if let checkedAt = server.lastCheckedAt {
-                    LabeledContent("最近状态更新时间") {
-                        Text(checkedAt.formatted(date: .abbreviated, time: .shortened))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
-        }
-    }
-
-    private var verificationResults: some View {
-        GroupBox("验证结果") {
-            VStack(alignment: .leading, spacing: 10) {
-                VerificationCheckRow(title: "公钥复检", check: server.keyCheck)
-                Divider()
-                VerificationCheckRow(title: "密码前置验证", check: server.passwordCheck)
-                Divider()
-                Text("只有同一 \(server.username)@\(server.endpoint) 的公钥复检成功后，状态才会显示“免密可用”。")
+                if let lastSuccessAt = server.lastKeySuccessAt {
+                    Label(
+                        "最近免密成功：\(lastSuccessAt.formatted(date: .abbreviated, time: .shortened))",
+                        systemImage: "checkmark.circle.fill"
+                    )
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.green)
+                }
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await model.checkKey(serverID: server.id) }
+                    } label: {
+                        authenticationButtonLabel(
+                            title: "测试免密 SSH",
+                            systemImage: "key.horizontal",
+                            isChecking: server.keyCheck?.state == .checking
+                        )
+                    }
+                    .help("只使用本地公钥测试 SSH，不读取密码或写入远端")
+                    .accessibilityLabel("测试免密 SSH")
+                    .accessibilityValue(authenticationAccessibilityValue(server.keyCheck))
+
+                    Button {
+                        Task { await model.checkPassword(serverID: server.id) }
+                    } label: {
+                        authenticationButtonLabel(
+                            title: "测试密码 SSH",
+                            systemImage: "lock.open",
+                            isChecking: server.passwordCheck?.state == .checking
+                        )
+                    }
+                    .help("使用已存密码测试 SSH；没有密码时打开安全凭据窗口")
+                    .accessibilityLabel("测试密码 SSH")
+                    .accessibilityValue(authenticationAccessibilityValue(server.passwordCheck))
+                }
+                .disabled(model.isBusy)
+
+                Divider()
+
+                HStack(spacing: 10) {
+                    Text(server.alias)
+                        .font(.body.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 12)
+                    copyButton(.alias)
+                    copyButton(.command)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 5)
@@ -168,9 +189,13 @@ struct ServerDetailView: View {
         }
     }
 
-    private var authorizationPrerequisites: some View {
-        GroupBox("授权阻断与前置条件") {
+    private var validationAndSecurityDetails: some View {
+        DisclosureGroup("验证与安全详情", isExpanded: $securityDetailsExpanded) {
             VStack(alignment: .leading, spacing: 12) {
+                VerificationCheckRow(title: "免密 SSH", check: server.keyCheck)
+                Divider()
+                VerificationCheckRow(title: "密码 SSH", check: server.passwordCheck)
+                Divider()
                 HStack(alignment: .firstTextBaseline) {
                     Label(
                         server.confirmedHostKeys.isEmpty ? "主机身份待确认" : "主机身份已确认",
@@ -194,6 +219,23 @@ struct ServerDetailView: View {
                             Text(key.fingerprint)
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+
+                if let observedKeys = server.lastObservedHostKeys, !observedKeys.isEmpty,
+                   server.status == .hostKeyPending || server.status == .hostKeyMismatch {
+                    Divider()
+                    Label("本次观察到的主机密钥", systemImage: "exclamationmark.shield.fill")
+                        .fontWeight(.medium)
+                        .foregroundStyle(.orange)
+                    ForEach(observedKeys) { key in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(key.algorithm)
+                                .font(.callout)
+                            Text(key.fingerprint)
+                                .font(.caption.monospaced())
                                 .textSelection(.enabled)
                         }
                     }
@@ -233,10 +275,28 @@ struct ServerDetailView: View {
                         .disabled(model.isBusy)
                     }
                 }
+
+                if let key = localKey {
+                    Divider()
+                    LeftAlignedDetailRow("当前公钥指纹") {
+                        Text(key.fingerprint)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+
+                if let checkedAt = server.lastCheckedAt {
+                    LeftAlignedDetailRow("最近状态更新时间") {
+                        Text(checkedAt.formatted(date: .abbreviated, time: .shortened))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
+            .padding(.top, 12)
         }
+        .padding(12)
+        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var deviceAssociation: some View {
@@ -472,16 +532,6 @@ struct ServerDetailView: View {
     private var connectionDetails: some View {
         GroupBox("SSH 账户资料") {
             VStack(alignment: .leading, spacing: 10) {
-                LeftAlignedDetailRow("SSH 别名") {
-                    HStack(spacing: 6) {
-                        Text(server.alias).monospaced()
-                        Button { model.copyAlias(serverID: server.id) } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("复制 SSH 别名")
-                    }
-                }
                 LeftAlignedDetailRow("主机") {
                     HStack(spacing: 6) {
                         Text(server.host).monospaced()
@@ -600,9 +650,72 @@ struct ServerDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func authenticationButtonLabel(title: String, systemImage: String, isChecking: Bool) -> some View {
+        HStack(spacing: 7) {
+            if isChecking {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: systemImage)
+                    .frame(width: 16, height: 16)
+            }
+            Text(title)
+        }
+        .frame(minWidth: 132)
+    }
+
+    private func authenticationAccessibilityValue(_ check: AuthenticationCheck?) -> String {
+        guard let check else { return "尚未测试" }
+        return "\(check.state.title)，\(UserFacingText.localized(check.detail))"
+    }
+
+    private func copyButton(_ value: CopiedSSHValue) -> some View {
+        Button {
+            switch value {
+            case .alias:
+                model.copyAlias(serverID: server.id)
+            case .command:
+                model.copySSHCommand(serverID: server.id)
+            }
+            copiedValue = value
+            AccessibilityNotification.Announcement(value.successAnnouncement).post()
+            Task {
+                try? await Task.sleep(for: .seconds(1.8))
+                if copiedValue == value { copiedValue = nil }
+            }
+        } label: {
+            Label(
+                value.title,
+                systemImage: copiedValue == value ? "checkmark" : value.systemImage
+            )
+            .frame(minWidth: value.minimumWidth)
+        }
+        .help(value.title)
+        .accessibilityLabel(value.title)
+        .accessibilityValue(copiedValue == value ? "已复制" : "")
+    }
+
+    private func expandSecurityDetailsForHostRisk() {
+        if server.status == .hostKeyPending || server.status == .hostKeyMismatch {
+            securityDetailsExpanded = true
+        }
+    }
+
     private func associatedAddresses(for item: DevicePresence) -> [String]? {
         item.tailscaleNode?.addresses ?? item.registeredDevice?.tailscaleIdentity?.addresses
     }
+}
+
+private enum CopiedSSHValue: Equatable {
+    case alias
+    case command
+
+    var title: String { self == .alias ? "复制 SSH 别名" : "复制 SSH 命令" }
+    var systemImage: String { self == .alias ? "doc.on.doc" : "terminal" }
+    var minimumWidth: CGFloat { self == .alias ? 124 : 128 }
+    var successAnnouncement: String { self == .alias ? "SSH 别名已复制" : "SSH 命令已复制" }
 }
 
 private struct AssociationEditorSelection: Identifiable {

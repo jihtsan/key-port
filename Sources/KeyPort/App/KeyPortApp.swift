@@ -17,7 +17,10 @@ struct KeyPortApp: App {
         WindowGroup("SSH KeyPort", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 980, minHeight: 620)
-                .task { await model.load() }
+                .task {
+                    await model.load()
+                    await model.runAutomaticKeyChecksIfNeeded()
+                }
         }
         .defaultSize(width: 1180, height: 760)
         .commands { KeyPortCommands(model: model) }
@@ -58,7 +61,10 @@ private enum AppWindowFallback {
             guard !hasVisibleContentWindow else { return }
             let rootView = ContentView(model: model)
                 .frame(minWidth: 980, minHeight: 620)
-                .task { await model.load() }
+                .task {
+                    await model.load()
+                    await model.runAutomaticKeyChecksIfNeeded()
+                }
             let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
             window.title = "SSH KeyPort"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]

@@ -2,6 +2,7 @@ import KeyPortCore
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     let model: AppModel
     @State private var showsAddServer = false
     @State private var showsEditServer = false
@@ -25,6 +26,10 @@ struct ContentView: View {
             detailColumn
         }
         .toolbar { toolbar }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await model.runAutomaticKeyChecksIfNeeded() }
+        }
         .sheet(isPresented: $showsAddServer) {
             ServerEditorView(
                 title: "添加服务器和用户",
@@ -258,7 +263,14 @@ struct ContentView: View {
                 Button {
                     Task { await model.checkPasswordSelected() }
                 } label: {
-                    Label("检查密码 SSH", systemImage: "lock")
+                    Label("测试密码 SSH", systemImage: "lock.open")
+                }
+                .disabled(model.selectedServerID == nil || model.isBusy)
+
+                Button {
+                    Task { await model.checkKeySelected() }
+                } label: {
+                    Label("测试免密 SSH", systemImage: "key.horizontal")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
@@ -311,11 +323,13 @@ struct KeyPortCommands: Commands {
 
     var body: some Commands {
         CommandMenu("服务器") {
-            Button("检查密码 SSH") { Task { await model.checkPasswordSelected() } }
+            Button("测试密码 SSH") { Task { await model.checkPasswordSelected() } }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil)
-            Button("同步 SSH 授权") { Task { await model.synchronizeSSHAuthorizationSelected() } }
+            Button("测试免密 SSH") { Task { await model.checkKeySelected() } }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(model.selectedServerID == nil)
+            Button("同步 SSH 授权") { Task { await model.synchronizeSSHAuthorizationSelected() } }
                 .disabled(model.selectedServerID == nil)
             Button("复制 SSH 别名") { model.copySelectedAlias() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
