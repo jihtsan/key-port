@@ -227,6 +227,7 @@ final class AppModel {
     var machineConfigurationSyncErrorServerID: UUID?
     var tailscaleStatus: TailscaleStatus?
     var tailscaleDiscoveryState: TailscaleDiscoveryState = .idle
+    var nodeAssociationCandidates: [String: [NodeAssociationCandidate]] = [:]
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
 
     private let store: SnapshotStore
@@ -313,6 +314,163 @@ final class AppModel {
 
     func devicePresence(for key: SSHKeyRecord) -> DevicePresence? {
         deviceListItems.first { $0.registeredDevice?.id == key.deviceID }
+    }
+
+    func nodeAssociations(for serverID: UUID) -> [NodeAssociation] {
+        snapshot.nodeAssociations.filter { $0.serverID == serverID }.sorted {
+            $0.testCaseNodeID.localizedCaseInsensitiveCompare($1.testCaseNodeID) == .orderedAscending
+        }
+    }
+
+    func nodeAssociation(testCaseNodeID: String) -> NodeAssociation? {
+        let normalizedID = LogicalNodeName.normalize(testCaseNodeID)
+        return snapshot.nodeAssociations.first { $0.testCaseNodeID == normalizedID }
+    }
+
+    func candidates(for testCaseNodeID: String) -> [NodeAssociationCandidate] {
+        nodeAssociationCandidates[LogicalNodeName.normalize(testCaseNodeID)] ?? []
+    }
+
+    var stableAssociationTargets: [(target: ActualNodeReference, node: TailscaleNode)] {
+        guard let status = tailscaleStatus else { return [] }
+        return status.nodes.compactMap { node in
+            NodeAssociationEngine.target(for: node, status: status).map { ($0, node) }
+        }.sorted {
+            $0.node.name.localizedCaseInsensitiveCompare($1.node.name) == .orderedAscending
+        }
+    }
+
+    func canExecuteTestCaseNode(_ testCaseNodeID: String) -> Bool {
+        let normalizedID = LogicalNodeName.normalize(testCaseNodeID)
+        guard let association = snapshot.nodeAssociations.first(where: { $0.testCaseNodeID == normalizedID }),
+              association.allowsExecution,
+              let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else {
+            return false
+        }
+        return server.status != .hostKeyMismatch
+    }
+
+    @discardableResult
+    func evaluateNodeAssociation(
+        testCaseNodeID: String,
+        serverID: UUID,
+        expectedRevision: Int?
+    ) async -> NodeAssociation? {
+        guard !isBusy,
+              let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return nil }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let existing = nodeAssociation(testCaseNodeID: testCaseNodeID)
+            try requireObservedRevision(existing, expectedRevision: expectedRevision)
+            let evaluation = try NodeAssociationEngine.evaluate(
+                testCaseNodeID: testCaseNodeID,
+                serverID: serverID,
+                route: effectiveSSHRoute(for: server),
+                status: tailscaleStatus,
+                sourceState: tailscaleStatus?.isCompleteAssociationSnapshot == true ? .complete : .unavailable,
+                logicalNameContext: logicalNameContext(for: server),
+                existing: existing,
+                hostKeyChanged: server.status == .hostKeyMismatch
+            )
+            nodeAssociationCandidates[evaluation.association.testCaseNodeID] = evaluation.candidates
+            upsertNodeAssociation(evaluation.association)
+            appendAudit(
+                category: "node-association",
+                action: "evaluate",
+                targetID: evaluation.association.testCaseNodeID,
+                result: evaluation.association.state.rawValue
+            )
+            await persist()
+            return evaluation.association
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    @discardableResult
+    func confirmNodeAssociation(
+        testCaseNodeID: String,
+        serverID: UUID,
+        target: ActualNodeReference,
+        expectedRevision: Int?
+    ) async -> NodeAssociation? {
+        guard !isBusy else { return nil }
+        isBusy = true
+        defer { isBusy = false }
+        let logicalID = LogicalNodeName.normalize(testCaseNodeID)
+        guard !logicalID.isEmpty else {
+            present(NodeAssociationMutationError.invalidTestCaseNodeID)
+            return nil
+        }
+        do {
+            let existing = nodeAssociation(testCaseNodeID: logicalID)
+            try requireObservedRevision(existing, expectedRevision: expectedRevision)
+            let association = existing ?? NodeAssociation(testCaseNodeID: logicalID, serverID: serverID)
+            guard association.serverID == serverID else { throw NodeAssociationMutationError.serverConflict }
+            let confirmed = try NodeAssociationEngine.confirm(
+                association,
+                target: target,
+                expectedRevision: association.revision,
+                validTargets: Set(stableAssociationTargets.map(\.target))
+            )
+            upsertNodeAssociation(confirmed)
+            appendAudit(category: "node-association", action: "confirm", targetID: logicalID, result: "manual")
+            await persist()
+            return confirmed
+        } catch {
+            present(error)
+            return nil
+        }
+    }
+
+    func unlinkNodeAssociation(testCaseNodeID: String, expectedRevision: Int) async {
+        guard !isBusy,
+              let association = nodeAssociation(testCaseNodeID: testCaseNodeID) else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let unlinked = try NodeAssociationEngine.unlink(
+                association,
+                expectedRevision: expectedRevision
+            )
+            upsertNodeAssociation(unlinked)
+            appendAudit(category: "node-association", action: "unlink", targetID: association.testCaseNodeID, result: "tombstoned")
+            await persist()
+        } catch {
+            present(error)
+        }
+    }
+
+    func resumeAutomaticNodeAssociation(testCaseNodeID: String, expectedRevision: Int) async {
+        guard !isBusy,
+              let association = nodeAssociation(testCaseNodeID: testCaseNodeID),
+              let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else { return }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let resumed = try NodeAssociationEngine.resumeAutomaticMatching(
+                association,
+                expectedRevision: expectedRevision
+            )
+            upsertNodeAssociation(resumed)
+            let evaluation = try NodeAssociationEngine.evaluate(
+                testCaseNodeID: resumed.testCaseNodeID,
+                serverID: resumed.serverID,
+                route: effectiveSSHRoute(for: server),
+                status: tailscaleStatus,
+                sourceState: tailscaleStatus?.isCompleteAssociationSnapshot == true ? .complete : .unavailable,
+                logicalNameContext: logicalNameContext(for: server),
+                existing: resumed,
+                hostKeyChanged: server.status == .hostKeyMismatch
+            )
+            nodeAssociationCandidates[evaluation.association.testCaseNodeID] = evaluation.candidates
+            upsertNodeAssociation(evaluation.association)
+            await persist()
+        } catch {
+            present(error)
+        }
     }
 
     func servers(for item: DevicePresence) -> [ServerConnection] {
@@ -774,6 +932,7 @@ final class AppModel {
         migrateImportedConnectionKeyStatusIfNeeded()
         migrateLegacyAuthenticationChecksIfNeeded()
         migrateDeviceNetworkIdentitySchemaIfNeeded()
+        snapshot.migrateNodeAssociationsSchemaIfNeeded()
         let existingByFingerprint = Dictionary(uniqueKeysWithValues: snapshot.keys.map { ($0.fingerprint, $0) })
         let merged = scanned.map { key -> SSHKeyRecord in
             guard let existing = existingByFingerprint[key.fingerprint] else { return key }
@@ -1199,12 +1358,20 @@ final class AppModel {
             let status = try await tailscaleService.status()
             tailscaleStatus = status
             await recordCurrentDeviceIdentity(from: status)
-            tailscaleDiscoveryState = .available
+            if status.isCompleteAssociationSnapshot {
+                await discoverLogicalNameAssociations(using: status)
+                await revalidateNodeAssociations(status: status, sourceState: .complete)
+                tailscaleDiscoveryState = .available
+            } else {
+                await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+                tailscaleDiscoveryState = .unavailable("Tailscale 状态不完整，已保留现有节点关联。")
+            }
             if selectedDeviceItem == nil {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
             }
         } catch {
             tailscaleStatus = nil
+            await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
             tailscaleDiscoveryState = .unavailable(error.localizedDescription)
         }
     }
@@ -1788,10 +1955,103 @@ final class AppModel {
 
     private func recordCurrentDeviceIdentity(from status: TailscaleStatus) async {
         guard let node = status.nodes.first(where: \.isCurrent),
+              let identity = TailscaleDeviceIdentity(node: node),
               let index = snapshot.devices.firstIndex(where: \.isCurrent) else { return }
-        snapshot.devices[index].tailscaleIdentity = TailscaleDeviceIdentity(node: node)
+        snapshot.devices[index].tailscaleIdentity = identity
         snapshot.devices[index].lastActiveAt = .now
         await persist()
+    }
+
+    private func revalidateNodeAssociations(
+        status: TailscaleStatus?,
+        sourceState: NodeAssociationSourceState
+    ) async {
+        let associations = snapshot.nodeAssociations
+        for association in associations {
+            guard let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else {
+                continue
+            }
+            guard let evaluation = try? NodeAssociationEngine.evaluate(
+                testCaseNodeID: association.testCaseNodeID,
+                serverID: association.serverID,
+                route: effectiveSSHRoute(for: server),
+                status: status,
+                sourceState: sourceState,
+                logicalNameContext: logicalNameContext(for: server),
+                existing: association,
+                hostKeyChanged: server.status == .hostKeyMismatch
+            ) else { continue }
+            nodeAssociationCandidates[evaluation.association.testCaseNodeID] = evaluation.candidates
+            upsertNodeAssociation(evaluation.association)
+        }
+        await persist()
+    }
+
+    private func effectiveSSHRoute(for server: ServerConnection) -> EffectiveSSHRoute {
+        guard let connection = connection(for: server) else {
+            return EffectiveSSHRoute(hostname: server.host)
+        }
+        return EffectiveSSHRoute(
+            hostname: connection.host,
+            proxyJump: connection.proxyJump,
+            proxyCommand: connection.proxyCommand
+        )
+    }
+
+    private func logicalNameContext(for server: ServerConnection) -> LogicalNameMatchContext {
+        let normalizedName = LogicalNodeName.normalize(server.name)
+        let matchingServerCount = activeServers.filter {
+            LogicalNodeName.normalize($0.name) == normalizedName
+        }.count
+        return LogicalNameMatchContext(
+            serverName: server.name,
+            matchingServerCount: matchingServerCount
+        )
+    }
+
+    private func discoverLogicalNameAssociations(using status: TailscaleStatus) async {
+        let associatedServerIDs = Set(snapshot.nodeAssociations.map(\.serverID))
+        for server in activeServers where !associatedServerIDs.contains(server.id) {
+            let logicalID = LogicalNodeName.normalize(server.name)
+            let context = logicalNameContext(for: server)
+            guard !logicalID.isEmpty, context.matchingServerCount == 1 else { continue }
+            guard let evaluation = try? NodeAssociationEngine.evaluate(
+                testCaseNodeID: logicalID,
+                serverID: server.id,
+                route: effectiveSSHRoute(for: server),
+                status: status,
+                sourceState: .complete,
+                logicalNameContext: context,
+                hostKeyChanged: server.status == .hostKeyMismatch
+            ), evaluation.association.state != .unlinked else { continue }
+            nodeAssociationCandidates[logicalID] = evaluation.candidates
+            upsertNodeAssociation(evaluation.association)
+        }
+        await persist()
+    }
+
+    private func upsertNodeAssociation(_ association: NodeAssociation) {
+        snapshot.nodeAssociations.removeAll { $0.testCaseNodeID == association.testCaseNodeID }
+        snapshot.nodeAssociations.append(association)
+    }
+
+    private func requireObservedRevision(
+        _ association: NodeAssociation?,
+        expectedRevision: Int?
+    ) throws {
+        if let association {
+            guard let expectedRevision else {
+                throw NodeAssociationMutationError.revisionConflict(expected: 0, actual: association.revision)
+            }
+            guard association.revision == expectedRevision else {
+                throw NodeAssociationMutationError.revisionConflict(
+                    expected: expectedRevision,
+                    actual: association.revision
+                )
+            }
+        } else if let expectedRevision {
+            throw NodeAssociationMutationError.revisionConflict(expected: expectedRevision, actual: 0)
+        }
     }
 
     private func normalizeStatusesAfterMetadataMerge(previousServers: [ServerConnection]) {
@@ -1881,6 +2141,9 @@ final class AppModel {
             snapshot.authorizations.removeAll { $0.id == authorization.id && ($0.lastVerifiedAt ?? .distantPast) < (authorization.lastVerifiedAt ?? .distantPast) }
             if !snapshot.authorizations.contains(where: { $0.id == authorization.id }) { snapshot.authorizations.append(authorization) }
         }
+        snapshot.nodeAssociations = NodeAssociationMerger.merge(
+            snapshot.nodeAssociations + imported.nodeAssociations
+        )
     }
 
     private func serverIDsSharingEndpoint(with serverID: UUID) -> [UUID] {
@@ -2079,6 +2342,18 @@ final class AppModel {
         snapshot.servers[index].statusDetail = detail
         snapshot.servers[index].lastCheckedAt = .now
         snapshot.servers[index].updatedAt = .now
+        if status == .hostKeyMismatch {
+            for associationIndex in snapshot.nodeAssociations.indices
+                where snapshot.nodeAssociations[associationIndex].serverID == id
+                    && snapshot.nodeAssociations[associationIndex].target != nil
+                    && (snapshot.nodeAssociations[associationIndex].state != .reviewRequired
+                        || snapshot.nodeAssociations[associationIndex].reasonCodes != [.hostKeyChanged]) {
+                snapshot.nodeAssociations[associationIndex] = NodeAssociationEngine.reviewRequired(
+                    snapshot.nodeAssociations[associationIndex],
+                    reason: .hostKeyChanged
+                )
+            }
+        }
     }
 
     private func updateAuthenticationCheck(
