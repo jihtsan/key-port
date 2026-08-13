@@ -28,6 +28,9 @@ mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_DIR/KeyPort" "$APP_BINARY"
 cp "$BUILD_DIR/KeyPortAskPass" "$APP_HELPERS/KeyPortAskPass"
 cp "$ROOT_DIR/Resources/KeyPort.entitlements" "$APP_RESOURCES/KeyPort.entitlements"
+cp "$ROOT_DIR/Resources/KeyPort.icns" "$APP_RESOURCES/KeyPort.icns"
+cp "$ROOT_DIR/Resources/KeyPortMenuTemplate.png" "$APP_RESOURCES/KeyPortMenuTemplate.png"
+cp "$ROOT_DIR/Resources/KeyPortMenuTemplate@2x.png" "$APP_RESOURCES/KeyPortMenuTemplate@2x.png"
 chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass"
 
 cat >"$INFO_PLIST" <<PLIST
@@ -45,6 +48,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>SSH KeyPort</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>KeyPort.icns</string>
   <key>CFBundleShortVersionString</key>
   <string>0.1.0</string>
   <key>CFBundleVersion</key>
