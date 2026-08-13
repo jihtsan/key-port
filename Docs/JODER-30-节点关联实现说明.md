@@ -4,23 +4,24 @@
 
 ## 当前数据源与稳定 ID
 
-- `testCaseNodeId`：由上游 Test Case 系统提供的不透明稳定 ID。KeyPort 不从主机名、IP、SSH alias 或其他本地字段生成它。
+- `testCaseNodeId` / 逻辑节点键：一期在没有上游实体时使用标准化后的 `ServerConnection.name`。标准化仅裁剪首尾空白、忽略大小写并去除 DNS 尾点；不做模糊匹配。未来接入上游后仍应使用其不透明稳定 ID。
 - `ServerConnection.id`：KeyPort 内部 SSH 账户 ID，只在本地/CloudKit KeyPort 数据范围稳定，不代替 `testCaseNodeId`。
 - 实际节点：`tailscale:{normalizedTailnetKey}:{nodeId}`。`tailnetKey` 小写并移除尾点，`nodeId` 大小写敏感。
 - 本地 Tailscale 快照：当前使用 `tailscale status --json`。只有 JSON 中真实 `ID` 字段可作为稳定目标；PublicKey、字典键等 parser fallback 只用于展示，不能自动关联或持久化为目标。
 - SSH 有效配置：对 alias 执行既有 `ssh -G -- <alias>` 发现流程，并读取最终 `hostname`、`proxyjump`、`proxycommand` 和 `hostkeyalias`。
+- 名称匹配字段：Server 侧使用 `ServerConnection.name`；Tailscale 侧使用 `tailscale status --json` 的原始 `HostName`，在 `TailscaleNode.hostName` 中单独保留。不会使用可能回退到 DNS/IP/nodeId 的展示字段 `TailscaleNode.name`，也不会把 MagicDNS `DNSName` 或 SSH alias 当作逻辑名称。
 
 ## 自动匹配优先级
 
 自动关联仅在以下条件同时成立时发生：
 
-1. `testCaseNodeId`、tailnet 标识和真实 Tailscale `nodeId` 均存在。
+1. 逻辑节点键、tailnet 标识和真实 Tailscale `nodeId` 均存在。
 2. Tailscale 数据源刷新成功且当前快照完整。
 3. SSH 路由为直连，不存在生效的 `ProxyJump` 或 `ProxyCommand`。
-4. 最终 SSH `HostName` 与同 tailnet 某节点的 MagicDNS 或 Tailscale IPv4/IPv6 标准化后精确一致。
+4. 满足以下强证据之一：标准化后的 `ServerConnection.name` 与同 tailnet 唯一 Tailscale 原始 `HostName` 精确一致，或最终 SSH `HostName` 与某节点的 MagicDNS/Tailscale IPv4/IPv6 标准化后精确一致。
 5. 只有一个稳定节点命中，且没有人工解除抑制或 Host Key 冲突。
 
-`exact_magicdns` 和 `exact_tailscale_ip` 是当前仅有的自动证据。公网/LAN IP、普通 DNS、相似名称、OS、tag、SSH alias、Host Key 和网络可达性不会单独触发自动关联。多候选和代理路由进入待确认；无匹配保持未关联。
+`exact_logical_name`、`exact_magicdns` 和 `exact_tailscale_ip` 是当前自动证据。名称证据要求该名称在 Server 列表和同一 tailnet 中都唯一；重名、缺失或改名不会自动绑定。公网/LAN IP、普通 DNS、相似名称、OS、tag、SSH alias、Host Key 和网络可达性不会单独触发自动关联。多候选和代理路由进入待确认；无匹配保持未关联。
 
 ## 状态与执行门禁
 
@@ -29,7 +30,7 @@
 - 人工确认和改绑使用 revision 乐观并发；旧 revision 会被拒绝。
 - 解除关联写入 `invalidated` tombstone，并设置 `autoLinkEnabled=false`，刷新不会立即自动绑回。
 - 用户明确恢复自动匹配后才重新评估。
-- 原 `nodeId` 消失、相同地址出现新 `nodeId`、自动映射的有效 SSH HostName 漂移，或 Host Key 冲突时进入 `review_required`，保留旧目标但阻止执行。
+- 原 `nodeId` 消失、相同地址出现新 `nodeId`、首次名称证据改名/出现重名、自动映射的有效 SSH HostName 漂移，或 Host Key 冲突时进入 `review_required`，保留旧目标但阻止执行。名称未变且 `nodeId` 相同的记录按稳定 ID 复用，即使 DNS/IP 属性刷新也不会改绑。
 - Tailscale 临时不可用仅记录 `source_unavailable`，不删除目标、不改变原状态，也不推进 `lastVerifiedAt`。
 
 ## 持久化与隐私
@@ -42,10 +43,10 @@ CloudKit 和加密归档同步关联的稳定复合 ID、状态、方法、证�
 
 ## 当前边界与残余风险
 
-当前仓库没有 Test Case 实体、企业 API、Python 服务或 HTTP 客户端，因此本实现提供本地状态模型、匹配器、人工管理 UI、持久化和可供未来执行入口调用的 `canExecuteTestCaseNode` 门禁，但不声称已经接通真实 Test Case 加载或运行流程。真实接入仍需上游提供稳定 `testCaseNodeId`、授权范围和版本化 API 契约。
+当前仓库没有 Test Case 实体、企业 API、Python 服务或 HTTP 客户端，因此本实现用唯一标准化名称完成一期本地发现，并提供状态模型、人工管理 UI、持久化和可供未来执行入口调用的 `canExecuteTestCaseNode` 门禁，但不声称已经接通真实 Test Case 加载或运行流程。真实跨工程接入仍需上游提供稳定 `testCaseNodeId`、授权范围和版本化 API 契约。
 
 本地 Tailscale CLI JSON 不是长期稳定协议。parser 对未知字段保持容忍，但 Tailscale 升级后仍需复核 `ID`、DNS 和地址字段语义。CloudKit 的真实双设备并发需要带 entitlement 的签名构建和两个 iCloud 客户端做补充集成验证。
 
 ## 测试覆盖
 
-`KeyPortCoreTests/NodeAssociationTests.swift` 覆盖唯一 MagicDNS、IPv6、无命中、多候选、代理路由、fallback ID、人工确认、revision 冲突、解除抑制、nodeId 重建、端点漂移、数据源不可用、v4→v5 迁移、敏感字段边界、tombstone 合并和 `ssh -G` 路由字段解析。`script/test.sh` 会运行全部 XCTest、原有 CoreChecks 和 AskPass FIFO 集成检查。
+`KeyPortCoreTests/NodeAssociationTests.swift` 覆盖 `tx-cloud` 唯一同名命中、大小写/尾点规范化、Server/Tailscale 重名、改名复核、按稳定 ID 复用、唯一 MagicDNS、IPv6、无命中、多候选、代理路由、fallback ID、人工确认、revision 冲突、解除抑制、nodeId 重建、端点漂移、数据源不可用、v4→v5 迁移、敏感字段边界、tombstone 合并和 `ssh -G` 路由字段解析。`script/test.sh` 会运行全部 XCTest、原有 CoreChecks 和 AskPass FIFO 集成检查。

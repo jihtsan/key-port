@@ -344,7 +344,7 @@ struct ServerDetailView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("尚未配置", systemImage: "link.badge.plus")
                                 .foregroundStyle(.secondary)
-                            Text("输入上游 Test Case 节点 ID 后，可运行唯一强证据匹配或人工选择稳定节点。")
+                            Text("默认使用标准化后的 Server 名称；唯一同名 Tailscale HostName 可自动关联，歧义时需人工确认。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -663,6 +663,7 @@ private extension NodeAssociationState {
 private extension NodeAssociationEvidence {
     var displayTitle: String {
         switch self {
+        case .exactLogicalName: "逻辑节点名称精确一致"
         case .exactMagicDNS: "MagicDNS 精确一致"
         case .exactTailscaleIP: "Tailscale IP 精确一致"
         }
@@ -682,6 +683,7 @@ private extension NodeAssociationReason {
         case .nodeIdentityChanged: "nodeId 已变化"
         case .hostKeyChanged: "Host Key 已变化"
         case .endpointConflict: "有效 SSH 主机与目标冲突"
+        case .logicalNameChanged: "逻辑节点名称已变化或出现重名"
         case .manuallyUnlinked: "用户已解除并暂停自动匹配"
         }
     }
