@@ -126,6 +126,7 @@ actor CloudKitSyncService: CloudSyncing {
         result.authorizations = mergeByID(local.authorizations + remote.authorizations, id: \.id) {
             ($0.lastVerifiedAt ?? .distantPast) > ($1.lastVerifiedAt ?? .distantPast)
         }
+        result.nodeAssociations = NodeAssociationMerger.merge(local.nodeAssociations + remote.nodeAssociations)
         return result
     }
 
