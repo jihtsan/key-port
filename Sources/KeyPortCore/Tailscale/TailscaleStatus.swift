@@ -12,10 +12,24 @@ public struct TailscaleStatus: Hashable, Sendable {
         self.magicDNSSuffix = magicDNSSuffix
         self.nodes = nodes
     }
+
+    public var tailnetKey: String? {
+        let value = tailnetName ?? magicDNSSuffix
+        guard let value else { return nil }
+        let normalized = ActualNodeReference.normalizeTailnetKey(value)
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    public var isCompleteAssociationSnapshot: Bool {
+        backendState.caseInsensitiveCompare("Running") == .orderedSame
+            && tailnetKey != nil
+            && nodes.allSatisfy { $0.stableNodeID != nil }
+    }
 }
 
 public struct TailscaleNode: Identifiable, Hashable, Sendable {
     public let id: String
+    public let stableNodeID: String?
     public let name: String
     public let dnsName: String?
     public let operatingSystem: String?
@@ -38,9 +52,11 @@ public struct TailscaleNode: Identifiable, Hashable, Sendable {
         lastSeen: Date?,
         relay: String?,
         isExitNode: Bool,
-        isExitNodeOption: Bool
+        isExitNodeOption: Bool,
+        stableNodeID: String? = nil
     ) {
         self.id = id
+        self.stableNodeID = stableNodeID
         self.name = name
         self.dnsName = dnsName
         self.operatingSystem = operatingSystem
@@ -99,7 +115,8 @@ public enum TailscaleStatusParser {
 
     private static func node(from raw: RawNode, fallbackID: String, isCurrent: Bool) -> TailscaleNode {
         let dnsName = nonEmpty(raw.dnsName)?.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let id = nonEmpty(raw.id) ?? nonEmpty(raw.publicKey) ?? fallbackID
+        let stableNodeID = nonEmpty(raw.id)
+        let id = stableNodeID ?? nonEmpty(raw.publicKey) ?? fallbackID
         let name = nonEmpty(raw.hostName) ?? dnsName?.split(separator: ".").first.map(String.init) ?? raw.tailscaleIPs.first ?? id
 
         return TailscaleNode(
@@ -113,7 +130,8 @@ public enum TailscaleStatusParser {
             lastSeen: parseDate(raw.lastSeen),
             relay: nonEmpty(raw.relay),
             isExitNode: raw.exitNode ?? false,
-            isExitNodeOption: raw.exitNodeOption ?? false
+            isExitNodeOption: raw.exitNodeOption ?? false,
+            stableNodeID: stableNodeID
         )
     }
 

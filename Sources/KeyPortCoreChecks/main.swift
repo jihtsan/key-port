@@ -384,7 +384,8 @@ do {
         lastSeen: nil,
         relay: nil,
         isExitNode: false,
-        isExitNodeOption: false
+        isExitNodeOption: false,
+        stableNodeID: "node-duplicate-address"
     )
     let stableIdentityPresences = DevicePresenceMerger.merge(
         devices: [synchronizedPeer],
@@ -406,11 +407,12 @@ do {
         lastSeen: nil,
         relay: nil,
         isExitNode: false,
-        isExitNodeOption: false
+        isExitNodeOption: false,
+        stableNodeID: "node-peer-reissued"
     )
     try expect(
-        synchronizedPeer.tailscaleIdentity?.matches(node: sameAddressChangedNode) == true,
-        "device identity did not fall back to an exact IP match"
+        synchronizedPeer.tailscaleIdentity?.matches(node: sameAddressChangedNode) == false,
+        "device identity silently followed an address after nodeId changed"
     )
 
     let staleLocalRegistration = Device(id: "dev-old-local", name: "LOCAL-MAC", isCurrent: false)

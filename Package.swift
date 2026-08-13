@@ -26,6 +26,7 @@ let package = Package(
             name: "KeyPortAskPass"
         ),
         .executableTarget(name: "KeyPortCoreChecks", dependencies: ["KeyPortCore"]),
+        .testTarget(name: "KeyPortCoreTests", dependencies: ["KeyPortCore"]),
     ],
     swiftLanguageModes: [.v5]
 )
