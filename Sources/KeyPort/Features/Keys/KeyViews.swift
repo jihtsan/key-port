@@ -181,7 +181,7 @@ struct KeyServerDetailView: View {
                     LabeledContent("指纹") {
                         Text(key.fingerprint).font(.caption.monospaced()).textSelection(.enabled)
                     }
-                    LabeledContent("授权", value: row.authorization == nil ? "未安装" : "已安装")
+                    LabeledContent("免密授权", value: row.authorization == nil ? "未启用" : "已启用")
                 } else {
                     Text("此 Mac 没有可用的本地私钥。").foregroundStyle(.secondary)
                     Button("生成 Ed25519 密钥") { Task { await model.generateKey() } }
@@ -189,15 +189,14 @@ struct KeyServerDetailView: View {
             }
 
             Section("操作") {
-                Button("检查连接") {
-                    model.selectedServerID = row.server.id
-                    Task { await model.checkKeySelected() }
+                let action = model.passwordlessPrimaryAction(for: row.server)
+                Button {
+                    Task { await model.performPasswordlessPrimaryAction(serverID: row.server.id) }
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
                 }
-                Button("授权此 Mac") {
-                    model.selectedServerID = row.server.id
-                    Task { await model.authorizeSelected() }
-                }
-                .disabled(row.key == nil || row.server.confirmedHostKeys.isEmpty || !model.hasStoredPassword(serverID: row.server.id) || model.isBusy)
+                .help(action.help)
+                .disabled(model.isBusy || action == .checking)
             }
         }
         .formStyle(.grouped)

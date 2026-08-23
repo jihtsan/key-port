@@ -15,17 +15,17 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
 
     public var title: String {
         switch self {
-        case .authorized: "已授权"
-        case .needsAuthorization: "需要授权"
-        case .missingLocalKey: "缺少本地密钥"
+        case .authorized: "免密已验证"
+        case .needsAuthorization: "待启用免密"
+        case .missingLocalKey: "缺少本机密钥"
         case .hostKeyPending: "主机密钥待确认"
         case .hostKeyMismatch: "主机密钥已变更"
         case .unreachable: "无法连接"
         case .passwordAuthenticationFailed: "密码验证失败"
-        case .keyAuthenticationFailed: "密钥验证失败"
+        case .keyAuthenticationFailed: "免密验证失败"
         case .authorizationConflict: "授权冲突"
-        case .syncPending: "等待同步"
-        case .checking: "检查中"
+        case .syncPending: "免密待验证"
+        case .checking: "检测中"
         }
     }
 }
@@ -232,7 +232,7 @@ public struct SSHKeyRecord: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct Authorization: Identifiable, Codable, Hashable, Sendable {
-    public var id: String { "\(serverID.uuidString):\(keyID)" }
+    public var id: String { "\(serverID.uuidString):\(fingerprint)" }
     public var serverID: UUID
     public var keyID: String
     public var fingerprint: String
@@ -240,8 +240,22 @@ public struct Authorization: Identifiable, Codable, Hashable, Sendable {
     public var status: AuthorizationStatus
     public var authorizedAt: Date?
     public var lastVerifiedAt: Date?
+    public var updatedAt: Date
+    public var isDeleted: Bool
+    public var version: Int
 
-    public init(serverID: UUID, keyID: String, fingerprint: String, remoteComment: String, status: AuthorizationStatus, authorizedAt: Date? = nil, lastVerifiedAt: Date? = nil) {
+    public init(
+        serverID: UUID,
+        keyID: String,
+        fingerprint: String,
+        remoteComment: String,
+        status: AuthorizationStatus,
+        authorizedAt: Date? = nil,
+        lastVerifiedAt: Date? = nil,
+        updatedAt: Date = .now,
+        isDeleted: Bool = false,
+        version: Int = 1
+    ) {
         self.serverID = serverID
         self.keyID = keyID
         self.fingerprint = fingerprint
@@ -249,6 +263,39 @@ public struct Authorization: Identifiable, Codable, Hashable, Sendable {
         self.status = status
         self.authorizedAt = authorizedAt
         self.lastVerifiedAt = lastVerifiedAt
+        self.updatedAt = updatedAt
+        self.isDeleted = isDeleted
+        self.version = version
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case serverID
+        case keyID
+        case fingerprint
+        case remoteComment
+        case status
+        case authorizedAt
+        case lastVerifiedAt
+        case updatedAt
+        case isDeleted
+        case version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serverID = try container.decode(UUID.self, forKey: .serverID)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        fingerprint = try container.decode(String.self, forKey: .fingerprint)
+        remoteComment = try container.decode(String.self, forKey: .remoteComment)
+        status = try container.decode(AuthorizationStatus.self, forKey: .status)
+        authorizedAt = try container.decodeIfPresent(Date.self, forKey: .authorizedAt)
+        lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+            ?? lastVerifiedAt
+            ?? authorizedAt
+            ?? .distantPast
+        isDeleted = try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        version = max(1, try container.decodeIfPresent(Int.self, forKey: .version) ?? 1)
     }
 }
 

@@ -25,8 +25,28 @@ struct SettingsView: View {
             Form {
                 Section("元数据") {
                     Toggle("通过 iCloud 同步非敏感元数据", isOn: $cloudSyncEnabled)
-                    LabeledContent("状态", value: model.cloudState.title)
-                    Button("立即同步") { Task { await model.synchronizeCloud() } }
+                    LabeledContent("状态") {
+                        HStack(spacing: 6) {
+                            if model.cloudState == .checking || model.cloudState == .syncing {
+                                ProgressView().controlSize(.small)
+                            }
+                            Label(model.cloudState.title, systemImage: model.cloudState.systemImage)
+                        }
+                    }
+                    if let detail = model.cloudState.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let lastCloudSyncAt = model.lastCloudSyncAt {
+                        LabeledContent("上次同步", value: lastCloudSyncAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    Button {
+                        Task { await model.synchronizeCloud() }
+                    } label: {
+                        Label("立即同步", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    }
                         .disabled(!cloudSyncEnabled || model.isBusy)
                 }
                 Section("密码") {
@@ -46,7 +66,7 @@ struct SettingsView: View {
 
             Form {
                 Section("本地身份验证") {
-                    Text("访问密码和批量授权需要使用 Touch ID 或 Mac 登录密码。")
+                    Text("访问密码和批量启用免密需要使用 Touch ID 或 Mac 登录密码。")
                 }
                 Section("剪贴板") {
                     Stepper("在 \(Int(clipboardClearSeconds)) 秒后清除已复制的敏感内容", value: $clipboardClearSeconds, in: 10...120, step: 10)
@@ -77,6 +97,9 @@ struct SettingsView: View {
             if !model.canSynchronizePasswords {
                 defaultPasswordSync = false
             }
+        }
+        .onChange(of: cloudSyncEnabled) { _, enabled in
+            model.cloudSyncSettingChanged(enabled)
         }
     }
 }

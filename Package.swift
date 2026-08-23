@@ -15,6 +15,7 @@ let package = Package(
         .executableTarget(
             name: "KeyPort",
             dependencies: ["KeyPortCore"],
+            resources: [.copy("Resources")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("CloudKit"),
@@ -26,6 +27,7 @@ let package = Package(
             name: "KeyPortAskPass"
         ),
         .executableTarget(name: "KeyPortCoreChecks", dependencies: ["KeyPortCore"]),
+        .testTarget(name: "KeyPortTests", dependencies: ["KeyPort"]),
     ],
     swiftLanguageModes: [.v5]
 )

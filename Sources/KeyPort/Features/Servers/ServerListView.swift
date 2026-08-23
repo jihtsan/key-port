@@ -34,9 +34,12 @@ struct ServerListView: View {
                             .tag(account.id)
                         }
                     } header: {
-                        ServerGroupHeader(group: group) {
-                            onAddAccount(group.representative.id)
-                        }
+                        ServerGroupHeader(
+                            group: group,
+                            onSelect: { model.selectedServerID = group.representative.id },
+                            onEdit: onEdit,
+                            onAddAccount: { onAddAccount(group.representative.id) }
+                        )
                     }
                 }
             }
@@ -58,32 +61,54 @@ struct ServerListView: View {
 
 private struct ServerGroupHeader: View {
     let group: ServerConnectionGroup
+    let onSelect: () -> Void
+    let onEdit: (UUID) -> Void
     let onAddAccount: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "server.rack")
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(group.representative.name)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                HStack(spacing: 8) {
-                    Text("\(group.host):\(group.port)")
-                        .monospaced()
-                    Text("\(group.accounts.count) 个用户")
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.representative.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        HStack(spacing: 8) {
+                            Text("\(group.host):\(group.port)")
+                                .monospaced()
+                            Text("\(group.accounts.count) 个用户")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if let capacity = group.representative.machineConfiguration?.capacitySummary {
+                        Text(capacity)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
-            Spacer()
-            if let capacity = group.representative.machineConfiguration?.capacitySummary {
-                Text(capacity)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .help("选择此服务器端点")
+            .contextMenu {
+                Button {
+                    onEdit(group.representative.id)
+                } label: {
+                    Label("编辑服务器和用户", systemImage: "pencil")
+                }
             }
+            Button {
+                onEdit(group.representative.id)
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("编辑服务器和用户")
             Button(action: onAddAccount) {
                 Image(systemName: "person.badge.plus")
             }
