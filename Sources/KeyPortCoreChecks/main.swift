@@ -68,6 +68,215 @@ do {
     try expect(parsed.fingerprint.hasPrefix("SHA256:"), "fingerprint shape")
     try expect(parsed.comment == "keyport:v1:key_1:mac", "comment parse")
 
+    let authorizationServerID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    let localAuthorization = Authorization(
+        serverID: authorizationServerID,
+        keyID: "local-key",
+        fingerprint: parsed.fingerprint,
+        remoteComment: "keyport:v1:local-key:mac",
+        status: .authorized
+    )
+    let remoteAuthorization = Authorization(
+        serverID: authorizationServerID,
+        keyID: "remote-key",
+        fingerprint: parsed.fingerprint,
+        remoteComment: "keyport:v1:remote-key:mac",
+        status: .authorized
+    )
+    try expect(localAuthorization.id == remoteAuthorization.id, "authorization identity was tied to a device-local key ID")
+    let legacyAuthorizationJSON = """
+    {
+      "serverID": "00000000-0000-0000-0000-000000000002",
+      "keyID": "legacy-key",
+      "fingerprint": "SHA256:legacy",
+      "remoteComment": "keyport:v1:legacy-key:mac",
+      "status": "authorized",
+      "authorizedAt": null,
+      "lastVerifiedAt": null
+    }
+    """
+    let legacyAuthorization = try JSONDecoder().decode(Authorization.self, from: Data(legacyAuthorizationJSON.utf8))
+    try expect(
+        !legacyAuthorization.isDeleted && legacyAuthorization.updatedAt == .distantPast && legacyAuthorization.version == 1,
+        "legacy authorization did not decode with sync defaults"
+    )
+
+    let cloudServerID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+    let cloudBaseDate = Date(timeIntervalSince1970: 1_710_000_000)
+    let cloudHostKey = HostKeyRecord(
+        algorithm: "ssh-ed25519",
+        fingerprint: "SHA256:host-key",
+        knownHostsLine: "cloud.example ssh-ed25519 AAAAC3NzaAllowedHostKey",
+        firstConfirmedAt: cloudBaseDate,
+        lastSeenAt: cloudBaseDate
+    )
+    let cloudServer = ServerConnection(
+        id: cloudServerID,
+        name: "Cloud Server",
+        host: "cloud.example",
+        port: 2222,
+        username: "deploy",
+        alias: "cloud-deploy",
+        group: "Production",
+        notes: "CLOUD_SECRET_PASSWORD_MARKER",
+        confirmedHostKeys: [cloudHostKey],
+        status: .authorized,
+        statusDetail: "CLOUD_LOCAL_CHECK_MARKER",
+        lastCheckedAt: cloudBaseDate,
+        passwordCheck: AuthenticationCheck(state: .succeeded, detail: "CLOUD_LOCAL_CHECK_MARKER", checkedAt: cloudBaseDate),
+        keyCheck: AuthenticationCheck(state: .succeeded, detail: "CLOUD_LOCAL_CHECK_MARKER", checkedAt: cloudBaseDate),
+        machineConfigurationRefreshAttemptedAt: cloudBaseDate,
+        createdAt: cloudBaseDate,
+        updatedAt: cloudBaseDate,
+        version: 1
+    )
+    let cloudKey = SSHKeyRecord(
+        id: "key_cloud",
+        deviceID: "device-cloud",
+        kind: .ed25519,
+        publicKey: managed,
+        fingerprint: parsed.fingerprint,
+        privateKeyPath: "/CLOUD_PRIVATE_KEY_PATH_MARKER",
+        isInAgent: true,
+        origin: .generated,
+        isLocallyAvailable: true
+    )
+    var unsafeCloudSnapshot = AppSnapshot()
+    unsafeCloudSnapshot.servers = [cloudServer]
+    unsafeCloudSnapshot.devices = [Device(id: "device-cloud", name: "Cloud Mac", isCurrent: true)]
+    unsafeCloudSnapshot.keys = [cloudKey]
+    unsafeCloudSnapshot.authorizations = [Authorization(
+        serverID: cloudServerID,
+        keyID: cloudKey.id,
+        fingerprint: cloudKey.fingerprint,
+        remoteComment: "keyport:v1:key_cloud:device-cloud",
+        status: .authorized,
+        authorizedAt: cloudBaseDate,
+        lastVerifiedAt: cloudBaseDate,
+        updatedAt: cloudBaseDate
+    )]
+    unsafeCloudSnapshot.auditEvents = [AuditEvent(category: "credential", action: "test", result: "CLOUD_AUDIT_MARKER")]
+
+    let sanitizedCloudSnapshot = CloudMetadataSnapshotPolicy.sanitized(unsafeCloudSnapshot)
+    let cloudEncoder = JSONEncoder()
+    cloudEncoder.dateEncodingStrategy = .iso8601
+    cloudEncoder.outputFormatting = [.sortedKeys]
+    let cloudPayloadText = String(decoding: try cloudEncoder.encode(sanitizedCloudSnapshot), as: UTF8.self)
+    try expect(!cloudPayloadText.contains("CLOUD_SECRET_PASSWORD_MARKER"), "CloudKit payload included free-form credential text")
+    try expect(!cloudPayloadText.contains("CLOUD_PRIVATE_KEY_PATH_MARKER"), "CloudKit payload included a private key path")
+    try expect(!cloudPayloadText.contains("CLOUD_LOCAL_CHECK_MARKER"), "CloudKit payload included local check state")
+    try expect(!cloudPayloadText.contains("CLOUD_AUDIT_MARKER"), "CloudKit payload included audit data")
+    try expect(sanitizedCloudSnapshot.servers.first?.host == "cloud.example", "CloudKit payload omitted server metadata")
+    try expect(sanitizedCloudSnapshot.servers.first?.port == 2222, "CloudKit payload omitted SSH port")
+    try expect(sanitizedCloudSnapshot.servers.first?.username == "deploy", "CloudKit payload omitted SSH username")
+    try expect(sanitizedCloudSnapshot.servers.first?.alias == "cloud-deploy", "CloudKit payload omitted SSH alias")
+    try expect(sanitizedCloudSnapshot.servers.first?.confirmedHostKeys.first?.fingerprint == "SHA256:host-key", "CloudKit payload omitted host key fingerprint")
+    try expect(sanitizedCloudSnapshot.keys.first?.publicKey == managed, "CloudKit payload omitted public key")
+    try expect(sanitizedCloudSnapshot.devices.first?.isCurrent == false, "CloudKit payload retained current-device state")
+    try expect(sanitizedCloudSnapshot.auditEvents.isEmpty, "CloudKit payload retained audit events")
+
+    var remoteCloudSnapshot = AppSnapshot()
+    var updatedCloudServer = cloudServer
+    updatedCloudServer.name = "Cloud Server Updated"
+    updatedCloudServer.host = "updated-cloud.example"
+    updatedCloudServer.notes = "REMOTE_SECRET_MARKER"
+    updatedCloudServer.updatedAt = cloudBaseDate.addingTimeInterval(60)
+    updatedCloudServer.version = 2
+    remoteCloudSnapshot.servers = [updatedCloudServer]
+    unsafeCloudSnapshot.servers.append(cloudServer)
+    unsafeCloudSnapshot.keys.append(cloudKey)
+    let mergedCloudSnapshot = CloudMetadataSnapshotPolicy.merge(local: unsafeCloudSnapshot, remote: remoteCloudSnapshot)
+    let restoredCloudSnapshot = CloudMetadataSnapshotPolicy.restoringLocalState(in: mergedCloudSnapshot, from: unsafeCloudSnapshot)
+    try expect(mergedCloudSnapshot.servers.count == 1, "duplicate server records survived stable-ID merge")
+    try expect(mergedCloudSnapshot.keys.count == 1, "duplicate public keys survived fingerprint merge")
+    try expect(restoredCloudSnapshot.servers.first?.host == "updated-cloud.example", "newer remote server metadata did not win")
+    try expect(restoredCloudSnapshot.servers.first?.notes == "CLOUD_SECRET_PASSWORD_MARKER", "local-only server notes were not restored")
+    try expect(restoredCloudSnapshot.servers.first?.status == .authorized, "local authorization status was not restored")
+    try expect(restoredCloudSnapshot.keys.first?.privateKeyPath == "/CLOUD_PRIVATE_KEY_PATH_MARKER", "local private key path was not restored")
+    try expect(restoredCloudSnapshot.auditEvents.first?.result == "CLOUD_AUDIT_MARKER", "local audit data was not restored")
+
+    let activeAuthorization = Authorization(
+        serverID: cloudServerID,
+        keyID: "old-device-key-id",
+        fingerprint: parsed.fingerprint,
+        remoteComment: "keyport:v1:old-device-key-id:old-device",
+        status: .authorized,
+        updatedAt: cloudBaseDate.addingTimeInterval(600),
+        version: 1
+    )
+    let revokedAuthorization = Authorization(
+        serverID: cloudServerID,
+        keyID: "revoked-device-key-id",
+        fingerprint: parsed.fingerprint,
+        remoteComment: "keyport:v1:revoked-device-key-id:revoked-device",
+        status: .needsAuthorization,
+        updatedAt: cloudBaseDate,
+        isDeleted: true,
+        version: 2
+    )
+    var activeAuthorizationSnapshot = AppSnapshot()
+    activeAuthorizationSnapshot.authorizations = [activeAuthorization, activeAuthorization]
+    var revokedAuthorizationSnapshot = AppSnapshot()
+    revokedAuthorizationSnapshot.schemaVersion = 6
+    revokedAuthorizationSnapshot.authorizations = [revokedAuthorization]
+    let tombstoneMerge = CloudMetadataSnapshotPolicy.merge(
+        local: activeAuthorizationSnapshot,
+        remote: revokedAuthorizationSnapshot
+    )
+    try expect(tombstoneMerge.schemaVersion == 6, "newer snapshot schema version was discarded")
+    try expect(tombstoneMerge.authorizations.count == 1, "duplicate authorization records survived stable-ID merge")
+    try expect(tombstoneMerge.authorizations.first?.isDeleted == true, "older active authorization restored a tombstone")
+    try expect(tombstoneMerge.authorizations.first?.version == 2, "authorization logical version was discarded")
+    let repeatedTombstoneMerge = CloudMetadataSnapshotPolicy.merge(local: tombstoneMerge, remote: activeAuthorizationSnapshot)
+    try expect(repeatedTombstoneMerge.authorizations.count == 1 && repeatedTombstoneMerge.authorizations.first?.isDeleted == true, "repeated sync restored revoked authorization")
+    var clockSkewedActiveSnapshot = AppSnapshot()
+    var clockSkewedActive = activeAuthorization
+    clockSkewedActive.version = 2
+    clockSkewedActive.updatedAt = cloudBaseDate.addingTimeInterval(86_400)
+    clockSkewedActiveSnapshot.authorizations = [clockSkewedActive]
+    let clockSkewMerge = CloudMetadataSnapshotPolicy.merge(local: clockSkewedActiveSnapshot, remote: revokedAuthorizationSnapshot)
+    try expect(clockSkewMerge.authorizations.first?.isDeleted == true, "clock-skewed active snapshot replaced same-version tombstone")
+
+    let reauthorized = Authorization(
+        serverID: cloudServerID,
+        keyID: "new-device-key-id",
+        fingerprint: parsed.fingerprint,
+        remoteComment: "keyport:v1:new-device-key-id:new-device",
+        status: .authorized,
+        updatedAt: cloudBaseDate.addingTimeInterval(1),
+        isDeleted: false,
+        version: 3
+    )
+    var reauthorizedSnapshot = AppSnapshot()
+    reauthorizedSnapshot.authorizations = [reauthorized]
+    let reauthorizationMerge = CloudMetadataSnapshotPolicy.merge(local: tombstoneMerge, remote: reauthorizedSnapshot)
+    try expect(reauthorizationMerge.authorizations.first?.isDeleted == false, "higher-version explicit reauthorization did not replace tombstone")
+    try expect(reauthorizationMerge.authorizations.first?.version == 3, "reauthorization version was discarded")
+
+    let managedServerID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    let renamedServer = ServerConnection(
+        id: managedServerID,
+        name: "Renamed",
+        host: "example.internal",
+        username: "root",
+        alias: "new-alias"
+    )
+    let regeneratedConfig = SSHConfigGenerator.managedConfig(entries: [
+        SSHConfigEntry(server: renamedServer, identityPath: "~/.ssh/key-1"),
+        SSHConfigEntry(server: renamedServer, identityPath: "~/.ssh/key-2")
+    ])
+    try expect(regeneratedConfig.contains("Host new-alias"), "renamed alias missing from managed config")
+    try expect(!regeneratedConfig.contains("Host old-alias"), "old alias remained in managed config")
+    try expect(
+        regeneratedConfig.components(separatedBy: "\n").filter { $0 == "Host new-alias" }.count == 1,
+        "multiple authorizations created duplicate Host blocks"
+    )
+    try expect(
+        regeneratedConfig.components(separatedBy: "\n").filter { $0 == "    IdentityFile ~/.ssh/key-1" }.count == 1
+            && regeneratedConfig.components(separatedBy: "\n").filter { $0 == "    IdentityFile ~/.ssh/key-2" }.count == 1,
+        "multiple authorizations were not merged into one Host block"
+    )
+
     let unknown = "from=\"10.0.0.0/8\",command=\"backup\" ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCy unknown"
     let removed = AuthorizedKeysParser.removingFingerprint(parsed.fingerprint, from: unknown + "\n" + managed + "\n")
     try expect(removed.contains(unknown), "unknown authorized_keys line changed")

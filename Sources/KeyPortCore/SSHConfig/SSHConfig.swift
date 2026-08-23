@@ -75,13 +75,28 @@ public enum SSHConfigGenerator {
     public static let includeLine = "Include ~/.ssh/keyport/config"
 
     public static func managedConfig(entries: [SSHConfigEntry]) -> String {
-        entries.sorted { $0.server.alias < $1.server.alias }.map { entry in
-            """
+        var grouped: [UUID: (server: ServerConnection, identityPaths: [String])] = [:]
+        for entry in entries {
+            if var group = grouped[entry.server.id] {
+                if !group.identityPaths.contains(entry.identityPath) {
+                    group.identityPaths.append(entry.identityPath)
+                }
+                grouped[entry.server.id] = group
+            } else {
+                grouped[entry.server.id] = (entry.server, [entry.identityPath])
+            }
+        }
+
+        return grouped.values.sorted { $0.server.alias < $1.server.alias }.map { entry in
+            let identities = entry.identityPaths
+                .map { "    IdentityFile \($0)" }
+                .joined(separator: "\n")
+            return """
             Host \(entry.server.alias)
                 HostName \(entry.server.host)
                 Port \(entry.server.port)
                 User \(entry.server.username)
-                IdentityFile \(entry.identityPath)
+            \(identities)
                 IdentitiesOnly yes
                 UserKnownHostsFile ~/.ssh/keyport/known_hosts
             """

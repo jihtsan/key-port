@@ -22,10 +22,45 @@ struct KeyPortApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands { KeyPortCommands(model: model) }
 
+        MenuBarExtra {
+            KeyPortMenuBarView(model: model)
+        } label: {
+            menuBarIcon
+        }
+        .menuBarExtraStyle(.menu)
+
         Settings {
             SettingsView(model: model)
                 .frame(width: 560, height: 420)
         }
+    }
+
+    private var menuBarIcon: some View {
+        if let image = loadMenuBarImage() {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .accessibilityLabel("KeyPort")
+        } else {
+            Image(systemName: "key.horizontal")
+                .accessibilityLabel("KeyPort")
+        }
+    }
+
+    private func loadMenuBarImage() -> NSImage? {
+        let bundles = [Bundle.main, Bundle.module]
+        let resourceNames = ["key-hub@2x", "key-hub@1x"]
+
+        for bundle in bundles {
+            for resourceName in resourceNames {
+                guard let url = bundle.url(forResource: resourceName, withExtension: "png"),
+                      let image = NSImage(contentsOf: url) else { continue }
+                image.isTemplate = true
+                image.size = NSSize(width: 18, height: 18)
+                return image
+            }
+        }
+
+        return nil
     }
 }
 

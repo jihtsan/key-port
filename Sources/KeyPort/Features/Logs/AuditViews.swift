@@ -50,6 +50,7 @@ private extension AuditEvent {
         case "update": "更新服务器"
         case "delete": "删除服务器"
         case "copy-alias": "复制 SSH 别名"
+        case "copy-ssh-command": "复制 SSH 命令"
         case "copy-host": "复制主机地址"
         case "scan": "扫描密钥"
         case "generate": "生成密钥"
@@ -66,8 +67,8 @@ private extension AuditEvent {
         case "import-server": "导入服务器"
         case "save-password": "保存密码"
         case "export": "导出归档"
-        case "password-check": "检查密码 SSH"
-        case "key-check": "检查密钥 SSH"
+        case "password-check": "验证密码登录"
+        case "key-check": "检测免密"
         case "refresh": "刷新"
         default: action
         }

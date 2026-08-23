@@ -170,11 +170,11 @@ private struct DeviceDetailView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             LabeledContent("本地密钥", value: String(model.currentDeviceKeys.count))
                             LabeledContent(
-                                "等待授权的服务器",
-                                value: String(model.activeServers.filter { $0.status == .needsAuthorization || $0.status == .syncPending }.count)
+                                "待启用免密的服务器",
+                                value: String(pendingPasswordlessServerCount)
                             )
-                            Button("授权待处理服务器") { Task { await model.authorizePendingServers() } }
-                                .disabled(model.isBusy || model.activeServers.isEmpty)
+                            Button("为待处理服务器启用免密") { Task { await model.authorizePendingServers() } }
+                                .disabled(model.isBusy || pendingPasswordlessServerCount == 0)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 5)
@@ -244,6 +244,14 @@ private struct DeviceDetailView: View {
         }
     }
 
+    private var pendingPasswordlessServerCount: Int {
+        model.activeServers.filter {
+            $0.status == .needsAuthorization
+                || $0.status == .missingLocalKey
+                || $0.status == .syncPending
+        }.count
+    }
+
     private func tailscaleSSHManagement(
         node: TailscaleNode,
         suggestion: TailscaleSSHServerSuggestion
@@ -309,13 +317,14 @@ private struct DeviceDetailView: View {
         node: TailscaleNode,
         suggestion: TailscaleSSHServerSuggestion
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let action = model.passwordlessPrimaryAction(for: server)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Label(server.username, systemImage: "person.crop.circle")
                     .fontWeight(.medium)
                 Spacer()
                 Label(
-                    server.status == .authorized ? "本机已授权" : "本机未授权",
+                    server.status == .authorized ? "免密已验证" : "免密未验证",
                     systemImage: server.status == .authorized ? "checkmark.circle.fill" : "key.slash"
                 )
                 .font(.caption)
@@ -348,29 +357,13 @@ private struct DeviceDetailView: View {
                 }
                 .disabled(!node.isOnline || model.isBusy)
 
-                if server.status != .authorized {
-                    if model.hasStoredPassword(serverID: server.id) {
-                        Button {
-                            Task { await model.authorizeCurrentDevice(serverID: server.id) }
-                        } label: {
-                            Label("授权本机", systemImage: "key.horizontal")
-                        }
-                        .disabled(!node.isOnline || model.isBusy)
-                    } else {
-                        Button {
-                            onManageAccount(
-                                TailscaleAccountEditorRequest(
-                                    suggestion: suggestion,
-                                    serverID: server.id,
-                                    authorizesAfterSave: true
-                                )
-                            )
-                        } label: {
-                            Label("输入密码并授权", systemImage: "key.viewfinder")
-                        }
-                        .disabled(!node.isOnline || model.isBusy)
-                    }
+                Button {
+                    Task { await model.performPasswordlessPrimaryAction(serverID: server.id) }
+                } label: {
+                    Label(action.title, systemImage: action.systemImage)
                 }
+                .help(action.help)
+                .disabled(!node.isOnline || model.isBusy || action == .checking)
             }
         }
     }
@@ -407,19 +400,16 @@ private struct DeviceDetailView: View {
 struct TailscaleAccountEditorRequest: Identifiable {
     let suggestion: TailscaleSSHServerSuggestion
     let serverID: UUID?
-    let authorizesAfterSave: Bool
 
     init(
         suggestion: TailscaleSSHServerSuggestion,
-        serverID: UUID? = nil,
-        authorizesAfterSave: Bool = false
+        serverID: UUID? = nil
     ) {
         self.suggestion = suggestion
         self.serverID = serverID
-        self.authorizesAfterSave = authorizesAfterSave
     }
 
     var id: String {
-        "\(suggestion.nodeID):\(serverID?.uuidString ?? "new"):\(authorizesAfterSave)"
+        "\(suggestion.nodeID):\(serverID?.uuidString ?? "new")"
     }
 }

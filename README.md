@@ -14,7 +14,7 @@ ssh <ssh-alias>
 - 支持平台：macOS 14 或更高版本。
 - 工具链：Swift 6；当前仓库验证环境使用 Swift 6.3.3 和 Apple Command Line Tools。
 - 当前验证：核心回归检查、AskPass FIFO 集成检查和 SwiftPM 构建通过。
-- 发布状态：仓库暂未提供签名、公证的正式发行包。
+- 发布状态：仓库提供可选的团队签名构建流程；正式发行仍需 Developer ID、公证和 CloudKit Production schema。
 
 ## 功能概览
 
@@ -90,7 +90,15 @@ run          构建并启动应用
 --telemetry  启动应用并查看 KeyPort subsystem 日志
 ```
 
-脚本会在 `dist/KeyPort.app` 生成本地 ad-hoc 签名的应用包。正式发布所需的 Developer ID、iCloud entitlement 配置和公证不包含在本地构建脚本中。
+脚本默认在 `dist/KeyPort.app` 生成 ad-hoc 签名的应用包。要在本机启用 CloudKit 和 iCloud Keychain，传入真实签名身份：
+
+```bash
+KEYPORT_SIGNING_IDENTITY="证书 SHA-1 或名称" \
+KEYPORT_PROVISIONING_PROFILE="/path/to/KeyPort.provisionprofile" \
+  ./script/build_and_run.sh --verify
+```
+
+脚本会替换 Team ID entitlement 并验证最终签名。后台创建 App ID、iCloud 容器和 CloudKit schema 的步骤见 [iCloud 配置与签名](Docs/iCloud-配置与签名.md)。
 
 ## 首次使用
 
@@ -170,8 +178,8 @@ git diff --check
 
 ## 已知限制
 
-- 当前仓库没有签名、公证的发行包；正式使用 iCloud 能力需要配置真实开发者团队和 entitlement。
-- 当前本地验证不覆盖隔离 Linux/OpenSSH 多版本矩阵、真实远端原子写入、CloudKit 冲突处理或两台 Mac 之间的 iCloud Keychain 同步。
+- 当前仓库没有 Developer ID 签名、公证的正式发行包；正式使用 iCloud 能力需要配置真实开发者团队、profile 和 entitlement。
+- 当前本地验证不覆盖隔离 Linux/OpenSSH 多版本矩阵、真实远端原子写入，或两台 Mac 之间的 CloudKit/iCloud Keychain 联调；CloudKit 冲突重试和敏感字段清洗已在代码路径中实现。
 - 远端授权范围限定为用户有权直接维护自己 `authorized_keys` 的常见 OpenSSH 场景。
 - KeyPort 是 SSH 授权和入口管理工具，不是终端、命令执行器或基础设施监控产品。
 

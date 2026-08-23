@@ -34,14 +34,14 @@ struct PasswordEntryView: View {
                 SecureField("密码", text: $password)
                     .disabled(isSaving || isTesting)
 
-                Section("密码 SSH 测试") {
+                Section("密码登录验证") {
                     HStack(alignment: .center, spacing: 12) {
                         passwordTestStatus
                         Spacer()
                         Button {
                             testPassword()
                         } label: {
-                            Label("测试密码 SSH", systemImage: "lock.open")
+                            Label("验证密码", systemImage: "lock.open")
                         }
                         .disabled(password.isEmpty || isSaving || isTesting)
                     }
@@ -85,7 +85,7 @@ struct PasswordEntryView: View {
                 if canAuthorize {
                     Button("保存") { save(authorizeAfterSave: false) }
                         .disabled(!currentPasswordPassed || isSaving)
-                    Button("保存并授权") { save(authorizeAfterSave: true) }
+                    Button("保存并启用免密") { save(authorizeAfterSave: true) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!currentPasswordPassed || isSaving)
@@ -100,6 +100,11 @@ struct PasswordEntryView: View {
         .padding(24)
         .frame(width: 500)
         .frame(minHeight: 430)
+        .onAppear {
+            if canSynchronize {
+                synchronizable = UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
+            }
+        }
         .onChange(of: password) { _, _ in
             validationGate.inputChanged()
         }

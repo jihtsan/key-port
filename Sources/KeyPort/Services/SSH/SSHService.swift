@@ -16,7 +16,7 @@ enum SSHServiceError: LocalizedError {
         case .hostKeyChanged: "主机密钥已变更，身份验证被阻止。"
         case .missingPrivateKey: "所选密钥没有可用的本地私钥。"
         case .missingPassword: "Keychain 中未存储服务器密码。"
-        case .passwordAuthenticationRejected: "服务器拒绝了密码身份验证。"
+        case .passwordAuthenticationRejected: "服务器拒绝了密码登录。"
         case .operationFailed(let message): message
         }
     }
@@ -247,8 +247,8 @@ actor OpenSSHService {
 
     private func classifyAuthenticationError(_ stderr: String) -> String {
         let lower = stderr.lowercased()
-        if lower.contains("host key verification failed") { return "主机密钥验证失败，授权已被阻止。" }
-        if lower.contains("permission denied") { return "服务器拒绝了密码身份验证。" }
+        if lower.contains("host key verification failed") { return "主机密钥验证失败，SSH 操作已被阻止。" }
+        if lower.contains("permission denied") { return "服务器拒绝了密码登录。" }
         if lower.contains("connection timed out") || lower.contains("operation timed out") { return "SSH 连接超时。" }
         if lower.contains("connection refused") { return "SSH 服务器拒绝了连接。" }
         if lower.contains("could not resolve hostname") { return "无法解析 SSH 服务器名称。" }

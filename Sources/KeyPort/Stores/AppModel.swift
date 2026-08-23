@@ -96,7 +96,7 @@ struct ServerEditorSubmission: Sendable {
     let password: String
     let synchronizable: Bool
     let confirmedHostKeys: [HostKeyRecord]
-    let passwordCheck: AuthenticationCheck
+    let passwordCheck: AuthenticationCheck?
     let machineConfiguration: RemoteMachineConfiguration?
 }
 
@@ -169,8 +169,56 @@ private enum ServerCheckKind: Equatable {
 
     var checkingDetail: String {
         switch self {
-        case .password: "正在检查服务器密码身份验证..."
-        case .key: "正在检查免密 SSH 身份验证..."
+        case .password: "正在验证密码登录..."
+        case .key: "正在检测免密登录..."
+        }
+    }
+}
+
+enum PasswordlessPrimaryAction: Equatable, Sendable {
+    case verify
+    case enable
+    case generateKeyAndEnable
+    case enterPasswordAndEnable
+    case reviewHostIdentity
+    case checking
+
+    var title: String {
+        switch self {
+        case .verify: "检测免密"
+        case .enable: "启用免密"
+        case .generateKeyAndEnable: "生成密钥并启用免密"
+        case .enterPasswordAndEnable: "输入密码并启用免密"
+        case .reviewHostIdentity: "核对主机身份"
+        case .checking: "正在检测免密"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .verify: "checkmark.shield"
+        case .enable: "key.horizontal.fill"
+        case .generateKeyAndEnable: "key.badge.plus"
+        case .enterPasswordAndEnable: "key.viewfinder"
+        case .reviewHostIdentity: "exclamationmark.shield"
+        case .checking: "arrow.trianglehead.2.clockwise.rotate.90"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .verify:
+            "只测试当前 Mac 的密钥登录，不会修改服务器"
+        case .enable:
+            "使用已保存的密码安装当前 Mac 公钥，并验证免密登录"
+        case .generateKeyAndEnable:
+            "先为当前 Mac 生成密钥，再安装公钥并验证免密登录"
+        case .enterPasswordAndEnable:
+            "输入并验证服务器密码后，安装当前 Mac 公钥"
+        case .reviewHostIdentity:
+            "核对服务器返回的 Host Key 指纹后再继续"
+        case .checking:
+            "正在检测当前 Mac 的免密登录状态"
         }
     }
 }
@@ -215,8 +263,10 @@ final class AppModel {
     var pendingHostKeys: [HostKeyRecord] = []
     var pendingHostKeyServerID: UUID?
     private var pendingHostKeyCheckKind: ServerCheckKind?
-    var cloudState: CloudSyncState = .idle
+    var cloudState: CloudSyncState = .disabled
+    var lastCloudSyncAt: Date?
     var serverIDsWithStoredPassword = Set<UUID>()
+    var serverIDsWithSynchronizablePassword = Set<UUID>()
     var passwordPromptServerID: UUID?
     var passwordSaveError: String?
     var isSavingPassword = false
@@ -239,8 +289,16 @@ final class AppModel {
     private let audit = AuditLogService()
     private let clipboard = ClipboardService()
     private let fileSelection = FileSelectionService()
+    private var scheduledCloudSync: Task<Void, Never>?
+    private var isSynchronizingCloud = false
+    private var isInitialLoadInProgress = false
+    private var automaticCloudRetryAttempt = 0
 
     init(cloudSync: any CloudSyncing = CloudKitSyncService()) {
+        let defaults = UserDefaults.standard
+        let storedCloudSyncAt = defaults.object(forKey: "KeyPort.lastCloudSyncAt") as? Date
+        self.lastCloudSyncAt = storedCloudSyncAt
+        self.cloudState = defaults.bool(forKey: "KeyPort.cloudSyncEnabled") ? .checking : .disabled
         let runner = ProcessRunner()
         let paths = KeyPortPaths()
         let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
@@ -263,6 +321,12 @@ final class AppModel {
         snapshot.servers
             .filter { !$0.isDeleted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var authorizedSSHAccounts: [ServerConnection] {
+        activeServers
+            .filter { $0.status == .authorized }
+            .sorted { SSHAccountSortKey($0) < SSHAccountSortKey($1) }
     }
 
     var activeServerGroups: [ServerConnectionGroup] {
@@ -346,14 +410,16 @@ final class AppModel {
     }
 
     private func authorizedServers(matching keyIDs: Set<String>) -> [ServerConnection] {
-        let serverIDs = Set(snapshot.authorizations.lazy.filter { keyIDs.contains($0.keyID) }.map(\.serverID))
+        let serverIDs = Set(snapshot.authorizations.lazy
+            .filter { !$0.isDeleted && $0.status == .authorized && keyIDs.contains($0.keyID) }
+            .map(\.serverID))
         return activeServers.filter { serverIDs.contains($0.id) }.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 
     func key(for authorization: Authorization) -> SSHKeyRecord? {
-        snapshot.keys.first { $0.id == authorization.keyID }
+        snapshot.keys.first { $0.id == authorization.keyID || $0.fingerprint == authorization.fingerprint }
     }
 
     func newServerDraft() -> ServerDraft {
@@ -419,11 +485,13 @@ final class AppModel {
         }.map { server in
             let authorization = snapshot.authorizations.first { authorization in
                 guard authorization.serverID == server.id,
-                      let key = snapshot.keys.first(where: { $0.id == authorization.keyID }) else { return false }
+                      !authorization.isDeleted,
+                      authorization.status == .authorized,
+                      let key = key(for: authorization) else { return false }
                 return key.deviceID == currentDevice?.id
             }
-            let key = key(for: server)
-            return KeyServerRow(server: server, key: key, authorization: authorization)
+            let selectedKey = key(for: server)
+            return KeyServerRow(server: server, key: selectedKey, authorization: authorization)
         }
     }
 
@@ -471,8 +539,10 @@ final class AppModel {
 
     func load() async {
         guard !isLoaded else { return }
+        isInitialLoadInProgress = true
         do {
             snapshot = try await store.load()
+            normalizeStableMetadataIDs()
             ensureCurrentDevice()
             try await refreshKeys(recordAudit: false)
             await refreshPasswordAvailability()
@@ -490,10 +560,25 @@ final class AppModel {
             appendAudit(category: "app", action: "load", result: "success")
             await refreshMissingMachineConfigurations()
             await persist()
+            isInitialLoadInProgress = false
+            scheduleCloudSyncIfNeeded()
         } catch {
             isLoaded = true
+            isInitialLoadInProgress = false
             present(error)
         }
+    }
+
+    func cloudSyncSettingChanged(_ enabled: Bool) {
+        scheduledCloudSync?.cancel()
+        scheduledCloudSync = nil
+        automaticCloudRetryAttempt = 0
+        guard enabled else {
+            cloudState = .disabled
+            return
+        }
+        cloudState = .checking
+        Task { await synchronizeCloud(userInitiated: false) }
     }
 
     func validateServerEditor(
@@ -563,7 +648,7 @@ final class AppModel {
                 return failedEditorValidation(detail: detail, log: log, confirmedHostKeys: trustedHostKeys)
             }
 
-            log.append("密码 SSH 身份验证成功。")
+            log.append("密码登录验证成功。")
             let machineConfiguration = try await sshService.inspectMachineWithPassword(server: server, passwordData: passwordData)
             if machineConfiguration != nil {
                 log.append("远程机器配置已同步。")
@@ -572,7 +657,7 @@ final class AppModel {
             }
             let check = AuthenticationCheck(
                 state: .succeeded,
-                detail: "密码 SSH 身份验证成功。",
+                detail: "密码登录验证成功。",
                 checkedAt: .now
             )
             return ServerEditorValidationResult(
@@ -596,8 +681,27 @@ final class AppModel {
 
     func saveServerEditor(_ submission: ServerEditorSubmission, existingServerID: UUID?) async throws -> UUID {
         try await validateEditorDraft(submission.draft, existingServerID: existingServerID)
-        guard submission.passwordCheck.state == .succeeded else {
-            throw SSHServiceError.operationFailed("请先成功完成 SSH 检查再保存。")
+        let existingServer = existingServerID.flatMap { id in
+            snapshot.servers.first(where: { $0.id == id && !$0.isDeleted })
+        }
+        if let passwordCheck = submission.passwordCheck {
+            guard passwordCheck.state == .succeeded else {
+                throw SSHServiceError.operationFailed("请先成功完成 SSH 检查再保存。")
+            }
+        } else {
+            guard let existingServer else {
+                throw SSHServiceError.operationFailed("新建服务器前，请先成功完成 SSH 检查。")
+            }
+            let sameAuthenticationContext = existingServer.host.trimmingCharacters(in: .whitespacesAndNewlines)
+                == submission.draft.host.trimmingCharacters(in: .whitespacesAndNewlines)
+                && existingServer.port == submission.draft.port
+                && existingServer.username.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == submission.draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard sameAuthenticationContext,
+                  submission.password.isEmpty,
+                  submission.confirmedHostKeys == existingServer.confirmedHostKeys else {
+                throw SSHServiceError.operationFailed("连接信息或主机身份已变更，请先成功完成 SSH 检查。")
+            }
         }
         if existingServerID == nil && submission.password.isEmpty {
             throw SSHServiceError.missingPassword
@@ -611,6 +715,21 @@ final class AppModel {
                 synchronizable: submission.synchronizable
             )
             serverIDsWithStoredPassword.insert(serverID)
+            updatePasswordStorageCache(serverID: serverID, synchronizable: submission.synchronizable)
+        } else if existingServer != nil,
+                  serverIDsWithStoredPassword.contains(serverID),
+                  serverIDsWithSynchronizablePassword.contains(serverID) != submission.synchronizable {
+            try await keychain.setServerPasswordSynchronizable(
+                submission.synchronizable,
+                serverID: serverID
+            )
+            updatePasswordStorageCache(serverID: serverID, synchronizable: submission.synchronizable)
+            appendAudit(
+                category: "keychain",
+                action: "change-password-storage",
+                targetID: serverID.uuidString,
+                result: submission.synchronizable ? "synchronizable" : "local"
+            )
         }
 
         let now = Date()
@@ -629,6 +748,12 @@ final class AppModel {
         let trimmedAlias = submission.draft.alias.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedGroup = submission.draft.group.trimmingCharacters(in: .whitespacesAndNewlines)
         let peerServerIDs = existingServerID.map(serverIDsSharingEndpoint(with:)) ?? []
+        let machineConfiguration = submission.passwordCheck == nil
+            ? existingServer?.machineConfiguration
+            : submission.machineConfiguration
+        let machineConfigurationRefreshAttemptedAt = submission.passwordCheck == nil
+            ? existingServer?.machineConfigurationRefreshAttemptedAt ?? now
+            : submission.machineConfiguration?.synchronizedAt ?? now
         let sharedFields = SharedServerFields(
             name: trimmedName,
             host: trimmedHost,
@@ -636,8 +761,8 @@ final class AppModel {
             group: trimmedGroup,
             notes: submission.draft.notes,
             confirmedHostKeys: confirmedKeys,
-            machineConfiguration: submission.machineConfiguration,
-            machineConfigurationRefreshAttemptedAt: submission.machineConfiguration?.synchronizedAt ?? now
+            machineConfiguration: machineConfiguration,
+            machineConfigurationRefreshAttemptedAt: machineConfigurationRefreshAttemptedAt
         )
 
         if let existingServerID,
@@ -648,13 +773,15 @@ final class AppModel {
             sharedFields.apply(to: &snapshot.servers[index])
             snapshot.servers[index].username = trimmedUsername
             snapshot.servers[index].alias = trimmedAlias
-            snapshot.servers[index].passwordCheck = submission.passwordCheck
+            if let passwordCheck = submission.passwordCheck {
+                snapshot.servers[index].passwordCheck = passwordCheck
+                snapshot.servers[index].lastCheckedAt = passwordCheck.checkedAt
+            }
             if authenticationContextChanged {
                 snapshot.servers[index].keyCheck = nil
                 snapshot.servers[index].status = key(for: snapshot.servers[index]) == nil ? .missingLocalKey : .needsAuthorization
-                snapshot.servers[index].statusDetail = "连接信息已变更。密码 SSH 已验证，请重新检查密钥授权。"
+                snapshot.servers[index].statusDetail = "连接信息已变更。密码登录已验证，请重新检测免密。"
             }
-            snapshot.servers[index].lastCheckedAt = submission.passwordCheck.checkedAt
             snapshot.servers[index].updatedAt = now
             snapshot.servers[index].version += 1
 
@@ -670,13 +797,18 @@ final class AppModel {
                     snapshot.servers[peerIndex].passwordCheck = nil
                     snapshot.servers[peerIndex].keyCheck = nil
                     snapshot.servers[peerIndex].status = key(for: snapshot.servers[peerIndex]) == nil ? .missingLocalKey : .needsAuthorization
-                    snapshot.servers[peerIndex].statusDetail = "服务器端点已变更，请重新检查此用户的 SSH 授权。"
+                    snapshot.servers[peerIndex].statusDetail = "服务器端点已变更，请重新检测此用户的免密登录。"
                     snapshot.servers[peerIndex].lastCheckedAt = nil
                 }
                 snapshot.servers[peerIndex].updatedAt = now
                 snapshot.servers[peerIndex].version += 1
             }
-            appendAudit(category: "server", action: "update", targetID: existingServerID.uuidString, result: "password-verified")
+            appendAudit(
+                category: "server",
+                action: "update",
+                targetID: existingServerID.uuidString,
+                result: submission.passwordCheck == nil ? "metadata-only" : "password-verified"
+            )
         } else {
             let server = ServerConnection(
                 id: serverID,
@@ -689,11 +821,11 @@ final class AppModel {
                 notes: submission.draft.notes,
                 confirmedHostKeys: confirmedKeys,
                 status: preferredKey == nil ? .missingLocalKey : .needsAuthorization,
-                statusDetail: "密码 SSH 已验证，现在可以授权此 Mac 的密钥。",
-                lastCheckedAt: submission.passwordCheck.checkedAt,
+                statusDetail: "密码登录已验证，现在可以为当前 Mac 启用免密。",
+                lastCheckedAt: submission.passwordCheck?.checkedAt,
                 passwordCheck: submission.passwordCheck,
-                machineConfiguration: submission.machineConfiguration,
-                machineConfigurationRefreshAttemptedAt: submission.machineConfiguration?.synchronizedAt ?? now
+                machineConfiguration: machineConfiguration,
+                machineConfigurationRefreshAttemptedAt: machineConfigurationRefreshAttemptedAt
             )
             snapshot.servers.append(server)
             appendAudit(category: "server", action: "create", targetID: serverID.uuidString, result: "password-verified")
@@ -701,32 +833,10 @@ final class AppModel {
 
         selectedServerID = serverID
         try await hostKeyService.persistConfirmedKeys(confirmedKeys, allServers: snapshot.servers.filter { !$0.isDeleted })
+        ensureAuthorizationRecordForVerifiedServer(serverID: serverID)
         try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
         appendAudit(category: "ssh-config", action: "write", targetID: serverID.uuidString, result: "success")
         await persist()
-        return serverID
-    }
-
-    func saveAndAuthorizeTailscaleServer(
-        _ submission: ServerEditorSubmission,
-        suggestion: TailscaleSSHServerSuggestion,
-        existingServerID: UUID? = nil
-    ) async throws -> UUID {
-        guard !isBusy else {
-            throw SSHServiceError.operationFailed("KeyPort 正在执行其他操作，请稍后重试。")
-        }
-        isBusy = true
-        defer { isBusy = false }
-
-        let matchedServerID = existingServerID
-            ?? existingTailscaleServerID(for: suggestion, draft: submission.draft)
-        let serverID = try await saveServerEditor(submission, existingServerID: matchedServerID)
-        if preferredKey == nil {
-            let key = try await generateCurrentDeviceKey()
-            appendAudit(category: "key", action: "generate", targetID: key.id, result: "tailscale-enrollment")
-            await persist()
-        }
-        try await authorizeServer(serverID)
         return serverID
     }
 
@@ -742,6 +852,7 @@ final class AppModel {
         snapshot.servers[index].version += 1
         try? await keychain.deleteServerPassword(serverID: id)
         serverIDsWithStoredPassword.remove(id)
+        serverIDsWithSynchronizablePassword.remove(id)
         appendAudit(category: "server", action: "delete", targetID: id.uuidString, result: "tombstoned")
         if selectedServerID == id { selectedServerID = activeServers.first?.id }
         await persist()
@@ -827,8 +938,46 @@ final class AppModel {
         await check(serverID: serverID, kind: .key)
     }
 
+    func passwordlessPrimaryAction(for server: ServerConnection) -> PasswordlessPrimaryAction {
+        if server.status == .checking {
+            return .checking
+        }
+        if server.confirmedHostKeys.isEmpty
+            || server.status == .hostKeyPending
+            || server.status == .hostKeyMismatch {
+            return .reviewHostIdentity
+        }
+        if server.status == .authorized, privateKey(for: server) != nil {
+            return .verify
+        }
+        if privateKey(for: server) == nil {
+            return .generateKeyAndEnable
+        }
+        if !hasStoredPassword(serverID: server.id) {
+            return .enterPasswordAndEnable
+        }
+        return .enable
+    }
+
+    func performPasswordlessPrimaryAction(serverID: UUID) async {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        switch passwordlessPrimaryAction(for: server) {
+        case .verify, .reviewHostIdentity:
+            await checkKey(serverID: serverID)
+        case .enable, .generateKeyAndEnable:
+            await authorizeCurrentDevice(serverID: serverID)
+        case .enterPasswordAndEnable:
+            requestPassword(for: serverID)
+        case .checking:
+            break
+        }
+    }
+
     func checkAll() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isInitialLoadInProgress else {
+            scheduleCloudRetry(after: 5)
+            return
+        }
         isBusy = true
         let ids = activeServers.map(\.id)
         for id in ids {
@@ -870,11 +1019,7 @@ final class AppModel {
 
     func authorizeSelected() async {
         guard let serverID = selectedServerID else { return }
-        isBusy = true
-        defer { isBusy = false }
-        do {
-            try await authorizeServer(serverID)
-        } catch { present(error) }
+        await authorizeCurrentDevice(serverID: serverID)
     }
 
     func authorizeCurrentDevice(serverID: UUID) async {
@@ -886,6 +1031,10 @@ final class AppModel {
                 let key = try await generateCurrentDeviceKey()
                 appendAudit(category: "key", action: "generate", targetID: key.id, result: "account-authorization")
                 await persist()
+            }
+            guard hasStoredPassword(serverID: serverID) else {
+                requestPassword(for: serverID)
+                return
             }
             try await authorizeServer(serverID)
         } catch { present(error) }
@@ -903,13 +1052,15 @@ final class AppModel {
                 selectedKeyItemID = "identity:\(generated.id)"
                 for index in snapshot.servers.indices where snapshot.servers[index].status == .missingLocalKey {
                     snapshot.servers[index].status = .needsAuthorization
-                    snapshot.servers[index].statusDetail = "此 Mac 的密钥已准备好授权。"
+                    snapshot.servers[index].statusDetail = "当前 Mac 的密钥已就绪，可以启用免密。"
                 }
                 appendAudit(category: "key", action: "generate", targetID: generated.id, result: "new-device-ed25519")
                 await persist()
             }
-            try await localAuthentication.authorize(reason: "在待处理的 KeyPort 服务器上授权此 Mac")
-            for server in activeServers where server.status == .needsAuthorization || server.status == .syncPending {
+            try await localAuthentication.authorize(reason: "为待处理的 KeyPort 服务器启用免密")
+            for server in activeServers where server.status == .needsAuthorization
+                || server.status == .missingLocalKey
+                || server.status == .syncPending {
                 guard let serverKey = key(for: server) else { continue }
                 do { try await authorize(server: server, key: serverKey) }
                 catch {
@@ -927,7 +1078,11 @@ final class AppModel {
         do {
             let lines = try await sshService.readAuthorizedKeys(server: server, identityPath: identity)
             var discoveredKeys: [SSHKeyRecord] = []
-            let managed = lines.filter(\.isKeyPortManaged).compactMap { line -> Authorization? in
+            var existingByID: [String: Authorization] = [:]
+            for authorization in snapshot.authorizations where authorization.serverID == serverID {
+                existingByID[authorization.id] = authorization
+            }
+            let discovered = lines.filter(\.isKeyPortManaged).compactMap { line -> Authorization? in
                 guard let key = line.key, let comment = key.comment else { return nil }
                 let components = comment.split(separator: ":").map(String.init)
                 guard components.count >= 4 else { return nil }
@@ -935,13 +1090,51 @@ final class AppModel {
                 if knownKey == nil {
                     discoveredKeys.append(SSHKeyRecord(id: components[2], deviceID: components[3], kind: key.kind, publicKey: line.rawLine, fingerprint: key.fingerprint, privateKeyPath: nil, isInAgent: false, origin: .scanned, isLocallyAvailable: false))
                 }
-                return Authorization(serverID: serverID, keyID: knownKey?.id ?? components[2], fingerprint: key.fingerprint, remoteComment: comment, status: .authorized, lastVerifiedAt: .now)
+                let identity = Authorization(
+                    serverID: serverID,
+                    keyID: knownKey?.id ?? components[2],
+                    fingerprint: key.fingerprint,
+                    remoteComment: comment,
+                    status: .authorized
+                )
+                let previous = existingByID[identity.id]
+                return Authorization(
+                    serverID: serverID,
+                    keyID: knownKey?.id ?? components[2],
+                    fingerprint: key.fingerprint,
+                    remoteComment: comment,
+                    status: .authorized,
+                    authorizedAt: previous?.authorizedAt,
+                    lastVerifiedAt: .now,
+                    updatedAt: .now,
+                    isDeleted: false,
+                    version: previous.map { $0.isDeleted ? $0.version + 1 : $0.version } ?? 1
+                )
             }
+            var managedByID: [String: Authorization] = [:]
+            for authorization in discovered { managedByID[authorization.id] = authorization }
+            let managed = Array(managedByID.values)
             for key in discoveredKeys where !snapshot.keys.contains(where: { $0.fingerprint == key.fingerprint }) {
                 snapshot.keys.append(key)
             }
+            let managedFingerprints = Set(managed.map(\.fingerprint))
+            let existing = snapshot.authorizations.filter { $0.serverID == serverID }
             snapshot.authorizations.removeAll { $0.serverID == serverID }
+            snapshot.authorizations.append(contentsOf: existing.compactMap { authorization in
+                guard !managedFingerprints.contains(authorization.fingerprint) else { return nil }
+                guard !authorization.isDeleted else { return authorization }
+                var tombstone = authorization
+                tombstone.status = .needsAuthorization
+                tombstone.isDeleted = true
+                tombstone.updatedAt = .now
+                tombstone.lastVerifiedAt = .now
+                tombstone.version += 1
+                return tombstone
+            })
             snapshot.authorizations.append(contentsOf: managed)
+            if currentAuthorizationNeedsAction(for: serverID) {
+                updateServer(id: serverID, status: .needsAuthorization, detail: "远端记录中已找不到当前 Mac 的免密授权，请重新启用免密。")
+            }
             appendAudit(category: "authorization", action: "read", targetID: serverID.uuidString, result: "keyport-entries-\(managed.count)")
             await persist()
         } catch { present(error) }
@@ -963,7 +1156,13 @@ final class AppModel {
                 throw SSHServiceError.hostKeyChanged
             }
             try await sshService.revokePublicKey(server: server, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
-            snapshot.authorizations.removeAll { $0.id == authorizationID }
+            if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
+                snapshot.authorizations[index].status = .needsAuthorization
+                snapshot.authorizations[index].isDeleted = true
+                snapshot.authorizations[index].updatedAt = .now
+                snapshot.authorizations[index].lastVerifiedAt = .now
+                snapshot.authorizations[index].version += 1
+            }
             if authorization.keyID == credentialKey.id {
                 updateServer(id: server.id, status: .needsAuthorization, detail: "此 Mac 的授权已撤销。")
             }
@@ -973,11 +1172,23 @@ final class AppModel {
         } catch { present(error) }
     }
 
-    func synchronizeCloud() async {
+    func synchronizeCloud(userInitiated: Bool = true) async {
+        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled") else {
+            cloudState = .disabled
+            return
+        }
         guard !isBusy else { return }
+        if userInitiated {
+            scheduledCloudSync?.cancel()
+            scheduledCloudSync = nil
+        }
         isBusy = true
         cloudState = .syncing
-        defer { isBusy = false }
+        isSynchronizingCloud = true
+        defer {
+            isBusy = false
+            isSynchronizingCloud = false
+        }
         do {
             let previousServers = snapshot.servers
             let localMachineConfigurationRefreshAttempts = snapshot.servers.reduce(into: [UUID: Date]()) { result, server in
@@ -1002,14 +1213,23 @@ final class AppModel {
             discoveredSSHConnections = await configService.discoverConnections()
             reconcileImportedServerAliases()
             await refreshMissingMachineConfigurations()
-            cloudState = .available(.now)
+            let synchronizedAt = Date.now
+            lastCloudSyncAt = synchronizedAt
+            UserDefaults.standard.set(synchronizedAt, forKey: "KeyPort.lastCloudSyncAt")
+            automaticCloudRetryAttempt = 0
+            cloudState = .succeeded(synchronizedAt)
             appendAudit(category: "cloud", action: "sync", result: "success")
             await persist()
         } catch {
             let message = UserFacingText.localizedError(error)
-            cloudState = .unavailable(message)
+            cloudState = cloudState(for: error, message: message)
             appendAudit(category: "cloud", action: "sync", result: "unavailable", level: .warning)
-            errorMessage = message
+            if userInitiated, (error as? CloudSyncError) != .cancelled {
+                errorMessage = message
+            }
+            if let retryDelay = (error as? CloudSyncError)?.automaticRetryDelay {
+                scheduleCloudRetry(after: retryDelay)
+            }
         }
     }
 
@@ -1045,6 +1265,12 @@ final class AppModel {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
         clipboard.copy(server.host)
         appendAudit(category: "server", action: "copy-host", targetID: serverID.uuidString, result: "success")
+    }
+
+    func copySSHCommand(serverID: UUID) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        clipboard.copy("ssh \(server.alias)")
+        appendAudit(category: "server", action: "copy-ssh-command", targetID: serverID.uuidString, result: "success")
     }
 
     func clearAuditLog() async {
@@ -1083,9 +1309,11 @@ final class AppModel {
     func key(for server: ServerConnection) -> SSHKeyRecord? {
         if let authorization = snapshot.authorizations.first(where: { authorization in
             guard authorization.serverID == server.id,
-                  let authorizedKey = snapshot.keys.first(where: { $0.id == authorization.keyID }) else { return false }
+                  !authorization.isDeleted,
+                  authorization.status == .authorized,
+                  let authorizedKey = key(for: authorization) else { return false }
             return authorizedKey.deviceID == currentDevice?.id && authorizedKey.isLocallyAvailable
-        }), let authorizedKey = snapshot.keys.first(where: { $0.id == authorization.keyID }) {
+        }), let authorizedKey = key(for: authorization) {
             return authorizedKey
         }
         if let connection = connection(for: server), let configuredKey = key(for: connection) {
@@ -1145,6 +1373,10 @@ final class AppModel {
         serverIDsWithStoredPassword.contains(serverID)
     }
 
+    func isPasswordSynchronizable(serverID: UUID) -> Bool {
+        serverIDsWithSynchronizablePassword.contains(serverID)
+    }
+
     func requestPassword(for serverID: UUID) {
         passwordSaveError = nil
         passwordPromptServerID = serverID
@@ -1165,11 +1397,11 @@ final class AppModel {
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) {
             case .pending:
                 let detail = server.confirmedHostKeys.isEmpty
-                    ? "测试密码身份验证前，请先确认此服务器的主机密钥。"
-                    : "端点提供了尚未确认的主机密钥算法，密码身份验证已被阻止。"
+                    ? "进行密码登录验证前，请先确认此服务器的主机密钥。"
+                    : "端点提供了尚未确认的主机密钥算法，密码登录验证已被阻止。"
                 return AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now)
             case .changed(let algorithms):
-                let detail = "以下算法的主机密钥已变更：\(algorithms.joined(separator: "、"))。密码身份验证已被阻止。"
+                let detail = "以下算法的主机密钥已变更：\(algorithms.joined(separator: "、"))。密码登录验证已被阻止。"
                 return AuthenticationCheck(state: .blocked, detail: detail, checkedAt: .now)
             case .confirmed:
                 var passwordData = Data(password.utf8)
@@ -1196,7 +1428,7 @@ final class AppModel {
     ) async {
         guard let server = promptedPasswordServer, !password.isEmpty, !isSavingPassword else { return }
         guard validatedCheck.state == .succeeded, validatedCheck.checkedAt != nil else {
-            passwordSaveError = "保存前，请使用密码 SSH 测试当前密码。"
+            passwordSaveError = "保存前，请先完成密码登录验证。"
             return
         }
         isSavingPassword = true
@@ -1205,6 +1437,7 @@ final class AppModel {
         do {
             try await keychain.saveServerPassword(password, serverID: server.id, synchronizable: synchronizable)
             serverIDsWithStoredPassword.insert(server.id)
+            updatePasswordStorageCache(serverID: server.id, synchronizable: synchronizable)
             if let index = snapshot.servers.firstIndex(where: { $0.id == server.id }) {
                 snapshot.servers[index].passwordCheck = validatedCheck
             }
@@ -1257,6 +1490,7 @@ final class AppModel {
             let imported = try await archiveService.importArchive(from: source, password: password)
             let previousServers = snapshot.servers
             mergeImported(imported)
+            normalizeStableMetadataIDs()
             ensureCurrentDevice()
             normalizeStatusesAfterMetadataMerge(previousServers: previousServers)
             await refreshPasswordAvailability()
@@ -1273,23 +1507,31 @@ final class AppModel {
         selectedKeyItemID = "identity:\(key.id)"
         for index in snapshot.servers.indices where snapshot.servers[index].status == .missingLocalKey {
             snapshot.servers[index].status = .needsAuthorization
-            snapshot.servers[index].statusDetail = "此 Mac 的密钥已准备好授权。"
+            snapshot.servers[index].statusDetail = "当前 Mac 的密钥已就绪，可以启用免密。"
         }
         return key
     }
 
     private func authorizeServer(_ serverID: UUID) async throws {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
-            throw SSHServiceError.operationFailed("找不到要授权的服务器。")
+            throw SSHServiceError.operationFailed("找不到要启用免密的服务器。")
         }
-        guard let key = key(for: server) else { throw SSHServiceError.missingPrivateKey }
-        try await localAuthentication.authorize(reason: "在 \(server.name) 上授权此 Mac")
+        guard let key = privateKey(for: server) else { throw SSHServiceError.missingPrivateKey }
+        try await localAuthentication.authorize(reason: "为 \(server.name) 启用免密")
         try await authorize(server: server, key: key)
     }
 
     private var preferredKey: SSHKeyRecord? {
-        if let selectedKeyID, let selected = currentDeviceKeys.first(where: { $0.id == selectedKeyID }) { return selected }
-        return currentDeviceKeys.first(where: { $0.kind == .ed25519 && $0.privateKeyPath != nil }) ?? currentDeviceKeys.first
+        let privateKeys = currentDeviceKeys.filter { $0.privateKeyPath != nil }
+        if let selectedKeyID, let selected = privateKeys.first(where: { $0.id == selectedKeyID }) { return selected }
+        return privateKeys.first(where: { $0.kind == .ed25519 }) ?? privateKeys.first
+    }
+
+    private func privateKey(for server: ServerConnection) -> SSHKeyRecord? {
+        if let key = key(for: server), key.privateKeyPath != nil {
+            return key
+        }
+        return preferredKey
     }
 
     private func normalizedIdentityPath(_ path: String) -> String {
@@ -1330,7 +1572,7 @@ final class AppModel {
                   connection(for: snapshot.servers[index]) != nil,
                   snapshot.servers[index].status == .needsAuthorization else { continue }
             snapshot.servers[index].status = .syncPending
-            snapshot.servers[index].statusDetail = "已配置的 SSH 身份密钥发生变化，请在授权前检查此连接。"
+            snapshot.servers[index].statusDetail = "已配置的 SSH 身份密钥发生变化，请在启用免密前检查此连接。"
             snapshot.servers[index].lastCheckedAt = nil
         }
         snapshot.schemaVersion = 2
@@ -1344,13 +1586,13 @@ final class AppModel {
             case .authorized:
                 snapshot.servers[index].keyCheck = AuthenticationCheck(
                     state: .succeeded,
-                    detail: snapshot.servers[index].statusDetail ?? "免密 SSH 身份验证成功。",
+                    detail: snapshot.servers[index].statusDetail ?? "免密登录验证成功。",
                     checkedAt: checkedAt
                 )
             case .needsAuthorization, .keyAuthenticationFailed:
                 snapshot.servers[index].keyCheck = AuthenticationCheck(
                     state: .failed,
-                    detail: snapshot.servers[index].statusDetail ?? "当前 Mac 的密钥尚未授权。",
+                    detail: snapshot.servers[index].statusDetail ?? "当前 Mac 尚未启用免密。",
                     checkedAt: checkedAt
                 )
             case .hostKeyPending, .hostKeyMismatch:
@@ -1376,7 +1618,7 @@ final class AppModel {
         if ownsBusyState { isBusy = true }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
-            title: kind == .password ? "密码 SSH 检查" : "密钥 SSH 检查",
+            title: kind == .password ? "密码登录验证" : "免密检测",
             lines: ["正在连接 \(initial.username)@\(initial.endpoint)...", "正在扫描服务器主机密钥..."]
         )
         updateAuthenticationCheck(id: serverID, kind: kind, state: .checking, detail: kind.checkingDetail, checkedAt: nil)
@@ -1436,7 +1678,7 @@ final class AppModel {
 
     private func checkPasswordAuthentication(server: ServerConnection) async throws {
         guard await keychain.hasServerPassword(serverID: server.id) else {
-            let detail = "检查密码 SSH 前，请输入并测试服务器密码。"
+            let detail = "进行密码登录验证前，请输入并验证服务器密码。"
             updateAuthenticationCheck(id: server.id, kind: .password, state: .blocked, detail: detail)
             passwordSaveError = nil
             passwordPromptServerID = server.id
@@ -1446,7 +1688,7 @@ final class AppModel {
         var passwordData = try await keychain.serverPasswordData(serverID: server.id)
         defer { passwordData.resetBytes(in: passwordData.indices) }
         let authenticated = try await sshService.testPassword(server: server, passwordData: passwordData)
-        let detail = authenticated ? "服务器密码身份验证成功。" : "服务器拒绝了已存储的密码。"
+        let detail = authenticated ? "密码登录验证成功。" : "服务器拒绝了已存储的密码。"
         updateAuthenticationCheck(id: server.id, kind: .password, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
         if authenticated {
@@ -1474,7 +1716,7 @@ final class AppModel {
             return
         }
         let authenticated = try await sshService.testPublicKey(server: server, key: key)
-        let detail = authenticated ? "免密 SSH 身份验证成功。" : "当前 Mac 的密钥尚未授权。"
+        let detail = authenticated ? "免密登录验证成功。" : "当前 Mac 尚未启用免密。"
         updateAuthenticationCheck(id: server.id, kind: .key, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
         if authenticated {
@@ -1485,6 +1727,10 @@ final class AppModel {
             }
         }
         updateServer(id: server.id, status: authenticated ? .authorized : .needsAuthorization, detail: detail)
+        if authenticated {
+            upsertAuthorization(serverID: server.id, key: key, authorizedAt: nil)
+            await writeConfig()
+        }
         appendAudit(
             category: "ssh-auth",
             action: ServerCheckKind.key.auditAction,
@@ -1506,7 +1752,7 @@ final class AppModel {
         }
         do {
             try await sshService.installPublicKey(server: server, key: key, passwordData: passwordData)
-            updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "授权期间服务器密码身份验证成功。")
+            updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "启用免密时，密码登录验证成功。")
             appendAudit(category: "ssh-auth", action: ServerCheckKind.password.auditAction, targetID: server.id.uuidString, result: "succeeded-during-authorization")
         } catch SSHServiceError.passwordAuthenticationRejected {
             updateAuthenticationCheck(id: server.id, kind: .password, state: .failed, detail: "服务器拒绝了已存储的密码。")
@@ -1515,13 +1761,11 @@ final class AppModel {
             throw SSHServiceError.passwordAuthenticationRejected
         }
         guard try await sshService.testPublicKey(server: server, key: key) else {
-            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "密钥已安装，但免密 SSH 验证失败。")
+            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "公钥已安装，但免密登录验证失败。")
             throw SSHServiceError.operationFailed("密钥已安装，但验证失败。")
         }
-        updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "授权后免密 SSH 身份验证成功。")
-        let authorization = Authorization(serverID: server.id, keyID: key.id, fingerprint: key.fingerprint, remoteComment: key.publicKeyComment ?? "", status: .authorized, authorizedAt: .now, lastVerifiedAt: .now)
-        snapshot.authorizations.removeAll { $0.serverID == server.id && $0.keyID == key.id }
-        snapshot.authorizations.append(authorization)
+        updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "公钥授权后，免密登录验证成功。")
+        upsertAuthorization(serverID: server.id, key: key, authorizedAt: .now)
         updateServer(id: server.id, status: .authorized, detail: "公钥已安装并通过验证。")
         try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
         appendAudit(category: "authorization", action: "install", targetID: server.id.uuidString, result: "verified")
@@ -1534,6 +1778,38 @@ final class AppModel {
             try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
             appendAudit(category: "ssh-config", action: "write", result: "success")
         } catch { present(error) }
+    }
+
+    private func ensureAuthorizationRecordForVerifiedServer(serverID: UUID) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }),
+              server.status == .authorized,
+              let key = key(for: server),
+              key.isLocallyAvailable,
+              key.privateKeyPath != nil,
+              !snapshot.authorizations.contains(where: {
+                  $0.serverID == serverID && $0.fingerprint == key.fingerprint && !$0.isDeleted && $0.status == .authorized
+              }) else { return }
+        upsertAuthorization(serverID: serverID, key: key, authorizedAt: nil)
+    }
+
+    private func upsertAuthorization(serverID: UUID, key: SSHKeyRecord, authorizedAt: Date?) {
+        let existing = snapshot.authorizations.first {
+            $0.serverID == serverID && $0.fingerprint == key.fingerprint
+        }
+        let authorization = Authorization(
+            serverID: serverID,
+            keyID: key.id,
+            fingerprint: key.fingerprint,
+            remoteComment: key.publicKeyComment ?? "",
+            status: .authorized,
+            authorizedAt: authorizedAt ?? existing?.authorizedAt,
+            lastVerifiedAt: .now,
+            updatedAt: .now,
+            isDeleted: false,
+            version: (existing?.version ?? 0) + 1
+        )
+        snapshot.authorizations.removeAll { $0.serverID == serverID && $0.fingerprint == key.fingerprint }
+        snapshot.authorizations.append(authorization)
     }
 
     private func ensureCurrentDevice() {
@@ -1566,6 +1842,15 @@ final class AppModel {
         for index in snapshot.servers.indices where !snapshot.servers[index].isDeleted {
             if let previous = previousByID[snapshot.servers[index].id],
                authenticationContextMatches(previous, snapshot.servers[index]) {
+                if previous.status == .authorized,
+                   currentAuthorizationNeedsAction(for: snapshot.servers[index].id) {
+                    snapshot.servers[index].status = .needsAuthorization
+                    snapshot.servers[index].statusDetail = "同步结果显示当前 Mac 的远端免密授权已撤销，请重新启用免密。"
+                    snapshot.servers[index].lastCheckedAt = nil
+                    snapshot.servers[index].passwordCheck = nil
+                    snapshot.servers[index].keyCheck = nil
+                    continue
+                }
                 snapshot.servers[index].status = previous.status
                 snapshot.servers[index].statusDetail = previous.statusDetail
                 snapshot.servers[index].lastCheckedAt = previous.lastCheckedAt
@@ -1581,12 +1866,20 @@ final class AppModel {
                 snapshot.servers[index].statusDetail = "同步的元数据中没有此 Mac 的私钥。"
             } else {
                 snapshot.servers[index].status = .syncPending
-                snapshot.servers[index].statusDetail = "依赖此授权前，请先运行本地检查。"
+                snapshot.servers[index].statusDetail = "使用此免密授权前，请先进行本地检测。"
             }
             snapshot.servers[index].lastCheckedAt = nil
             snapshot.servers[index].passwordCheck = nil
             snapshot.servers[index].keyCheck = nil
         }
+    }
+
+    private func currentAuthorizationNeedsAction(for serverID: UUID) -> Bool {
+        let localFingerprints = Set(currentDeviceKeys.map(\.fingerprint))
+        guard let authorization = snapshot.authorizations.first(where: {
+            $0.serverID == serverID && localFingerprints.contains($0.fingerprint)
+        }) else { return false }
+        return authorization.isDeleted || authorization.status != .authorized
     }
 
     private func authenticationContextMatches(_ lhs: ServerConnection, _ rhs: ServerConnection) -> Bool {
@@ -1600,12 +1893,25 @@ final class AppModel {
 
     private func refreshPasswordAvailability() async {
         var available = Set<UUID>()
+        var synchronizable = Set<UUID>()
         for server in activeServers {
-            if await keychain.hasServerPassword(serverID: server.id) {
+            if let storage = await keychain.serverPasswordStorage(serverID: server.id) {
                 available.insert(server.id)
+                if storage.isSynchronizable {
+                    synchronizable.insert(server.id)
+                }
             }
         }
         serverIDsWithStoredPassword = available
+        serverIDsWithSynchronizablePassword = synchronizable
+    }
+
+    private func updatePasswordStorageCache(serverID: UUID, synchronizable: Bool) {
+        if synchronizable {
+            serverIDsWithSynchronizablePassword.insert(serverID)
+        } else {
+            serverIDsWithSynchronizablePassword.remove(serverID)
+        }
     }
 
     private func refreshMissingMachineConfigurations() async {
@@ -1654,13 +1960,28 @@ final class AppModel {
     private func mergeImported(_ imported: AppSnapshot) {
         for server in imported.servers {
             if let index = snapshot.servers.firstIndex(where: { $0.id == server.id }) {
-                if server.updatedAt > snapshot.servers[index].updatedAt { snapshot.servers[index] = server }
+                let existing = snapshot.servers[index]
+                if server.version > existing.version
+                    || (server.version == existing.version && server.isDeleted && !existing.isDeleted)
+                    || (server.version == existing.version
+                        && server.isDeleted == existing.isDeleted
+                        && server.updatedAt > existing.updatedAt) {
+                    snapshot.servers[index] = server
+                }
             } else {
                 snapshot.servers.append(server)
             }
         }
-        for device in imported.devices where !snapshot.devices.contains(where: { $0.id == device.id }) {
-            snapshot.devices.append(device)
+        for device in imported.devices {
+            if let index = snapshot.devices.firstIndex(where: { $0.id == device.id }) {
+                let existing = snapshot.devices[index]
+                if (device.isRevoked && !existing.isRevoked)
+                    || (device.isRevoked == existing.isRevoked && device.lastActiveAt > existing.lastActiveAt) {
+                    snapshot.devices[index] = device
+                }
+            } else {
+                snapshot.devices.append(device)
+            }
         }
         for key in imported.keys {
             if let existing = snapshot.keys.firstIndex(where: { $0.fingerprint == key.fingerprint }) {
@@ -1670,9 +1991,27 @@ final class AppModel {
             }
         }
         for authorization in imported.authorizations {
-            snapshot.authorizations.removeAll { $0.id == authorization.id && ($0.lastVerifiedAt ?? .distantPast) < (authorization.lastVerifiedAt ?? .distantPast) }
-            if !snapshot.authorizations.contains(where: { $0.id == authorization.id }) { snapshot.authorizations.append(authorization) }
+            guard let existing = snapshot.authorizations.first(where: { $0.id == authorization.id }) else {
+                snapshot.authorizations.append(authorization)
+                continue
+            }
+            let shouldReplace = authorization.version > existing.version
+                || (authorization.version == existing.version
+                    && authorization.isDeleted
+                    && !existing.isDeleted)
+                || (authorization.version == existing.version
+                    && authorization.isDeleted == existing.isDeleted
+                    && authorization.updatedAt > existing.updatedAt)
+            if shouldReplace {
+                snapshot.authorizations.removeAll { $0.id == authorization.id }
+                snapshot.authorizations.append(authorization)
+            }
         }
+    }
+
+    private func normalizeStableMetadataIDs() {
+        let normalized = CloudMetadataSnapshotPolicy.merge(local: snapshot, remote: AppSnapshot())
+        snapshot = CloudMetadataSnapshotPolicy.restoringLocalState(in: normalized, from: snapshot)
     }
 
     private func serverIDsSharingEndpoint(with serverID: UUID) -> [UUID] {
@@ -1823,8 +2162,75 @@ final class AppModel {
     }
 
     private func persist() async {
-        do { try await store.save(snapshot) }
+        do {
+            try await store.save(snapshot)
+            scheduleCloudSyncIfNeeded()
+        }
         catch { present(error) }
+    }
+
+    private func scheduleCloudSyncIfNeeded() {
+        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled"),
+              !isSynchronizingCloud,
+              !isInitialLoadInProgress else { return }
+        automaticCloudRetryAttempt = 0
+        scheduledCloudSync?.cancel()
+        scheduledCloudSync = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            } catch {
+                return
+            }
+            guard let self else { return }
+            for _ in 0..<20 {
+                guard !Task.isCancelled else { return }
+                if !self.isBusy {
+                    await self.synchronizeCloud(userInitiated: false)
+                    return
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    return
+                }
+            }
+            self.scheduleCloudRetry(after: 5)
+        }
+    }
+
+    private func scheduleCloudRetry(after minimumDelay: TimeInterval) {
+        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled") else { return }
+        automaticCloudRetryAttempt += 1
+        let exponentialDelay = min(300, 15 * pow(2, Double(max(0, automaticCloudRetryAttempt - 1))))
+        let delay = max(minimumDelay, exponentialDelay)
+        scheduledCloudSync?.cancel()
+        scheduledCloudSync = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            if self.isBusy {
+                self.scheduleCloudRetry(after: 5)
+            } else {
+                await self.synchronizeCloud(userInitiated: false)
+            }
+        }
+    }
+
+    private func cloudState(for error: Error, message: String) -> CloudSyncState {
+        guard let error = error as? CloudSyncError else { return .failed(message) }
+        switch error {
+        case .adHocSignature:
+            return .adHocSigned
+        case .missingEntitlement:
+            return .cloudKitDisabled
+        case .accountUnavailable:
+            return .signedOut
+        default:
+            return .failed(message)
+        }
     }
 
     private func present(_ error: Error) {

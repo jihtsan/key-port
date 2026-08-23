@@ -38,8 +38,12 @@ struct ContentView: View {
                         trustedHostKeys: hostKeys
                     )
                 },
-                onSave: { submission in
-                    _ = try await model.saveServerEditor(submission, existingServerID: nil)
+                onSave: { submission, enablesPasswordless in
+                    try await saveServer(
+                        submission,
+                        existingServerID: nil,
+                        enablesPasswordless: enablesPasswordless
+                    )
                 }
             )
         }
@@ -56,7 +60,6 @@ struct ContentView: View {
                     initialHostKeys: sourceServer.confirmedHostKeys,
                     hasStoredPassword: false,
                     canSynchronize: model.canSynchronizePasswords,
-                    primaryActionTitle: "保存用户",
                     showsNotes: false,
                     locksServerFields: true,
                     onCheck: { draft, password, hostKeys in
@@ -67,8 +70,12 @@ struct ContentView: View {
                             trustedHostKeys: hostKeys
                         )
                     },
-                    onSave: { submission in
-                        _ = try await model.saveServerEditor(submission, existingServerID: nil)
+                    onSave: { submission, enablesPasswordless in
+                        try await saveServer(
+                            submission,
+                            existingServerID: nil,
+                            enablesPasswordless: enablesPasswordless
+                        )
                     }
                 )
             }
@@ -79,9 +86,7 @@ struct ContentView: View {
                 model.snapshot.servers.first { $0.id == serverID && !$0.isDeleted }
             }
             ServerEditorView(
-                title: request.authorizesAfterSave
-                    ? "授权本机账户"
-                    : (existingServer == nil ? "添加 SSH 账户" : "编辑 SSH 账户"),
+                title: existingServer == nil ? "添加 SSH 账户" : "编辑 SSH 账户",
                 existingServerID: existingServer?.id,
                 initialDraft: model.tailscaleServerDraft(
                     for: suggestion,
@@ -89,8 +94,12 @@ struct ContentView: View {
                 ),
                 initialHostKeys: existingServer?.confirmedHostKeys ?? [],
                 hasStoredPassword: existingServer.map { model.hasStoredPassword(serverID: $0.id) } ?? false,
+                storedPasswordSynchronizable: existingServer.map {
+                    model.isPasswordSynchronizable(serverID: $0.id)
+                } ?? false,
                 canSynchronize: model.canSynchronizePasswords,
-                primaryActionTitle: request.authorizesAfterSave ? "保存并授权本机" : "保存账户",
+                primaryActionTitle: "保存账户",
+                offersPasswordlessSetup: existingServer?.status != .authorized,
                 showsNotes: false,
                 onCheck: { draft, password, hostKeys in
                     let existingServerID = request.serverID
@@ -102,18 +111,14 @@ struct ContentView: View {
                         trustedHostKeys: hostKeys
                     )
                 },
-                onSave: { submission in
+                onSave: { submission, enablesPasswordless in
                     let existingServerID = request.serverID
                         ?? model.existingTailscaleServerID(for: suggestion, draft: submission.draft)
-                    if request.authorizesAfterSave {
-                        _ = try await model.saveAndAuthorizeTailscaleServer(
-                            submission,
-                            suggestion: suggestion,
-                            existingServerID: existingServerID
-                        )
-                    } else {
-                        _ = try await model.saveServerEditor(submission, existingServerID: existingServerID)
-                    }
+                    try await saveServer(
+                        submission,
+                        existingServerID: existingServerID,
+                        enablesPasswordless: enablesPasswordless
+                    )
                 }
             )
         }
@@ -125,7 +130,9 @@ struct ContentView: View {
                     initialDraft: ServerDraft(server: server),
                     initialHostKeys: server.confirmedHostKeys,
                     hasStoredPassword: model.hasStoredPassword(serverID: server.id),
+                    storedPasswordSynchronizable: model.isPasswordSynchronizable(serverID: server.id),
                     canSynchronize: model.canSynchronizePasswords,
+                    offersPasswordlessSetup: server.status != .authorized,
                     onCheck: { draft, password, hostKeys in
                         await model.validateServerEditor(
                             draft: draft,
@@ -134,8 +141,12 @@ struct ContentView: View {
                             trustedHostKeys: hostKeys
                         )
                     },
-                    onSave: { submission in
-                        _ = try await model.saveServerEditor(submission, existingServerID: server.id)
+                    onSave: { submission, enablesPasswordless in
+                        try await saveServer(
+                            submission,
+                            existingServerID: server.id,
+                            enablesPasswordless: enablesPasswordless
+                        )
                     }
                 )
             }
@@ -255,18 +266,13 @@ struct ContentView: View {
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
-                    Task { await model.checkPasswordSelected() }
+                    guard let serverID = model.selectedServerID else { return }
+                    Task { await model.performPasswordlessPrimaryAction(serverID: serverID) }
                 } label: {
-                    Label("检查密码 SSH", systemImage: "lock")
+                    Label(selectedPasswordlessAction.title, systemImage: selectedPasswordlessAction.systemImage)
                 }
-                .disabled(model.selectedServerID == nil || model.isBusy)
-
-                Button {
-                    Task { await model.checkKeySelected() }
-                } label: {
-                    Label("检查密钥 SSH", systemImage: "key.horizontal")
-                }
-                .disabled(model.selectedServerID == nil || model.isBusy)
+                .help(selectedPasswordlessAction.help)
+                .disabled(model.selectedServerID == nil || model.isBusy || selectedPasswordlessAction == .checking)
 
                 Button {
                     showsEditServer = true
@@ -275,12 +281,6 @@ struct ContentView: View {
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
-                Button {
-                    Task { await model.authorizeSelected() }
-                } label: {
-                    Label("授权此 Mac", systemImage: "key.horizontal")
-                }
-                .disabled(model.selectedServer?.status != .needsAuthorization || model.isBusy)
             }
         }
 
@@ -309,6 +309,22 @@ struct ContentView: View {
             }
         }
     }
+
+    private var selectedPasswordlessAction: PasswordlessPrimaryAction {
+        guard let server = model.selectedServer else { return .enable }
+        return model.passwordlessPrimaryAction(for: server)
+    }
+
+    private func saveServer(
+        _ submission: ServerEditorSubmission,
+        existingServerID: UUID?,
+        enablesPasswordless: Bool
+    ) async throws {
+        let serverID = try await model.saveServerEditor(submission, existingServerID: existingServerID)
+        if enablesPasswordless {
+            await model.authorizeCurrentDevice(serverID: serverID)
+        }
+    }
 }
 
 struct KeyPortCommands: Commands {
@@ -316,18 +332,20 @@ struct KeyPortCommands: Commands {
 
     var body: some Commands {
         CommandMenu("服务器") {
-            Button("检查密码 SSH") { Task { await model.checkPasswordSelected() } }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
-                .disabled(model.selectedServerID == nil)
-            Button("检查密钥 SSH") { Task { await model.checkKeySelected() } }
+            Button(passwordlessAction.title) {
+                guard let serverID = model.selectedServerID else { return }
+                Task { await model.performPasswordlessPrimaryAction(serverID: serverID) }
+            }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-                .disabled(model.selectedServerID == nil)
+                .disabled(model.selectedServerID == nil || passwordlessAction == .checking)
             Button("复制 SSH 别名") { model.copySelectedAlias() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(model.selectedServerID == nil)
-            Divider()
-            Button("授权此 Mac") { Task { await model.authorizeSelected() } }
-                .disabled(model.selectedServer?.status != .needsAuthorization)
         }
+    }
+
+    private var passwordlessAction: PasswordlessPrimaryAction {
+        guard let server = model.selectedServer else { return .enable }
+        return model.passwordlessPrimaryAction(for: server)
     }
 }
