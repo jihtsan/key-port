@@ -8,6 +8,7 @@ public enum CloudMetadataSnapshotPolicy {
         result.devices = snapshot.devices.map(sanitizedDevice).sorted { $0.id < $1.id }
         result.keys = snapshot.keys.map(sanitizedKey).sorted { $0.fingerprint < $1.fingerprint }
         result.authorizations = snapshot.authorizations.sorted { $0.id < $1.id }
+        result.nodeAssociations = NodeAssociationMerger.merge(snapshot.nodeAssociations)
         result.auditEvents = []
         return result
     }
@@ -31,6 +32,7 @@ public enum CloudMetadataSnapshotPolicy {
             prefer: preferAuthorization
         )
         .sorted { $0.id < $1.id }
+        result.nodeAssociations = NodeAssociationMerger.merge(local.nodeAssociations + remote.nodeAssociations)
         return result
     }
 

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct TailscaleDeviceIdentity: Codable, Hashable, Sendable {
@@ -5,35 +6,47 @@ public struct TailscaleDeviceIdentity: Codable, Hashable, Sendable {
     public let dnsName: String?
     public let addresses: [String]
 
-    public init(node: TailscaleNode) {
-        nodeID = node.id
+    public init?(node: TailscaleNode) {
+        guard let stableNodeID = node.stableNodeID else { return nil }
+        nodeID = stableNodeID
         dnsName = node.dnsName
         addresses = node.addresses
     }
 
     public func matches(node: TailscaleNode) -> Bool {
-        if nodeID == node.id { return true }
-
-        let knownAddresses = Set(addresses.map(TailscaleHostIdentity.normalize).filter { !$0.isEmpty })
-        if node.addresses.contains(where: { knownAddresses.contains(TailscaleHostIdentity.normalize($0)) }) {
-            return true
-        }
-
-        guard let dnsName else { return false }
-        return TailscaleHostIdentity.normalize(dnsName) == TailscaleHostIdentity.normalize(node.dnsName ?? "")
+        nodeID == node.stableNodeID
     }
 
     public func matches(host: String) -> Bool {
+        addressMatch(for: host) != nil
+    }
+
+    public func addressMatch(for host: String) -> DeviceAddressMatch? {
         let candidate = TailscaleHostIdentity.normalize(host)
-        guard !candidate.isEmpty else { return false }
-        return TailscaleHostIdentity.normalize(dnsName ?? "") == candidate
-            || addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+        guard !candidate.isEmpty else { return nil }
+        if TailscaleHostIdentity.normalize(dnsName ?? "") == candidate {
+            return .tailscaleMagicDNS
+        }
+        return addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+            ? .tailscaleIP
+            : nil
     }
 }
 
 public extension TailscaleNode {
     func matches(host candidate: String) -> Bool {
-        endpointHosts.contains(TailscaleHostIdentity.normalize(candidate))
+        addressMatch(for: candidate) != nil
+    }
+
+    func addressMatch(for host: String) -> DeviceAddressMatch? {
+        let candidate = TailscaleHostIdentity.normalize(host)
+        guard !candidate.isEmpty else { return nil }
+        if TailscaleHostIdentity.normalize(dnsName ?? "") == candidate {
+            return .tailscaleMagicDNS
+        }
+        return addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+            ? .tailscaleIP
+            : nil
     }
 
     var preferredSSHHost: String? {
@@ -42,9 +55,6 @@ public extension TailscaleNode {
             ?? addresses.compactMap(TailscaleHostIdentity.clean).first
     }
 
-    private var endpointHosts: Set<String> {
-        Set(([dnsName].compactMap { $0 } + addresses).map(TailscaleHostIdentity.normalize).filter { !$0.isEmpty })
-    }
 }
 
 enum TailscaleHostIdentity {
@@ -59,6 +69,22 @@ enum TailscaleHostIdentity {
     }
 
     static func normalize(_ value: String) -> String {
-        clean(value)?.lowercased() ?? ""
+        guard let cleaned = clean(value)?.lowercased() else { return "" }
+
+        var ipv4 = in_addr()
+        if cleaned.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
+            return withUnsafeBytes(of: ipv4.s_addr) { bytes in
+                "ipv4:" + bytes.map { String(format: "%02x", $0) }.joined()
+            }
+        }
+
+        var ipv6 = in6_addr()
+        if cleaned.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
+            return withUnsafeBytes(of: ipv6) { bytes in
+                "ipv6:" + bytes.map { String(format: "%02x", $0) }.joined()
+            }
+        }
+
+        return cleaned
     }
 }

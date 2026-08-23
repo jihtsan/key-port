@@ -27,6 +27,7 @@ ssh <ssh-alias>
 | 授权读取与撤销 | 读取 KeyPort 管理的远端授权，按公钥指纹精确撤销指定设备密钥，并保留未知公钥和选项。 |
 | SSH 别名与配置 | 生成 `~/.ssh/keyport/config`，并在用户配置中加入幂等的 Include；已有 SSH 配置不会被整体覆盖。 |
 | 设备与 Tailscale | 记录当前 Mac 和其他设备的密钥授权；可读取 Tailscale 节点并为可用的 SSH 端点提供账户建议。 |
+| Test Case 节点关联 | 一期以标准化 Server 名称匹配同 tailnet 唯一 Tailscale HostName，并保留 MagicDNS/Tailscale IP 强证据；稳定保存 `ServerConnection.id` 与 Tailscale `nodeId`，支持人工确认、改绑、解除及漂移复核。 |
 | 同步与归档 | 通过 CloudKit 同步非敏感元数据；可选使用 iCloud Keychain 同步服务器密码；支持加密元数据归档。 |
 | 审计日志 | 记录授权、密钥、SSH 配置、同步和归档等操作结果。 |
 
@@ -141,6 +142,7 @@ CloudKit 上传前会移除本地私钥路径、SSH Agent 状态、当前设备�
 | `KeyPortCore` | 领域模型、SSH Config、Host Key、公钥、Tailscale 和归档解析/生成逻辑。 |
 | `KeyPortAskPass` | 通过受限 FIFO 为系统 OpenSSH 提供一次性密码输入的 helper。 |
 | `KeyPortCoreChecks` | 不依赖 UI 的核心回归检查。 |
+| `KeyPortCoreTests` | 节点关联、迁移、漂移、并发与敏感数据边界的 XCTest。 |
 
 主要目录：
 
@@ -191,6 +193,7 @@ git diff --check
 - [macOS 技术框架与组件选型](Docs/macOS-技术框架与组件选型.md)
 - [项目术语与上下文](CONTEXT.md)
 - [界面与交互设计约束](DESIGN.md)
+- [JODER-30 节点关联实现说明](Docs/JODER-30-节点关联实现说明.md)
 
 ## 贡献前检查
 

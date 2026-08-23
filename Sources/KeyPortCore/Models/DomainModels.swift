@@ -12,10 +12,11 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
     case authorizationConflict
     case syncPending
     case checking
+    case syncing
 
     public var title: String {
         switch self {
-        case .authorized: "免密已验证"
+        case .authorized: "免密可用"
         case .needsAuthorization: "待启用免密"
         case .missingLocalKey: "缺少本机密钥"
         case .hostKeyPending: "主机密钥待确认"
@@ -26,6 +27,7 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
         case .authorizationConflict: "授权冲突"
         case .syncPending: "免密待验证"
         case .checking: "检测中"
+        case .syncing: "同步中"
         }
     }
 }
@@ -321,12 +323,34 @@ public struct AuditEvent: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct AppSnapshot: Codable, Sendable {
-    public var schemaVersion = 4
+    public var schemaVersion = 5
     public var servers: [ServerConnection] = []
     public var devices: [Device] = []
     public var keys: [SSHKeyRecord] = []
     public var authorizations: [Authorization] = []
     public var auditEvents: [AuditEvent] = []
+    public var nodeAssociations: [NodeAssociation] = []
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, servers, devices, keys, authorizations, auditEvents, nodeAssociations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        servers = try container.decodeIfPresent([ServerConnection].self, forKey: .servers) ?? []
+        devices = try container.decodeIfPresent([Device].self, forKey: .devices) ?? []
+        keys = try container.decodeIfPresent([SSHKeyRecord].self, forKey: .keys) ?? []
+        authorizations = try container.decodeIfPresent([Authorization].self, forKey: .authorizations) ?? []
+        auditEvents = try container.decodeIfPresent([AuditEvent].self, forKey: .auditEvents) ?? []
+        nodeAssociations = try container.decodeIfPresent([NodeAssociation].self, forKey: .nodeAssociations) ?? []
+    }
+
+    public mutating func migrateNodeAssociationsSchemaIfNeeded() {
+        guard schemaVersion < 5 else { return }
+        nodeAssociations = []
+        schemaVersion = 5
+    }
 }

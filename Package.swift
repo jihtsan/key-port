@@ -28,6 +28,7 @@ let package = Package(
         ),
         .executableTarget(name: "KeyPortCoreChecks", dependencies: ["KeyPortCore"]),
         .testTarget(name: "KeyPortTests", dependencies: ["KeyPort"]),
+        .testTarget(name: "KeyPortCoreTests", dependencies: ["KeyPortCore"]),
     ],
     swiftLanguageModes: [.v5]
 )
