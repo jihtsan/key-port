@@ -323,12 +323,8 @@ private struct DeviceDetailView: View {
                 Label(server.username, systemImage: "person.crop.circle")
                     .fontWeight(.medium)
                 Spacer()
-                Label(
-                    server.status == .authorized ? "免密已验证" : "免密未验证",
-                    systemImage: server.status == .authorized ? "checkmark.circle.fill" : "key.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(server.status == .authorized ? .green : .secondary)
+                StatusLabel(status: server.status)
+                    .font(.caption)
             }
 
             HStack(spacing: 14) {

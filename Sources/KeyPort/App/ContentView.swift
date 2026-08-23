@@ -172,13 +172,14 @@ struct ContentView: View {
                     canSynchronize: model.canSynchronizePasswords,
                     isSaving: model.isSavingPassword,
                     errorMessage: model.passwordSaveError,
-                    onTest: { password in
-                        await model.testPromptedPassword(password)
+                    onTest: { username, password in
+                        await model.testPromptedPassword(username: username, password: password)
                     },
-                    onSave: { password, synchronizable, authorizeAfterSave, validatedCheck in
+                    onSave: { username, password, synchronizable, authorizeAfterSave, validatedCheck in
                         Task {
                             await model.savePromptedPassword(
-                                password,
+                                username: username,
+                                password: password,
                                 synchronizable: synchronizable,
                                 authorizeAfterSave: authorizeAfterSave,
                                 validatedCheck: validatedCheck
@@ -275,6 +276,13 @@ struct ContentView: View {
                 .disabled(model.selectedServerID == nil || model.isBusy || selectedPasswordlessAction == .checking)
 
                 Button {
+                    Task { await model.synchronizeSSHAuthorizationSelected() }
+                } label: {
+                    Label("同步 SSH 授权", systemImage: "key.horizontal.fill")
+                }
+                .disabled(model.selectedServerID == nil || model.isBusy)
+
+                Button {
                     showsEditServer = true
                 } label: {
                     Label("编辑用户", systemImage: "pencil")
@@ -303,9 +311,9 @@ struct ContentView: View {
                 Button {
                     Task { await model.synchronizeCloud() }
                 } label: {
-                    Label("同步元数据", systemImage: "icloud.and.arrow.up")
+                    Label("同步 CloudKit 元数据", systemImage: "icloud.and.arrow.up")
                 }
-                .help("通过 iCloud 同步非敏感元数据")
+                .help("通过 CloudKit 同步非敏感元数据；不会同步服务器密码或私钥")
             }
         }
     }
@@ -338,6 +346,11 @@ struct KeyPortCommands: Commands {
             }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(model.selectedServerID == nil || passwordlessAction == .checking)
+            Button("检查密码 SSH") { Task { await model.checkPasswordSelected() } }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(model.selectedServerID == nil)
+            Button("同步 SSH 授权") { Task { await model.synchronizeSSHAuthorizationSelected() } }
+                .disabled(model.selectedServerID == nil || model.isBusy)
             Button("复制 SSH 别名") { model.copySelectedAlias() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(model.selectedServerID == nil)

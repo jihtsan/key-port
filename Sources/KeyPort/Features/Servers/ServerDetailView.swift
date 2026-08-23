@@ -8,6 +8,7 @@ struct ServerDetailView: View {
     @State private var credentialsAndSecurityExpanded = false
     @State private var deviceAuthorizationsExpanded = false
     @State private var pendingRevocationID: String?
+    @State private var associationEditorSelection: AssociationEditorSelection?
 
     var body: some View {
         ScrollView {
@@ -16,6 +17,7 @@ struct ServerDetailView: View {
                 quickConnection
                 machineConfiguration
                 credentialsAndSecurity
+                testCaseNodeAssociation
                 deviceAuthorizations
             }
             .padding(24)
@@ -37,6 +39,13 @@ struct ServerDetailView: View {
             Button("取消", role: .cancel) { pendingRevocationID = nil }
         } message: {
             Text("KeyPort 只会移除公钥指纹完全匹配的记录，其他未知密钥将保留。")
+        }
+        .sheet(item: $associationEditorSelection) { selection in
+            NodeAssociationEditorView(
+                server: server,
+                model: model,
+                existingAssociation: selection.testCaseNodeID.flatMap(model.nodeAssociation(testCaseNodeID:))
+            )
         }
     }
 
@@ -116,8 +125,30 @@ struct ServerDetailView: View {
 
     private var machineConfiguration: some View {
         GroupBox("机器配置") {
-            if let configuration = server.machineConfiguration {
-                VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    if model.machineConfigurationSyncingServerID == server.id {
+                        Label("正在同步", systemImage: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(.blue)
+                        ProgressView().controlSize(.small)
+                    } else if server.machineConfiguration != nil {
+                        Label("已同步", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Label("尚未同步", systemImage: "minus.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await model.synchronizeMachineConfiguration(serverID: server.id) }
+                    } label: {
+                        Label("同步", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(server.status != .authorized || model.isBusy)
+                }
+
+                if let configuration = server.machineConfiguration {
+                    Divider()
                     LeftAlignedDetailRow("主机名") { Text(configuration.hostname) }
                     LeftAlignedDetailRow("操作系统") { Text(configuration.operatingSystem) }
                     LeftAlignedDetailRow("内核") { Text(configuration.kernel) }
@@ -134,15 +165,22 @@ struct ServerDetailView: View {
                         Text(configuration.synchronizedAt.formatted(date: .abbreviated, time: .shortened))
                             .foregroundStyle(.secondary)
                     }
+                } else {
+                    Text("成功完成一次 SSH 登录后即可读取机器配置。")
+                        .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 5)
-            } else {
-                Label("成功完成一次 SSH 登录后即可读取机器配置。", systemImage: "desktopcomputer.trianglebadge.exclamationmark")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 5)
+
+                if model.machineConfigurationSyncErrorServerID == server.id,
+                   let error = model.machineConfigurationSyncError,
+                   model.machineConfigurationSyncingServerID == nil {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 5)
         }
     }
 
@@ -292,6 +330,92 @@ struct ServerDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
                 .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private var testCaseNodeAssociation: some View {
+        GroupBox("Test Case 节点关联") {
+            VStack(alignment: .leading, spacing: 10) {
+                let associations = model.nodeAssociations(for: server.id)
+                if !associations.isEmpty {
+                    HStack {
+                        Text("已配置 \(associations.count) 个逻辑节点")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("添加关联") { associationEditorSelection = AssociationEditorSelection() }
+                    }
+                    ForEach(associations) { association in
+                        Divider()
+                        nodeAssociationRow(association)
+                    }
+                } else {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("尚未配置", systemImage: "link.badge.plus")
+                                .foregroundStyle(.secondary)
+                            Text("默认使用标准化后的 Server 名称；唯一同名 Tailscale HostName 可自动关联，歧义时需人工确认。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("配置关联") { associationEditorSelection = AssociationEditorSelection() }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 5)
+        }
+    }
+
+    private func nodeAssociationRow(_ association: NodeAssociation) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(association.state.displayTitle, systemImage: association.state.systemImage)
+                    .foregroundStyle(association.state.tint)
+                Text(association.testCaseNodeID)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                Spacer()
+                Button("管理") {
+                    associationEditorSelection = AssociationEditorSelection(testCaseNodeID: association.testCaseNodeID)
+                }
+            }
+            if let target = association.target {
+                LeftAlignedDetailRow("稳定目标") {
+                    Text(target.id)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+            LeftAlignedDetailRow("关联方式") {
+                Text(association.method == .automatic ? "唯一强证据自动关联" : association.method == .manual ? "人工确认" : "未关联")
+            }
+            if !association.evidenceKinds.isEmpty {
+                LeftAlignedDetailRow("匹配证据") {
+                    Text(association.evidenceKinds.map(\.displayTitle).joined(separator: "、"))
+                }
+            }
+            if !association.reasonCodes.isEmpty {
+                LeftAlignedDetailRow("状态原因") {
+                    Text(association.reasonCodes.map(\.displayTitle).joined(separator: "、"))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let verifiedAt = association.lastVerifiedAt {
+                LeftAlignedDetailRow("最后验证") {
+                    Text(verifiedAt.formatted(date: .abbreviated, time: .shortened))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Label(
+                model.canExecuteTestCaseNode(association.testCaseNodeID)
+                    ? "允许关联驱动的 Test Case 执行"
+                    : "已阻止关联驱动的 Test Case 执行",
+                systemImage: model.canExecuteTestCaseNode(association.testCaseNodeID)
+                    ? "checkmark.shield.fill"
+                    : "exclamationmark.shield.fill"
+            )
+            .foregroundStyle(model.canExecuteTestCaseNode(association.testCaseNodeID) ? .green : .orange)
         }
     }
 
@@ -464,6 +588,70 @@ struct ServerDetailView: View {
     }
 }
 
+private struct AssociationEditorSelection: Identifiable {
+    let id = UUID()
+    var testCaseNodeID: String?
+}
+
+private extension NodeAssociationState {
+    var displayTitle: String {
+        switch self {
+        case .unlinked: "未关联"
+        case .pendingConfirmation: "待确认"
+        case .linked: "已关联"
+        case .reviewRequired: "需要复核"
+        case .invalidated: "已解除"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .linked: "link.circle.fill"
+        case .pendingConfirmation: "questionmark.circle"
+        case .reviewRequired: "exclamationmark.triangle.fill"
+        case .invalidated: "link.badge.minus"
+        case .unlinked: "link.badge.plus"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .linked: .green
+        case .pendingConfirmation, .reviewRequired: .orange
+        case .unlinked, .invalidated: .secondary
+        }
+    }
+}
+
+private extension NodeAssociationEvidence {
+    var displayTitle: String {
+        switch self {
+        case .exactLogicalName: "逻辑节点名称精确一致"
+        case .exactMagicDNS: "MagicDNS 精确一致"
+        case .exactTailscaleIP: "Tailscale IP 精确一致"
+        }
+    }
+}
+
+private extension NodeAssociationReason {
+    var displayTitle: String {
+        switch self {
+        case .noMatch: "无强证据匹配"
+        case .multipleStrongMatches: "存在多个强匹配候选"
+        case .weakEvidenceOnly: "仅有弱证据"
+        case .proxiedRoute: "SSH 使用跳板或代理"
+        case .sourceUnavailable: "Tailscale 数据源不可用"
+        case .unstableTargetIdentity: "目标缺少稳定 nodeId"
+        case .nodeMissing: "原节点已消失"
+        case .nodeIdentityChanged: "nodeId 已变化"
+        case .hostKeyChanged: "Host Key 已变化"
+        case .endpointConflict: "有效 SSH 主机与目标冲突"
+        case .logicalNameChanged: "逻辑节点名称已变化或出现重名"
+        case .manuallyUnlinked: "用户已解除并暂停自动匹配"
+        }
+    }
+}
+
 private struct PasswordlessStatusLabel: View {
     let status: AuthorizationStatus
 
@@ -475,7 +663,7 @@ private struct PasswordlessStatusLabel: View {
 
     private var title: String {
         switch status {
-        case .authorized: "免密已验证"
+        case .authorized: "免密可用"
         case .needsAuthorization: "待启用免密"
         case .missingLocalKey: "缺少本机密钥"
         case .hostKeyPending: "主机身份待确认"
@@ -486,13 +674,14 @@ private struct PasswordlessStatusLabel: View {
         case .authorizationConflict: "授权冲突"
         case .syncPending: "免密待验证"
         case .checking: "正在检测免密"
+        case .syncing: "正在同步免密"
         }
     }
 
     private var systemImage: String {
         switch status {
         case .authorized: "checkmark.shield.fill"
-        case .checking: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .checking, .syncing: "arrow.trianglehead.2.clockwise.rotate.90"
         case .hostKeyMismatch, .authorizationConflict: "exclamationmark.shield.fill"
         case .hostKeyPending: "questionmark.diamond.fill"
         case .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: "xmark.circle.fill"
@@ -505,7 +694,7 @@ private struct PasswordlessStatusLabel: View {
     private var color: Color {
         switch status {
         case .authorized: .green
-        case .checking, .syncPending: .blue
+        case .checking, .syncing, .syncPending: .blue
         case .hostKeyPending, .needsAuthorization, .missingLocalKey: .orange
         case .hostKeyMismatch, .authorizationConflict, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
         }
