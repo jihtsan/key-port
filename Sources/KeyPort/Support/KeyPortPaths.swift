@@ -17,6 +17,7 @@ struct KeyPortPaths: Sendable {
         home.appendingPathComponent("Library/Application Support/KeyPort", isDirectory: true)
     }
     var snapshot: URL { applicationSupport.appendingPathComponent("state-v1.json") }
+    var connectionHistory: URL { applicationSupport.appendingPathComponent("history-v1.json") }
     var shadowMigrationRoot: URL {
         applicationSupport.appendingPathComponent("v6-shadow-staging", isDirectory: true)
     }
