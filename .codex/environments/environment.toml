@@ -8,4 +8,4 @@ script = ""
 [[actions]]
 name = "Run"
 icon = "run"
-command = "./script/build_and_run.sh"
+command = "KEYPORT_SIGNING_IDENTITY=4DB4483AF669D05D8101B016FD4B458A9FE0F452 KEYPORT_TEAM_ID=LPUCQWYT2V KEYPORT_PROVISIONING_PROFILE=\"$HOME/Downloads/KeyPort_macOS-2.provisionprofile\" KEYPORT_CLOUDKIT_ENVIRONMENT=Development ./script/build_and_run.sh"
