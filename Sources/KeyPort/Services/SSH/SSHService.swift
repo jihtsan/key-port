@@ -8,6 +8,7 @@ enum SSHServiceError: LocalizedError {
     case missingPrivateKey
     case missingPassword
     case passwordAuthenticationRejected
+    case identityRouteUnavailable
     case operationFailed(String)
 
     var errorDescription: String? {
@@ -17,6 +18,7 @@ enum SSHServiceError: LocalizedError {
         case .missingPrivateKey: "所选密钥没有可用的本地私钥。"
         case .missingPassword: "Keychain 中未存储服务器密码。"
         case .passwordAuthenticationRejected: "服务器拒绝了密码登录。"
+        case .identityRouteUnavailable: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
         case .operationFailed(let message): message
         }
     }
@@ -135,7 +137,7 @@ actor OpenSSHService {
 
     func readAuthorizedKeys(server: ServerConnection, identityPath: String) async throws -> [AuthorizedKeyLine] {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
-        let script = "test ! -f \"$HOME/.ssh/authorized_keys\" || cat \"$HOME/.ssh/authorized_keys\"\n"
+        let script = SSHRemoteCommandScripts.readAuthorizedKeys
         let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server) + [
             "-o", "BatchMode=yes", "-i", identityPath,
             "\(server.username)@\(server.host)", "sh", "-s",
@@ -158,28 +160,7 @@ actor OpenSSHService {
     }
 
     private var machineConfigurationScript: String {
-        """
-        hostname_value=$(hostname 2>/dev/null || uname -n)
-        kernel_value=$(uname -sr 2>/dev/null || uname -a)
-        architecture_value=$(uname -m 2>/dev/null || printf unknown)
-        if command -v sw_vers >/dev/null 2>&1; then
-          operating_system_value=$(printf '%s %s' "$(sw_vers -productName)" "$(sw_vers -productVersion)")
-          memory_bytes_value=$(sysctl -n hw.memsize 2>/dev/null || true)
-          processor_count_value=$(sysctl -n hw.logicalcpu 2>/dev/null || true)
-        else
-          operating_system_value=$(awk -F= '/^PRETTY_NAME=/{value=$2; gsub(/^\"|\"$/, "", value); print value; exit}' /etc/os-release 2>/dev/null)
-          [ -n "$operating_system_value" ] || operating_system_value=$(uname -s 2>/dev/null || printf unknown)
-          memory_kib_value=$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)
-          memory_bytes_value=$([ -n "$memory_kib_value" ] && printf '%s' "$((memory_kib_value * 1024))" || true)
-          processor_count_value=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
-        fi
-        printf 'hostname\t%s\n' "$hostname_value"
-        printf 'operating_system\t%s\n' "$operating_system_value"
-        printf 'kernel\t%s\n' "$kernel_value"
-        printf 'architecture\t%s\n' "$architecture_value"
-        printf 'processor_count\t%s\n' "$processor_count_value"
-        printf 'memory_bytes\t%s\n' "$memory_bytes_value"
-        """
+        SSHRemoteCommandScripts.machineInspection
     }
 
     private func passwordBroker(passwordData: Data) throws -> PasswordFIFO {
@@ -199,50 +180,11 @@ actor OpenSSHService {
     }
 
     private func enrollmentScript(encodedLine: String, keyBlob: String) -> String {
-        """
-        set -eu
-        umask 077
-        key_line=$(printf '%s' '\(encodedLine)' | base64 -d)
-        key_blob='\(keyBlob)'
-        mkdir -p "$HOME/.ssh"
-        chmod 700 "$HOME/.ssh"
-        auth="$HOME/.ssh/authorized_keys"
-        touch "$auth"
-        chmod 600 "$auth"
-        if awk -v blob="$key_blob" '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"; then
-          exit 0
-        fi
-        backup="$auth.keyport-backup-$(date +%Y%m%d%H%M%S)"
-        cp -p "$auth" "$backup"
-        tmp="$auth.keyport-tmp-$$"
-        trap 'rm -f "$tmp"' EXIT HUP INT TERM
-        cp "$auth" "$tmp"
-        printf '%s\n' "$key_line" >> "$tmp"
-        chmod 600 "$tmp"
-        mv "$tmp" "$auth"
-        trap - EXIT HUP INT TERM
-        awk -v blob="$key_blob" '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"
-        """
+        SSHRemoteCommandScripts.installAuthorizedKey(encodedLine: encodedLine, keyBlob: keyBlob)
     }
 
     private func revocationScript(keyBlob: String) -> String {
-        """
-        set -eu
-        umask 077
-        auth="$HOME/.ssh/authorized_keys"
-        [ -f "$auth" ] || exit 0
-        backup="$auth.keyport-backup-$(date +%Y%m%d%H%M%S)"
-        cp -p "$auth" "$backup"
-        tmp="$auth.keyport-tmp-$$"
-        trap 'rm -f "$tmp"' EXIT HUP INT TERM
-        awk -v blob='\(keyBlob)' '{ remove=0; for (i=1; i<=NF; i++) if ($i == blob) remove=1; if (!remove) print $0 }' "$auth" > "$tmp"
-        chmod 600 "$tmp"
-        mv "$tmp" "$auth"
-        trap - EXIT HUP INT TERM
-        if awk -v blob='\(keyBlob)' '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"; then
-          exit 1
-        fi
-        """
+        SSHRemoteCommandScripts.revokeAuthorizedKey(keyBlob: keyBlob)
     }
 
     private func classifyAuthenticationError(_ stderr: String) -> String {
