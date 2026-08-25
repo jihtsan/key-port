@@ -87,6 +87,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>KeyPort uses your current Wi-Fi network name as an optional local hint in the on-device connection history. It is only read after you enable the network hint, and never leaves this Mac.</string>
 </dict>
 </plist>
 PLIST
