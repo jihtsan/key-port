@@ -17,12 +17,27 @@ struct KeyPortPaths: Sendable {
         home.appendingPathComponent("Library/Application Support/KeyPort", isDirectory: true)
     }
     var snapshot: URL { applicationSupport.appendingPathComponent("state-v1.json") }
+    var shadowMigrationRoot: URL {
+        applicationSupport.appendingPathComponent("v6-shadow-staging", isDirectory: true)
+    }
+    var shadowMigrationBundlesDirectory: URL {
+        shadowMigrationRoot.appendingPathComponent("bundles", isDirectory: true)
+    }
+    var shadowMigrationCurrentPointer: URL {
+        shadowMigrationRoot.appendingPathComponent("current.json")
+    }
 
     func prepareDirectories() throws {
         try secureDirectory(sshDirectory)
         try secureDirectory(keyPortDirectory)
         try secureDirectory(identitiesDirectory)
         try secureDirectory(applicationSupport)
+    }
+
+    func prepareShadowMigrationDirectories() throws {
+        try prepareDirectories()
+        try secureDirectory(shadowMigrationRoot)
+        try secureDirectory(shadowMigrationBundlesDirectory)
     }
 
     private func secureDirectory(_ url: URL) throws {
