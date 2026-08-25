@@ -26,4 +26,23 @@ actor SnapshotStore {
         try data.write(to: paths.snapshot, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.snapshot.path)
     }
+
+    func stageV6Shadow(
+        currentDeviceID: String,
+        credentialInspector: any HostV6ShadowCredentialInspecting
+    ) async throws -> HostV6.ShadowMigrationBundle {
+        try paths.prepareDirectories()
+        let legacyData = try Data(contentsOf: paths.snapshot)
+        let userConfig = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
+        let coordinator = HostV6.ShadowMigrationCoordinator(
+            engine: HostV6.ShadowMigrationEngine(currentDeviceID: currentDeviceID),
+            credentialInspector: credentialInspector,
+            artifactInspector: HostV6ProtectedArtifactInspector(paths: paths),
+            stagingStore: HostV6ShadowFileStagingStore(paths: paths)
+        )
+        return try await coordinator.stage(
+            legacyData: legacyData,
+            existingSSHHostAliases: SSHConfigGenerator.aliases(in: userConfig)
+        )
+    }
 }
