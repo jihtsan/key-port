@@ -1153,6 +1153,10 @@ final class AppModel {
     func synchronizeSSHAuthorization(serverID: UUID) async {
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: .key)
+            return
+        }
 
         isBusy = true
         retainedSSHCheckLog = SSHCheckLog(
@@ -1165,9 +1169,9 @@ final class AppModel {
         defer { isBusy = false }
 
         do {
-            let observed = try await hostKeyService.scan(server: server)
+            let observed = try await hostKeyService.scan(server: routeServer)
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
-            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) {
+            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
             case .pending:
                 let detail = "同步 SSH 授权前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
@@ -1219,8 +1223,8 @@ final class AppModel {
             updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
             appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
             try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-            try await authorize(server: server, key: key)
-            await synchronizeMachineConfigurationWithKey(server: server, key: key)
+            try await authorize(server: routeServer, key: key)
+            await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
             appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
             appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
         } catch {
@@ -1281,10 +1285,15 @@ final class AppModel {
             machineConfigurationSyncError = "当前 Mac 没有可用于机器配置同步的本地私钥。"
             return
         }
+        guard let routeServer = sshOperationServer(for: server) else {
+            machineConfigurationSyncErrorServerID = serverID
+            machineConfigurationSyncError = "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
+            return
+        }
 
         isBusy = true
         defer { isBusy = false }
-        await synchronizeMachineConfigurationWithKey(server: server, key: key)
+        await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
         await persist()
     }
 
@@ -1411,10 +1420,14 @@ final class AppModel {
     func refreshRemoteAuthorizations(serverID: UUID) async {
         guard let server = snapshot.servers.first(where: { $0.id == serverID }),
               let identity = key(for: server)?.privateKeyPath else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: .key)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
-            let lines = try await sshService.readAuthorizedKeys(server: server, identityPath: identity)
+            let lines = try await sshService.readAuthorizedKeys(server: routeServer, identityPath: identity)
             var discoveredKeys: [SSHKeyRecord] = []
             var existingByID: [String: Authorization] = [:]
             for authorization in snapshot.authorizations where authorization.serverID == serverID {
@@ -1485,15 +1498,19 @@ final class AppModel {
               let identity = credentialKey.privateKeyPath,
               let targetKey = snapshot.keys.first(where: { $0.fingerprint == authorization.fingerprint }),
               let parsed = PublicKeyParser.parse(targetKey.publicKey) else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: server.id, kind: .key)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
             try await localAuthentication.authorize(reason: "撤销所选 KeyPort 服务器授权")
-            let observed = try await hostKeyService.scan(server: server)
-            guard HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) == .confirmed else {
+            let observed = try await hostKeyService.scan(server: routeServer)
+            guard HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) == .confirmed else {
                 throw SSHServiceError.hostKeyChanged
             }
-            try await sshService.revokePublicKey(server: server, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
+            try await sshService.revokePublicKey(server: routeServer, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
             if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
                 snapshot.authorizations[index].status = .needsAuthorization
                 snapshot.authorizations[index].isDeleted = true
@@ -1741,7 +1758,12 @@ final class AppModel {
         guard !trimmedUsername.isEmpty else {
             return AuthenticationCheck(state: .failed, detail: "测试前请输入用户名。", checkedAt: .now)
         }
-        var candidateServer = server
+        var candidateServer: ServerConnection
+        if let routed = sshOperationServer(for: server) {
+            candidateServer = routed
+        } else {
+            return AuthenticationCheck(state: .blocked, detail: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。", checkedAt: .now)
+        }
         candidateServer.username = trimmedUsername
 
         do {
@@ -2003,8 +2025,32 @@ final class AppModel {
         snapshot.schemaVersion = 4
     }
 
+    /// flag 感知的 SSH 路由（切片 C 适配层）：默认原样返回 legacy 对象；
+    /// `KeyPort.sshCompatAdapterV6` 开启时改用 v6 只读兼容投影，投影被关闭
+    /// （blocking 冲突或无可用地址）时 fail closed 返回 nil。审计只记稳定码，
+    /// 不含地址、用户名或秘密。关闭 flag 即整体回退 legacy adapter。
+    private func sshOperationServer(for server: ServerConnection) -> ServerConnection? {
+        let provider = SSHCompatFeatureFlags.routeProvider(servers: snapshot.servers)
+        if let routed = provider.sshRoute(for: server.id) { return routed }
+        if let failure = provider.blockingFailure(for: server.id) {
+            appendAudit(category: "ssh-auth", action: "route", targetID: server.id.uuidString, result: failure.code.rawValue, level: .error)
+        }
+        return nil
+    }
+
+    private func markSSHRouteUnavailable(serverID: UUID, kind: ServerCheckKind) {
+        let detail = "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
+        updateServer(id: serverID, status: .syncPending, detail: detail)
+        updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+        appendSSHCheckLog(detail, serverID: serverID)
+    }
+
     private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
         guard let initial = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        guard let routeServer = sshOperationServer(for: initial) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: kind)
+            return
+        }
         if ownsBusyState { isBusy = true }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
@@ -2017,9 +2063,9 @@ final class AppModel {
         }
         defer { if ownsBusyState { isBusy = false } }
         do {
-            let observed = try await hostKeyService.scan(server: initial)
+            let observed = try await hostKeyService.scan(server: routeServer)
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
-            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: initial.confirmedHostKeys) {
+            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
             case .pending:
                 let detail = "身份验证前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
@@ -2041,9 +2087,9 @@ final class AppModel {
             case .confirmed:
                 switch kind {
                 case .password:
-                    try await checkPasswordAuthentication(server: initial)
+                    try await checkPasswordAuthentication(server: routeServer)
                 case .key:
-                    try await checkKeyAuthentication(server: initial)
+                    try await checkKeyAuthentication(server: routeServer)
                 }
             }
         } catch {
@@ -2138,6 +2184,7 @@ final class AppModel {
     }
 
     private func authorize(server: ServerConnection, key: SSHKeyRecord) async throws {
+        guard let server = sshOperationServer(for: server) else { throw SSHServiceError.identityRouteUnavailable }
         guard await keychain.hasServerCredential(serverID: server.id) else { throw SSHServiceError.missingPassword }
         var credential = try await keychain.serverCredential(serverID: server.id)
         defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
@@ -2412,13 +2459,14 @@ final class AppModel {
         }
 
         for server in servers {
-            guard let key = key(for: server),
+            guard let routeServer = sshOperationServer(for: server),
+                  let key = key(for: routeServer),
                   key.isLocallyAvailable,
                   key.privateKeyPath != nil else { continue }
 
             markMachineConfigurationRefreshAttempt(serverID: server.id, at: refreshDate)
             await persist()
-            await synchronizeMachineConfigurationWithKey(server: server, key: key)
+            await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
         }
     }
 
