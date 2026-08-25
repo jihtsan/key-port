@@ -112,13 +112,20 @@ public actor ConnectionHistoryStore: ConnectionHistoryWriting, ConnectionHistory
 
     private func loadEnvelope() throws -> ConnectionHistoryEnvelope {
         if let envelope { return envelope }
+        let data: Data?
+        do {
+            data = try bytesStore.load()
+        } catch {
+            throw ConnectionHistoryError.writeFailed
+        }
+        guard let data else {
+            let loaded = ConnectionHistoryEnvelope()
+            envelope = loaded
+            return loaded
+        }
         let loaded: ConnectionHistoryEnvelope
         do {
-            if let data = try bytesStore.load() {
-                loaded = try Self.decoder.decode(ConnectionHistoryEnvelope.self, from: data)
-            } else {
-                loaded = ConnectionHistoryEnvelope()
-            }
+            loaded = try Self.decoder.decode(ConnectionHistoryEnvelope.self, from: data)
         } catch {
             loadReportedCorruption = true
             loaded = ConnectionHistoryEnvelope()
@@ -142,18 +149,18 @@ public actor ConnectionHistoryStore: ConnectionHistoryWriting, ConnectionHistory
         envelope = next
     }
 
-    /// `sortedKeys` keeps the file byte-stable for identical content. The file
-    /// is not human-facing, so it is not pretty printed.
+    /// `sortedKeys` keeps the file byte-stable for identical content. Numeric
+    /// Unix timestamps preserve Date precision across process restarts.
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .secondsSince1970
         return encoder
     }()
 
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .secondsSince1970
         return decoder
     }()
 }

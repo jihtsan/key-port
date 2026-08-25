@@ -128,8 +128,8 @@ public enum ConnectionHistoryError: Error, Hashable, Sendable {
     /// A terminal record already exists with a different outcome, the inflight
     /// context contradicts an existing one, or the operation is unknown.
     case terminalConflict
-    /// Encoding or the atomic file replace failed. The completed remote or
-    /// network action must not be rolled back because of this error.
+    /// Reading, encoding or the atomic file replace failed. The completed
+    /// remote or network action must not be rolled back because of this error.
     case writeFailed
 
     public var failureCode: OperationFailureCode {
