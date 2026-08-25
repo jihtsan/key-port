@@ -201,7 +201,7 @@ public struct RemoteServiceEndpoint: Codable, Hashable, Sendable {
 
 1. 每个活动子实体必须引用一个活动 Host；墓碑可以保留历史引用。
 2. 活动 `SSHIdentity.alias` 在 KeyPort 范围和用户已有字面 SSH Host 别名中唯一。
-3. `Host.fixedAddressID`、`SSHIdentity.preferredAddressID` 和 `SavedService.fixedAddressID` 若存在，必须指向同一 Host 的活动地址；服务级固定优先于 Host 级固定。
+3. `Host.fixedAddressID`、`SSHIdentity.preferredAddressID` 和 `SavedService.fixedAddressID` 若存在，必须指向同一 Host 的活动地址。涉及 SSH 身份的服务动作按“服务级固定 > 身份级首选 > Host 级固定”解析；不涉及身份时按“服务级 > Host 级”解析。
 4. 活动 SSH 身份至少存在一个带合法 SSH 端口的活动地址，否则身份进入不可用展示态，不得生成 SSH Config。
 5. 同一地址 + 算法最多一个 `confirmed` Pin；旧指纹只能是 `replaced`，冲突只能是 `pendingReview`。任何 `pendingReview` 或当前扫描 mismatch 都阻止该 Host 的所有 SSH 动作。
 6. 端口可达不能提升 SSH 信任；SSH 信任不能提升 HTTPS/TLS 信任；访问方式只描述本次 direct/tunnel/unavailable。
@@ -302,7 +302,7 @@ public struct AddressSelectionRequest: Sendable {
     public let operationID: UUID
     public let hostID: UUID
     public let target: ProbeTarget          // ssh or service(UInt16)
-    public let fixedAddressID: UUID?        // service fixed > host fixed
+    public let fixedAddressID: UUID?        // resolved before call: service > identity > host
     public let candidates: [AddressCandidate]
     public let networkEpoch: UInt64
 }
@@ -334,7 +334,7 @@ public protocol ReachabilityProbing: Sendable {
 ```mermaid
 stateDiagram-v2
     [*] --> Preparing
-    Preparing --> ProbingFixed: 存在服务级或 Host 级固定地址
+    Preparing --> ProbingFixed: 调用方已按优先级解析出固定地址
     Preparing --> ProbingRanked: 未固定
     ProbingFixed --> Selected: 固定目标端口可达
     ProbingFixed --> WaitingForUser: 固定失败 + 已验证备选
@@ -355,6 +355,7 @@ stateDiagram-v2
 
 固定契约：
 
+- 调用方必须在发起请求前按“服务 > SSH 身份 > Host”解析出至多一个 `fixedAddressID`；任一引用跨 Host、已删除或冲突待确认时直接返回 `invalidAddress`，不降级到低优先级值。
 - 使用 `NWConnection` 做目标 TCP 握手，不用 ping，也不把 DNS 解析成功当作端口可达。
 - 每个 probe 超时 5 秒；单次最多 3 个并发。按优先级三条一批，等待本批终态后选本批最高优先级成功者；最多验证前 12 条，整体最长约 20 秒，剩余地址只能由用户点选验证。
 - 未固定排序依次为：当前 SSID 下最近成功（仅有权限时）、本机最近成功、用户同步的 `sortOrder`、稳定 ID。完成探测后才选择；历史只影响顺序，不生成信任。
@@ -643,7 +644,7 @@ public protocol NetworkHintProviding: Sendable {
 | I Host 工作台 | 三栏切换为 Host 聚合，旧 SSH 添加/确认/授权/撤销/别名全可用，服务区暂可空 | C+F+D+E | JODER-8 场景 1/4/7/8/9/11/12 | UI feature flag 回旧列表，v6 数据保留 |
 | J 服务闭环 | 发现确认、服务编辑、主窗与菜单栏两步内打开/复制、活动隧道关闭 | G+H+I | JODER-8 场景 2-12 全矩阵与截图/可访问性证据 | 分别关闭 discovery/service 菜单入口 |
 
-第一批必须只做 A-C：先证明 v6 模型可无损承载现有 SSH 一期，再允许任何页面切换。F、I、J 均不得绕过 C3/C1/C4 门禁。独立评审入口是本文第 1 节条件、第 5 节不变量、第 6 节无损矩阵、第 7-10 节状态机和第 14 节依赖表。
+首个集成门禁只纳入 A-C：先证明 v6 模型可无损承载现有 SSH 一期，再允许任何页面切换。D/E 可在隔离 worktree 中与 B/C 并行开发，但不得先于 A-C 合入主干或改变运行行为。F、I、J 均不得绕过 C3/C1/C4 门禁。独立评审入口是本文第 1 节条件、第 5 节不变量、第 6 节无损矩阵、第 7-10 节状态机和第 14 节依赖表。
 
 ## 15. 风险清单
 
