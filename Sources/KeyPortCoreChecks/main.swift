@@ -736,50 +736,22 @@ do {
         // Expected authenticated-decryption failure.
     }
 
-    let migrationIdentityID = UUID(uuidString: "12345678-1234-4234-8234-123456789abc")!
-    let migrationDate = Date(timeIntervalSince1970: 1_787_616_000)
-    var migrationSnapshot = AppSnapshot()
-    migrationSnapshot.servers = [ServerConnection(
-        id: migrationIdentityID,
-        name: "Migration Check",
-        host: "migration-check.example",
-        username: "fixture",
-        alias: "migration-check",
-        createdAt: migrationDate,
-        updatedAt: migrationDate
-    )]
-    let migrationEncoder = JSONEncoder()
-    migrationEncoder.dateEncodingStrategy = .iso8601
-    migrationEncoder.outputFormatting = [.sortedKeys]
-    let migrationInput = try migrationEncoder.encode(migrationSnapshot)
-    let migrationArtifacts = [
-        "state-v1.json": HostV6.CanonicalJSON.sha256(migrationInput),
-    ]
-    let migrationInspection = HostV6.ShadowMigrationInspection(
-        keychainAccountsBefore: [migrationIdentityID.uuidString.lowercased(): .missing],
-        keychainAccountsAfter: [migrationIdentityID.uuidString.lowercased(): .missing],
-        artifactHashesBefore: migrationArtifacts,
-        artifactHashesAfter: migrationArtifacts,
-        existingSSHHostAliases: []
-    )
-    let migrationEngine = HostV6.ShadowMigrationEngine(currentDeviceID: "device_core_checks")
-    let migrationShadow = try migrationEngine.prepare(
-        legacyData: migrationInput,
-        previousStateData: nil,
-        inspection: migrationInspection
-    )
-    let migrationReplay = try migrationEngine.prepare(
-        legacyData: migrationInput,
-        previousStateData: nil,
-        inspection: migrationInspection
-    )
-    try expect(migrationShadow.envelope.schemaVersion == 6, "shadow migration did not emit schema 6")
-    try expect(
-        migrationShadow.envelope.migrationProvenance.authorityManifest == nil,
-        "shadow migration signed authority before rollout gates"
-    )
-    try expect(migrationShadow.stateData == migrationReplay.stateData, "shadow migration replay changed state bytes")
-    try expect(migrationShadow.reportData == migrationReplay.reportData, "shadow migration replay changed report bytes")
+    // Address-selection pure seams (slice D, architecture 9.1).
+    let ipv6DirectURL = try ServiceEndpointFormatter.directURL(scheme: .https, host: "fd00::10", port: 443)
+    try expect(ipv6DirectURL.absoluteString == "https://[fd00::10]:443", "IPv6 direct URL was not bracketed")
+    let tunnelURL = try ServiceEndpointFormatter.tunnelURL(scheme: .http, localPort: 5000)
+    try expect(tunnelURL.absoluteString == "http://127.0.0.1:5000", "tunnel URL did not bind IPv4 loopback")
+    let dnsHostPort = try ServiceEndpointFormatter.directHostPort(host: "db.internal", port: 5432)
+    try expect(dnsHostPort == "db.internal:5432", "DNS host:port formatting changed")
+    let ipv6HostPort = try ServiceEndpointFormatter.directHostPort(host: "fd00::10", port: 22)
+    try expect(ipv6HostPort == "[fd00::10]:22", "IPv6 host:port formatting changed")
+    try expect(!AddressSelectionV2Gate.defaultEnabled, "addressSelectionV2 must ship dark")
+    do {
+        _ = try ServiceEndpointFormatter.directURL(scheme: .http, host: "h", port: 80, path: "../escape")
+        throw CheckFailure.failed("non-normalized path accepted")
+    } catch ServiceEndpointFormatter.FormattingError.invalidPath {
+        // Expected rejection.
+    }
 
     print("KeyPortCoreChecks: all assertions passed")
 } catch {

@@ -1,0 +1,11 @@
+{
+  "score": 96,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "设备列表与详情保持现有 macOS 原生信息密度，本机标签层级清楚，Tailnet-only Peer 已明确标为 Tailscale 节点；字段在 1002x760 窗口内正确换行且无重叠。",
+  "next_actions": [],
+  "threshold": 90,
+  "threshold_passed": true
+}
