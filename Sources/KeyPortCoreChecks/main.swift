@@ -736,6 +736,87 @@ do {
         // Expected authenticated-decryption failure.
     }
 
+    // Slice E: local connection history and network hint degradation.
+    var historyEnvelope = ConnectionHistoryEnvelope()
+    let historyHostID = UUID(uuidString: "00000000-0000-0000-0000-000000000044")!
+    let historyContext = OperationContext(
+        operationID: UUID(), hostID: historyHostID, action: .sshCheck, startedAt: checkedAt
+    )
+    try ConnectionHistoryCore.begin(&historyEnvelope, context: historyContext)
+    try ConnectionHistoryCore.begin(&historyEnvelope, context: historyContext)
+    try expect(historyEnvelope.inflight.count == 1, "begin replay created a second inflight context")
+    let terminalRecord = try ConnectionHistoryCore.finish(
+        &historyEnvelope, operationID: historyContext.operationID,
+        outcome: SanitizedOutcome(result: .succeeded), endedAt: checkedAt.addingTimeInterval(1), ssid: nil
+    )
+    let replayedRecord = try ConnectionHistoryCore.finish(
+        &historyEnvelope, operationID: historyContext.operationID,
+        outcome: SanitizedOutcome(result: .succeeded), endedAt: checkedAt.addingTimeInterval(9), ssid: nil
+    )
+    try expect(replayedRecord == terminalRecord && historyEnvelope.records.count == 1, "finish replay was not idempotent")
+    do {
+        _ = try ConnectionHistoryCore.finish(
+            &historyEnvelope, operationID: historyContext.operationID,
+            outcome: SanitizedOutcome(result: .failed, failureCode: .tcpTimeout), endedAt: checkedAt, ssid: nil
+        )
+        throw CheckFailure.failed("conflicting terminal outcome accepted")
+    } catch ConnectionHistoryError.terminalConflict {
+        // Expected single-terminal conflict.
+    }
+    let recoveredHistory = ConnectionHistoryCore.recoverInterrupted(
+        &historyEnvelope, endedAt: checkedAt.addingTimeInterval(60)
+    )
+    try expect(recoveredHistory.isEmpty, "recovery rewrote a finished operation")
+    var crashEnvelope = ConnectionHistoryEnvelope()
+    try ConnectionHistoryCore.begin(&crashEnvelope, context: historyContext)
+    let interrupted = ConnectionHistoryCore.recoverInterrupted(&crashEnvelope, endedAt: checkedAt.addingTimeInterval(60))
+    try expect(
+        interrupted.count == 1 && interrupted.first?.result == .interruptedByPreviousTermination,
+        "crash did not close into exactly one interrupted terminal"
+    )
+    var retentionEnvelope = ConnectionHistoryEnvelope()
+    for index in 0..<205 {
+        let stamp = checkedAt.addingTimeInterval(TimeInterval(index))
+        retentionEnvelope.records.append(ConnectionRecord(
+            id: UUID(), hostID: historyHostID, action: .sshCheck,
+            result: .succeeded, startedAt: stamp, endedAt: stamp
+        ))
+    }
+    ConnectionHistoryCore.prune(&retentionEnvelope, now: checkedAt.addingTimeInterval(205))
+    try expect(
+        retentionEnvelope.records.count == ConnectionHistoryCore.maximumRecordsPerHost
+            && !retentionEnvelope.records.contains(where: { $0.endedAt == checkedAt }),
+        "per-host retention did not evict oldest records first"
+    )
+    let historyJSON = String(decoding: try JSONEncoder().encode(retentionEnvelope), as: UTF8.self)
+    try expect(!historyJSON.contains("bssid") && !historyJSON.contains("rawOutput"), "history encoded forbidden fields")
+
+    var ssidReaderInvoked = false
+    let disabledHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: false, authorization: .authorized, locationServicesEnabled: true
+    ) {
+        ssidReaderInvoked = true
+        return "SHOULD_NOT_BE_READ"
+    }
+    try expect(disabledHint == .disabled && !ssidReaderInvoked, "disabled hint touched the platform SSID reader")
+    let deniedHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: true, authorization: .denied, locationServicesEnabled: true
+    ) {
+        ssidReaderInvoked = true
+        return "SHOULD_NOT_BE_READ"
+    }
+    try expect(deniedHint == .denied && !ssidReaderInvoked, "denied hint touched the platform SSID reader")
+    let availableHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: true, authorization: .authorized, locationServicesEnabled: true
+    ) { "FixtureNet" }
+    try expect(NetworkHintEvaluator.recordedSSID(for: availableHint) == "FixtureNet", "authorized hint did not record the SSID")
+    try expect(
+        NetworkHintEvaluator.recordedSSID(for: .servicesDisabled) == nil
+            && NetworkHintEvaluator.recordedSSID(for: .restricted) == nil
+            && NetworkHintEvaluator.recordedSSID(for: .unavailable) == nil,
+        "degraded hint results must fold to nil"
+    )
+
     print("KeyPortCoreChecks: all assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
