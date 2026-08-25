@@ -73,6 +73,34 @@ final class ConnectionHistoryStoreTests: XCTestCase {
         XCTAssertEqual(inflight, [context])
     }
 
+    func testLoadFailurePropagatesWithoutResettingOrOverwritingHistory() async throws {
+        let existing = ConnectionRecord(
+            id: UUID(), hostID: hostID, action: .sshCheck,
+            result: .succeeded, startedAt: t0, endedAt: t0
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let bytes = InMemoryHistoryBytesStore(
+            precoded: try encoder.encode(ConnectionHistoryEnvelope(records: [existing]))
+        )
+        bytes.injectedLoadFailure = true
+        let store = makeStore(bytes: bytes)
+
+        do {
+            try await store.begin(historyContext(hostID: hostID, startedAt: t0))
+            XCTFail("a storage read failure must be surfaced")
+        } catch let error as ConnectionHistoryError {
+            XCTAssertEqual(error, .writeFailed)
+        }
+        XCTAssertEqual(bytes.replaceCount, 0)
+        let recoveredFromCorruption = await store.didRecoverFromCorruptFile
+        XCTAssertFalse(recoveredFromCorruption, "an I/O failure is not corrupt JSON")
+
+        bytes.injectedLoadFailure = false
+        let records = await store.records(hostID: nil)
+        XCTAssertEqual(records, [existing], "the failed read must not cache an empty envelope")
+    }
+
     func testClearFaultInjectionLeavesRecordsUntouched() async throws {
         let bytes = InMemoryHistoryBytesStore()
         let store = makeStore(bytes: bytes)
@@ -146,6 +174,20 @@ final class ConnectionHistoryStoreTests: XCTestCase {
         XCTAssertEqual(thirdRecords.count, 1)
     }
 
+    func testBeginReplayWithFractionalTimestampIsIdempotentAcrossStoreInstances() async throws {
+        let bytes = InMemoryHistoryBytesStore()
+        let startedAt = t0.addingTimeInterval(0.987654)
+        let context = historyContext(hostID: hostID, startedAt: startedAt)
+        try await makeStore(bytes: bytes).begin(context)
+
+        let restarted = makeStore(bytes: bytes)
+        try await restarted.begin(context)
+
+        let inflight = await restarted.inflightContexts()
+        XCTAssertEqual(inflight, [context])
+        XCTAssertEqual(inflight.first?.startedAt, startedAt)
+    }
+
     func testCorruptFileIsResetAndReplacedByNextSave() async throws {
         let bytes = InMemoryHistoryBytesStore(precoded: Data("not json".utf8))
         let store = makeStore(bytes: bytes)
@@ -157,7 +199,7 @@ final class ConnectionHistoryStoreTests: XCTestCase {
         try await store.begin(context)
         try await store.finish(operationID: context.operationID, outcome: SanitizedOutcome(result: .succeeded))
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .secondsSince1970
         let persisted = try decoder.decode(ConnectionHistoryEnvelope.self, from: bytes.currentData()!)
         XCTAssertEqual(persisted.records.count, 1)
     }
@@ -219,7 +261,7 @@ final class ConnectionHistoryStoreTests: XCTestCase {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = .secondsSince1970
         let bytes = InMemoryHistoryBytesStore(precoded: try encoder.encode(envelope))
         let clock = HistoryFixedClock(t0.addingTimeInterval(20_000))
         let store = makeStore(bytes: bytes, clock: clock)

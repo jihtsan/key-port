@@ -41,6 +41,46 @@ final class ConnectionHistoryFileStoreTests: XCTestCase {
         XCTAssertEqual(reloadedRecords.count, 1)
     }
 
+    func testAtomicReplaceUsesNewOwnerOnlyPermissions() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        try paths.prepareDirectories()
+        try Data("old".utf8).write(to: paths.connectionHistory)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: paths.connectionHistory.path
+        )
+
+        let bytesStore = FileConnectionHistoryBytesStore(fileURL: paths.connectionHistory)
+        try bytesStore.atomicReplace(with: Data("new".utf8))
+
+        XCTAssertEqual(try Data(contentsOf: paths.connectionHistory), Data("new".utf8))
+        let attributes = try FileManager.default.attributesOfItem(atPath: paths.connectionHistory.path)
+        XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
+    }
+
+    func testFailureBeforeAtomicCommitPreservesExistingHistoryAndCleansTemporaryFile() throws {
+        let home = try makeTempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        try paths.prepareDirectories()
+        let original = Data("original".utf8)
+        try original.write(to: paths.connectionHistory)
+
+        let bytesStore = FileConnectionHistoryBytesStore(fileURL: paths.connectionHistory) {
+            throw HistoryFileFixtureError.injectedFailure
+        }
+        XCTAssertThrowsError(try bytesStore.atomicReplace(with: Data("replacement".utf8)))
+
+        XCTAssertEqual(try Data(contentsOf: paths.connectionHistory), original)
+        let remainingFiles = try FileManager.default.contentsOfDirectory(
+            at: paths.applicationSupport,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(remainingFiles.map(\.lastPathComponent), ["history-v1.json"])
+    }
+
     func testCorruptHistoryFileIsResetByNextSave() async throws {
         let home = try makeTempHome()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -83,6 +123,10 @@ final class ConnectionHistoryFileStoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sentinel.path),
                       "clearing history must not delete other files (hosts, identities, audit, config)")
     }
+}
+
+private enum HistoryFileFixtureError: Error {
+    case injectedFailure
 }
 
 /// Reference clock wrapper so tests in this target do not need a Core-side
