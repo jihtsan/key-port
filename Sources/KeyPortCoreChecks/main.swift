@@ -736,6 +736,51 @@ do {
         // Expected authenticated-decryption failure.
     }
 
+    let migrationIdentityID = UUID(uuidString: "12345678-1234-4234-8234-123456789abc")!
+    let migrationDate = Date(timeIntervalSince1970: 1_787_616_000)
+    var migrationSnapshot = AppSnapshot()
+    migrationSnapshot.servers = [ServerConnection(
+        id: migrationIdentityID,
+        name: "Migration Check",
+        host: "migration-check.example",
+        username: "fixture",
+        alias: "migration-check",
+        createdAt: migrationDate,
+        updatedAt: migrationDate
+    )]
+    let migrationEncoder = JSONEncoder()
+    migrationEncoder.dateEncodingStrategy = .iso8601
+    migrationEncoder.outputFormatting = [.sortedKeys]
+    let migrationInput = try migrationEncoder.encode(migrationSnapshot)
+    let migrationArtifacts = [
+        "state-v1.json": HostV6.CanonicalJSON.sha256(migrationInput),
+    ]
+    let migrationInspection = HostV6.ShadowMigrationInspection(
+        keychainAccountsBefore: [migrationIdentityID.uuidString.lowercased(): .missing],
+        keychainAccountsAfter: [migrationIdentityID.uuidString.lowercased(): .missing],
+        artifactHashesBefore: migrationArtifacts,
+        artifactHashesAfter: migrationArtifacts,
+        existingSSHHostAliases: []
+    )
+    let migrationEngine = HostV6.ShadowMigrationEngine(currentDeviceID: "device_core_checks")
+    let migrationShadow = try migrationEngine.prepare(
+        legacyData: migrationInput,
+        previousStateData: nil,
+        inspection: migrationInspection
+    )
+    let migrationReplay = try migrationEngine.prepare(
+        legacyData: migrationInput,
+        previousStateData: nil,
+        inspection: migrationInspection
+    )
+    try expect(migrationShadow.envelope.schemaVersion == 6, "shadow migration did not emit schema 6")
+    try expect(
+        migrationShadow.envelope.migrationProvenance.authorityManifest == nil,
+        "shadow migration signed authority before rollout gates"
+    )
+    try expect(migrationShadow.stateData == migrationReplay.stateData, "shadow migration replay changed state bytes")
+    try expect(migrationShadow.reportData == migrationReplay.reportData, "shadow migration replay changed report bytes")
+
     print("KeyPortCoreChecks: all assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))
