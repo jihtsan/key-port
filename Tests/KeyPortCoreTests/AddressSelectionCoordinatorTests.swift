@@ -194,6 +194,33 @@ final class AddressSelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(outcome, .cancelled(.networkChanged))
     }
 
+    func testResumeRejectsTokenWhenEpochProviderAdvancesAfterTokenIssued() async throws {
+        let provider = FakeEpochProvider(epoch: 7)
+        let probe = FakeProbe(epochProvider: provider)
+        probe.setBehavior(.failure(.tcpRefused), host: "fixed.internal")
+        probe.setBehavior(.success, host: "alt.internal")
+        let coordinator = makeCoordinator(probe: probe, provider: provider)
+        let request = makeRequest(
+            epoch: 7,
+            fixedAddressID: fixedID,
+            candidates: [candidate(fixedID, host: "fixed.internal"), candidate(altA, host: "alt.internal")]
+        )
+        let outcome = await coordinator.select(request)
+        guard case .requiresUserChoice(let continuation, _, _) = outcome else {
+            return XCTFail("expected requiresUserChoice, got \(outcome)")
+        }
+
+        provider.setEpoch(8)
+        let resumed = await coordinator.resumeChoice(
+            operationID: request.operationID,
+            token: continuation.token,
+            selectedAddressID: altA,
+            hostRevision: request.hostRevision,
+            networkEpoch: request.networkEpoch
+        )
+        XCTAssertEqual(resumed, .cancelled(.networkChanged))
+    }
+
     func testResumeAfterHostMutationIsStaleRevision() async throws {
         let (coordinator, continuation, request) = try await reachWaitingForUser()
 
@@ -424,6 +451,23 @@ final class AddressSelectionCoordinatorTests: XCTestCase {
         let second = await coordinator.select(request)
         XCTAssertEqual(first, second)
         XCTAssertEqual(probe.probedTargets.count, 1)
+    }
+
+    func testConcurrentSelectForSameOperationProbesOnceAndSharesTerminalOutcome() async {
+        let provider = FakeEpochProvider(epoch: 7)
+        let probe = FakeProbe(epochProvider: provider)
+        probe.setBehavior(.delayedSuccess(.milliseconds(80)), host: "alt.internal")
+        let coordinator = makeCoordinator(probe: probe, provider: provider)
+        let request = makeRequest(epoch: 7, candidates: [candidate(altA, host: "alt.internal")])
+
+        async let first = coordinator.select(request)
+        async let second = coordinator.select(request)
+        let (firstOutcome, secondOutcome) = await (first, second)
+
+        XCTAssertEqual(firstOutcome, secondOutcome)
+        XCTAssertEqual(probe.probedTargets.count, 1)
+        let terminal = await coordinator.terminalOutcome(for: request.operationID)
+        XCTAssertEqual(terminal, firstOutcome)
     }
 
     // MARK: - Network epoch invalidation

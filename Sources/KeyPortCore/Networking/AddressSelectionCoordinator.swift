@@ -53,6 +53,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
     private var pendingChoices: [UUID: PendingChoice] = [:]
     private var pendingTokenByOperation: [UUID: UUID] = [:]
     private var terminalOutcomes: [UUID: AddressSelectionOutcome] = [:]
+    private var inFlightOperations: [UUID: Task<AddressSelectionOutcome, Never>] = [:]
     private var invalidatedBeforeEpoch: UInt64 = 0
 
     public init(
@@ -78,6 +79,25 @@ public actor AddressSelectionCoordinator: AddressSelecting {
             return cached
         }
 
+        let operation = inFlightOperations[request.operationID] ?? {
+            let task = Task { await self.performSelect(request) }
+            inFlightOperations[request.operationID] = task
+            return task
+        }()
+        let outcome = await withTaskCancellationHandler(operation: {
+            await operation.value
+        }, onCancel: {
+            operation.cancel()
+        })
+        if case .requiresUserChoice = outcome {
+            // Keep the shared continuation available until resume/cancel/invalidate.
+        } else {
+            inFlightOperations.removeValue(forKey: request.operationID)
+        }
+        return outcome
+    }
+
+    private func performSelect(_ request: AddressSelectionRequest) async -> AddressSelectionOutcome {
         // Preparing: a request carrying an already-stale epoch fails fast.
         guard await isEpochCurrent(request.networkEpoch) else {
             return finish(request.operationID, .cancelled(.networkChanged))
@@ -117,6 +137,9 @@ public actor AddressSelectionCoordinator: AddressSelecting {
         guard let pending = pendingChoices[token], pending.operationID == operationID else {
             // Unknown or forged token, including tokens issued before a crash.
             return finish(operationID, .cancelled(.invalidAddressChoice))
+        }
+        guard await epochProvider.currentEpoch() == pending.networkEpoch else {
+            return closeChoice(pending, outcome: .cancelled(.networkChanged))
         }
         guard now() < pending.expiresAt else {
             return closeChoice(pending, outcome: .cancelled(.addressChoiceStale))
@@ -159,6 +182,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
         for (token, pending) in pendingChoices where pending.networkEpoch < networkEpoch {
             pendingChoices.removeValue(forKey: token)
             pendingTokenByOperation.removeValue(forKey: pending.operationID)
+            inFlightOperations.removeValue(forKey: pending.operationID)
             terminalOutcomes[pending.operationID] = .cancelled(.networkChanged)
         }
     }
@@ -369,6 +393,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
     private func closeChoice(_ pending: PendingChoice, outcome: AddressSelectionOutcome) -> AddressSelectionOutcome {
         pendingChoices.removeValue(forKey: pending.token)
         pendingTokenByOperation.removeValue(forKey: pending.operationID)
+        inFlightOperations.removeValue(forKey: pending.operationID)
         terminalOutcomes[pending.operationID] = outcome
         return outcome
     }
