@@ -19,6 +19,8 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("CloudKit"),
+                .linkedFramework("CoreLocation"),
+                .linkedFramework("CoreWLAN"),
                 .linkedFramework("LocalAuthentication"),
                 .linkedFramework("Security"),
             ]
