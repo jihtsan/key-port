@@ -860,6 +860,22 @@ do {
     )
     try expect(migrationShadow.stateData == migrationReplay.stateData, "shadow migration replay changed state bytes")
     try expect(migrationShadow.reportData == migrationReplay.reportData, "shadow migration replay changed report bytes")
+    // Address-selection pure seams (slice D, architecture 9.1).
+    let ipv6DirectURL = try ServiceEndpointFormatter.directURL(scheme: .https, host: "fd00::10", port: 443)
+    try expect(ipv6DirectURL.absoluteString == "https://[fd00::10]:443", "IPv6 direct URL was not bracketed")
+    let tunnelURL = try ServiceEndpointFormatter.tunnelURL(scheme: .http, localPort: 5000)
+    try expect(tunnelURL.absoluteString == "http://127.0.0.1:5000", "tunnel URL did not bind IPv4 loopback")
+    let dnsHostPort = try ServiceEndpointFormatter.directHostPort(host: "db.internal", port: 5432)
+    try expect(dnsHostPort == "db.internal:5432", "DNS host:port formatting changed")
+    let ipv6HostPort = try ServiceEndpointFormatter.directHostPort(host: "fd00::10", port: 22)
+    try expect(ipv6HostPort == "[fd00::10]:22", "IPv6 host:port formatting changed")
+    try expect(!AddressSelectionV2Gate.defaultEnabled, "addressSelectionV2 must ship dark")
+    do {
+        _ = try ServiceEndpointFormatter.directURL(scheme: .http, host: "h", port: 80, path: "../escape")
+        throw CheckFailure.failed("non-normalized path accepted")
+    } catch ServiceEndpointFormatter.FormattingError.invalidPath {
+        // Expected rejection.
+    }
 
     print("KeyPortCoreChecks: all assertions passed")
 } catch {
