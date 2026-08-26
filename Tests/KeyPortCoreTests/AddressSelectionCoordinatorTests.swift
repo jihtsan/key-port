@@ -31,6 +31,28 @@ final class AddressSelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(probe.probedTargets, [NetworkTarget(host: "fixed.internal", port: 22)])
     }
 
+    func testFixedDelayedSuccessAfterEpochChangeIsCancelledWithoutAcceptingEvidence() async {
+        let provider = FakeEpochProvider(epoch: 7)
+        let probe = FakeProbe(epochProvider: provider)
+        probe.setBehavior(.delayedSuccess(.milliseconds(80)), host: "fixed.internal")
+        let coordinator = makeCoordinator(probe: probe, provider: provider, probeTimeout: .seconds(1))
+        let request = makeRequest(
+            epoch: 7,
+            fixedAddressID: fixedID,
+            candidates: [candidate(fixedID, host: "fixed.internal")]
+        )
+
+        let task = Task { await coordinator.select(request) }
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(probe.probedTargets.map(\.host), ["fixed.internal"])
+        provider.setEpoch(8)
+
+        let outcome = await task.value
+        XCTAssertEqual(outcome, .cancelled(.networkChanged))
+        let terminal = await coordinator.terminalOutcome(for: request.operationID)
+        XCTAssertEqual(terminal, outcome)
+    }
+
     func testFixedFailureRequiresExplicitUserChoiceAndNeverFallsBackSilently() async {
         let probe = FakeProbe(epochProvider: FakeEpochProvider(epoch: 7))
         probe.setBehavior(.failure(.tcpRefused), host: "fixed.internal")
@@ -495,6 +517,31 @@ final class AddressSelectionCoordinatorTests: XCTestCase {
         provider.setEpoch(8)
         let outcome = await task.value
         XCTAssertEqual(outcome, .cancelled(.networkChanged))
+    }
+
+    func testInvalidateCancelsAffectedFixedProbeImmediately() async {
+        let provider = FakeEpochProvider(epoch: 7)
+        let probe = FakeProbe(epochProvider: provider)
+        probe.setBehavior(.hang, host: "fixed.internal")
+        let coordinator = makeCoordinator(probe: probe, provider: provider, probeTimeout: .seconds(5))
+        let request = makeRequest(
+            epoch: 7,
+            fixedAddressID: fixedID,
+            candidates: [candidate(fixedID, host: "fixed.internal")]
+        )
+
+        let task = Task { await coordinator.select(request) }
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(probe.probedTargets.map(\.host), ["fixed.internal"])
+        let invalidatedAt = Date()
+        await coordinator.invalidate(before: 8)
+
+        let outcome = await task.value
+        XCTAssertEqual(outcome, .cancelled(.networkChanged))
+        XCTAssertGreaterThanOrEqual(probe.cancelledProbeCount, 1)
+        XCTAssertLessThan(Date().timeIntervalSince(invalidatedAt), 1)
+        let terminal = await coordinator.terminalOutcome(for: request.operationID)
+        XCTAssertEqual(terminal, outcome)
     }
 
     func testSleepWakeCycleIncrementsEpochAndStaleEvidenceStaysStale() async {
