@@ -54,6 +54,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
     private var pendingTokenByOperation: [UUID: UUID] = [:]
     private var terminalOutcomes: [UUID: AddressSelectionOutcome] = [:]
     private var inFlightOperations: [UUID: Task<AddressSelectionOutcome, Never>] = [:]
+    private var inFlightEpochByOperation: [UUID: UInt64] = [:]
     private var invalidatedBeforeEpoch: UInt64 = 0
 
     public init(
@@ -82,6 +83,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
         let operation = inFlightOperations[request.operationID] ?? {
             let task = Task { await self.performSelect(request) }
             inFlightOperations[request.operationID] = task
+            inFlightEpochByOperation[request.operationID] = request.networkEpoch
             return task
         }()
         let outcome = await withTaskCancellationHandler(operation: {
@@ -93,6 +95,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
             // Keep the shared continuation available until resume/cancel/invalidate.
         } else {
             inFlightOperations.removeValue(forKey: request.operationID)
+            inFlightEpochByOperation.removeValue(forKey: request.operationID)
         }
         return outcome
     }
@@ -175,14 +178,31 @@ public actor AddressSelectionCoordinator: AddressSelecting {
 
     /// NWPathMonitor / sleep-wake / Tailscale funnel: every operation and
     /// continuation older than `networkEpoch` is closed as `networkChanged`.
-    /// In-flight batches notice at their next checkpoint; their in-progress
+    /// In-flight operations are cancelled immediately; their in-progress
     /// probes are never reused because evidence carries the old epoch.
     public func invalidate(before networkEpoch: UInt64) async {
         invalidatedBeforeEpoch = max(invalidatedBeforeEpoch, networkEpoch)
+        let affectedOperations = inFlightOperations.compactMap { operationID, operation -> (UUID, Task<AddressSelectionOutcome, Never>)? in
+            guard terminalOutcomes[operationID] == nil,
+                  inFlightEpochByOperation[operationID, default: UInt64.max] < networkEpoch else {
+                return nil
+            }
+            return (operationID, operation)
+        }
+        for (operationID, operation) in affectedOperations {
+            operation.cancel()
+            terminalOutcomes[operationID] = .cancelled(.networkChanged)
+            inFlightOperations.removeValue(forKey: operationID)
+            inFlightEpochByOperation.removeValue(forKey: operationID)
+            if let token = pendingTokenByOperation.removeValue(forKey: operationID) {
+                pendingChoices.removeValue(forKey: token)
+            }
+        }
         for (token, pending) in pendingChoices where pending.networkEpoch < networkEpoch {
             pendingChoices.removeValue(forKey: token)
             pendingTokenByOperation.removeValue(forKey: pending.operationID)
             inFlightOperations.removeValue(forKey: pending.operationID)
+            inFlightEpochByOperation.removeValue(forKey: pending.operationID)
             terminalOutcomes[pending.operationID] = .cancelled(.networkChanged)
         }
     }
@@ -210,6 +230,12 @@ public actor AddressSelectionCoordinator: AddressSelecting {
             return finish(request.operationID, failure)
         }
         let fixedEvidence = await probeBatch([fixed], request: request)[0]
+        if let failure = await cancellationOrEpochFailure(for: request) {
+            return finish(request.operationID, failure)
+        }
+        guard fixedEvidence.networkEpoch == request.networkEpoch else {
+            return finish(request.operationID, .cancelled(.networkChanged))
+        }
         if fixedEvidence.wasReachable {
             let decision = AddressDecision(
                 addressID: fixed.addressID,
@@ -371,11 +397,11 @@ public actor AddressSelectionCoordinator: AddressSelecting {
     }
 
     private func cancellationOrEpochFailure(for request: AddressSelectionRequest) async -> AddressSelectionOutcome? {
-        if Task.isCancelled {
-            return .cancelled(.probeCancelled)
-        }
         guard await isEpochCurrent(request.networkEpoch) else {
             return .cancelled(.networkChanged)
+        }
+        if Task.isCancelled {
+            return .cancelled(.probeCancelled)
         }
         return nil
     }
@@ -386,6 +412,9 @@ public actor AddressSelectionCoordinator: AddressSelecting {
     }
 
     private func finish(_ operationID: UUID, _ outcome: AddressSelectionOutcome) -> AddressSelectionOutcome {
+        if let cached = terminalOutcomes[operationID] {
+            return cached
+        }
         terminalOutcomes[operationID] = outcome
         return outcome
     }
@@ -394,6 +423,7 @@ public actor AddressSelectionCoordinator: AddressSelecting {
         pendingChoices.removeValue(forKey: pending.token)
         pendingTokenByOperation.removeValue(forKey: pending.operationID)
         inFlightOperations.removeValue(forKey: pending.operationID)
+        inFlightEpochByOperation.removeValue(forKey: pending.operationID)
         terminalOutcomes[pending.operationID] = outcome
         return outcome
     }
