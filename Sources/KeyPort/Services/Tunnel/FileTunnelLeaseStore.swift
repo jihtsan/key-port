@@ -51,14 +51,12 @@ struct OpenSSHControlMasterExiter: TunnelControlMasterExiting, Sendable {
     }
 }
 
-final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
+actor FileTunnelLeaseStore: TunnelLeaseStore {
     private let directory: URL
     private let controlMasterExit: any TunnelControlMasterExiting
     private let processLiveness: any TunnelProcessLiveness
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-    private let lock = NSLock()
-
     init(
         directory: URL,
         controlMasterExit: any TunnelControlMasterExiting,
@@ -82,6 +80,14 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
     }
 
     func reap() async -> CleanupStatus {
+        await reap(matching: nil)
+    }
+
+    func reap(matching scope: TunnelCleanupScope) async -> CleanupStatus {
+        await reap(matching: Optional(scope))
+    }
+
+    private func reap(matching scope: TunnelCleanupScope?) async -> CleanupStatus {
         let leaseURLs: [URL]
         do {
             leaseURLs = try leaseURLsSynchronously()
@@ -92,37 +98,42 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
         var status: CleanupStatus = .notNeeded
         for url in leaseURLs {
             guard let lease = loadLease(at: url), isManagedLease(lease, at: url) else {
-                status = .pending
+                status = merge(status, .pending)
                 continue
+            }
+            if let scope {
+                guard let ownership = lease.ownership else {
+                    status = merge(status, .pending)
+                    continue
+                }
+                guard scope.matches(ownership) else { continue }
             }
             let exited = await controlMasterExit.exit(controlPath: lease.controlPath)
             if exited, FileManager.default.fileExists(atPath: lease.controlPath) {
                 do {
                     try FileManager.default.removeItem(atPath: lease.controlPath)
                 } catch {
-                    status = .pending
+                    status = merge(status, .pending)
                     continue
                 }
             }
             let controlSocketExists = FileManager.default.fileExists(atPath: lease.controlPath)
             let brokerAlive = lease.brokerPID.map(processLiveness.isAlive) ?? false
             guard exited || (!controlSocketExists && !brokerAlive) else {
-                status = .pending
+                status = merge(status, .pending)
                 continue
             }
             do {
                 try removeLeaseFileSynchronously(at: url)
-                status = .completed
+                status = merge(status, .completed)
             } catch {
-                status = .pending
+                status = merge(status, .pending)
             }
         }
         return status
     }
 
     private func saveSynchronously(_ lease: TunnelLease) throws {
-        lock.lock()
-        defer { lock.unlock() }
         try prepareDirectory()
         guard isManagedLease(lease) else { throw TunnelLeaseStoreError.invalidLease }
         let url = leaseURL(for: lease.tunnelID)
@@ -136,8 +147,6 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
     }
 
     private func removeSynchronously(_ lease: TunnelLease) throws {
-        lock.lock()
-        defer { lock.unlock() }
         try prepareDirectory()
         guard isManagedLease(lease) else { throw TunnelLeaseStoreError.invalidLease }
         for url in leaseURLs(for: lease.tunnelID) {
@@ -148,8 +157,6 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
     }
 
     private func leaseURLsSynchronously() throws -> [URL] {
-        lock.lock()
-        defer { lock.unlock() }
         try prepareDirectory()
         return try FileManager.default.contentsOfDirectory(
             at: directory,
@@ -161,8 +168,6 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
     }
 
     private func removeLeaseFileSynchronously(at url: URL) throws {
-        lock.lock()
-        defer { lock.unlock() }
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
@@ -240,5 +245,11 @@ final class FileTunnelLeaseStore: TunnelLeaseStore, @unchecked Sendable {
             return false
         }
         return (info.st_mode & 0o077) == 0
+    }
+
+    private func merge(_ lhs: CleanupStatus, _ rhs: CleanupStatus) -> CleanupStatus {
+        if lhs == .pending || rhs == .pending { return .pending }
+        if lhs == .completed || rhs == .completed { return .completed }
+        return .notNeeded
     }
 }
