@@ -1,4 +1,7 @@
 .build/
+.swiftpm/
+.omx/
+description.md
 dist/
 .DS_Store
 .omx/
