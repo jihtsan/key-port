@@ -33,8 +33,16 @@ public enum OperationFailureCode: String, Codable, CaseIterable, Error, Hashable
     case targetProbeIndeterminate
     case brokerExited
     case capacityReached
+    case tunnelCapacityReached
     case closedForSleep
     case closedForNetworkChange
+    case cleanupPending
+    case reservationCancelled
+    case targetRefused
+    case targetTimeout
+    case unknownBrokerOutput
+    case serviceAccessDisabled
+    case invalidTunnelRequest
     case staleRevision
     case addressStillReferenced
     case lastAddressForActiveIdentity

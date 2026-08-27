@@ -5,7 +5,7 @@ import XCTest
 final class ServiceAccessTests: XCTestCase {
     func testFormatsHTTPAndTCPEndpointsForIPv4IPv6AndTunnel() throws {
         XCTAssertEqual(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .https,
                 host: "2001:db8::10",
                 port: 8443,
@@ -14,7 +14,7 @@ final class ServiceAccessTests: XCTestCase {
             "https://[2001:db8::10]:8443/status"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .http,
                 host: "example.test",
                 port: 80,
@@ -23,11 +23,11 @@ final class ServiceAccessTests: XCTestCase {
             "http://example.test:80"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.tcpHostPort(host: "2001:db8::10", port: 22),
+            try ServiceAccessEndpointFormatter.tcpHostPort(host: "2001:db8::10", port: 22),
             "[2001:db8::10]:22"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .https,
                 host: "127.0.0.1",
                 port: 49152,
@@ -36,22 +36,22 @@ final class ServiceAccessTests: XCTestCase {
             "https://127.0.0.1:49152/status"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.tcpHostPort(host: "127.0.0.1", port: 49152),
+            try ServiceAccessEndpointFormatter.tcpHostPort(host: "127.0.0.1", port: 49152),
             "127.0.0.1:49152"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.tunnelURL(scheme: .https, localPort: 49152, path: "/status"),
+            try ServiceAccessEndpointFormatter.tunnelURL(scheme: .https, localPort: 49152, path: "/status"),
             "https://127.0.0.1:49152/status"
         )
         XCTAssertEqual(
-            try ServiceEndpointFormatter.tunnelTCPHostPort(localPort: 49152),
+            try ServiceAccessEndpointFormatter.tunnelTCPHostPort(localPort: 49152),
             "127.0.0.1:49152"
         )
     }
 
     func testRejectsUnsafeURLHostAndNonAbsolutePath() {
         XCTAssertThrowsError(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .http,
                 host: "user@example.test",
                 port: 80,
@@ -61,7 +61,7 @@ final class ServiceAccessTests: XCTestCase {
             XCTAssertEqual(error as? ServiceEndpointFormattingError, .invalidHost)
         }
         XCTAssertThrowsError(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .http,
                 host: "example.test",
                 port: 80,
@@ -71,7 +71,7 @@ final class ServiceAccessTests: XCTestCase {
             XCTAssertEqual(error as? ServiceEndpointFormattingError, .invalidPath)
         }
         XCTAssertThrowsError(
-            try ServiceEndpointFormatter.tunnelURL(
+            try ServiceAccessEndpointFormatter.tunnelURL(
                 scheme: .http,
                 localPort: 49152,
                 path: "/status with space"
@@ -83,7 +83,7 @@ final class ServiceAccessTests: XCTestCase {
 
     func testPreservesValidPercentEncodedPathWithoutDoubleEncoding() throws {
         XCTAssertEqual(
-            try ServiceEndpointFormatter.url(
+            try ServiceAccessEndpointFormatter.url(
                 scheme: .http,
                 host: "example.test",
                 port: 8080,

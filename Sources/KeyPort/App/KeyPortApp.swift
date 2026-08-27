@@ -1,4 +1,5 @@
 import AppKit
+import KeyPortCore
 import Network
 import OSLog
 import SwiftUI
@@ -9,7 +10,19 @@ struct KeyPortApp: App {
     @State private var model: AppModel
 
     init() {
-        let appModel = AppModel()
+        let defaults = UserDefaults.standard
+        let currentDeviceID: String
+        if let storedDeviceID = defaults.string(forKey: "KeyPort.deviceID") {
+            currentDeviceID = storedDeviceID
+        } else {
+            currentDeviceID = KeyPortNaming.newDeviceID()
+            defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+        }
+        let hostV6Runtime = HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: currentDeviceID,
+            defaults: defaults
+        )
+        let appModel = AppModel(hostV6Runtime: hostV6Runtime, defaults: defaults)
         _model = State(initialValue: appModel)
         AppWindowFallback.scheduleIfNeeded(model: appModel)
     }
