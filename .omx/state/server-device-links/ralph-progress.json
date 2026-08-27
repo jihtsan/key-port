@@ -1,0 +1,11 @@
+{
+  "score": 94,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "The relationship UI preserves the native macOS information density, all existing authentication columns remain readable, and the device and key relationship sections have no clipping or overlap at 980x688 points.",
+  "next_actions": [],
+  "threshold": 90,
+  "threshold_passed": true
+}
