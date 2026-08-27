@@ -188,7 +188,10 @@ actor HostV6Runtime {
 
     private func resumePendingAuthorityActivation() async throws -> HostV6.MetadataEnvelope? {
         guard let pending = try await authorityStore.pendingActivation() else { return nil }
-        guard let published = try await cloudCoordinator.publishPreparedAuthority(pending) else {
+        guard let published = try await cloudCoordinator.publishPreparedAuthority(
+            pending,
+            currentBuildIdentifier: evidenceVerifier.runningBuildIdentifier()
+        ) else {
             try await authorityStore.discardPreparedActivation()
             return nil
         }

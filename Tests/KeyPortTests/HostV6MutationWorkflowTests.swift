@@ -803,11 +803,19 @@ final class HostV6MutationWorkflowTests: XCTestCase {
                 .migrationProvenance.authorityManifest
         )
 
+        let upgradedVerifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [:]),
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-next-build" }
+        )
+        defaults.set(false, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(false, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(false, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
         let recoveredRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
             currentDeviceID: "device-a",
             defaults: defaults,
             paths: paths,
-            evidenceVerifier: verifier,
+            evidenceVerifier: upgradedVerifier,
             cloudTransport: cloudTransport
         ))
         let recoveredPresentation = try await recoveredRuntime.loadPresentationSnapshot(from: legacyStore)

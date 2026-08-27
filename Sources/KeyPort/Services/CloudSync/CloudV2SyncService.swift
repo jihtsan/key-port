@@ -66,7 +66,8 @@ actor HostV6CloudSyncCoordinator {
     }
 
     func publishPreparedAuthority(
-        _ pending: HostV6PreparedAuthorityActivation
+        _ pending: HostV6PreparedAuthorityActivation,
+        currentBuildIdentifier: String?
     ) async throws -> HostV6.AuthorityCommitPlan? {
         do {
             let authorityPayload = try HostV6.CloudPayloadCodec.encode(pending.plan.envelope)
@@ -86,6 +87,11 @@ actor HostV6CloudSyncCoordinator {
                 restoringLocalStateFrom: pending.plan.envelope
             ) {
                 return published
+            }
+            guard let currentBuildIdentifier,
+                  !currentBuildIdentifier.isEmpty,
+                  pending.plan.manifest.codeVersion == currentBuildIdentifier else {
+                throw HostV6.CloudV2Error.failure(.authorityGateFailed)
             }
             guard current.changeTag == pending.evidenceChangeTag,
                   current.payload == evidencePayload else {
