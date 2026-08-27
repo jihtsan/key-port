@@ -23,6 +23,10 @@ public enum SSHRemoteCommand: Hashable, Sendable {
     case authenticationProbe
     /// 采集远端机器配置（hostname / OS / kernel / arch / CPU / 内存）。
     case machineInspection
+    /// 探测远端系统和允许的监听工具集合。
+    case listenerCapabilities
+    /// 采集远端 TCP 监听器快照；实际命令由远端平台固定选择。
+    case listenerSnapshot
     /// 读取远端 `~/.ssh/authorized_keys`（不存在时返回空）。
     case readAuthorizedKeys
     /// 安装一行公钥到 `authorized_keys`（备份 + 原子替换 + 写后校验）。
@@ -49,6 +53,16 @@ public enum SSHRemoteCommand: Hashable, Sendable {
                 remoteArguments: ["sh", "-s"],
                 standardInputScript: SSHRemoteCommandScripts.machineInspection
             )
+        case .listenerCapabilities:
+            return SSHRemoteCommandSpec(
+                remoteArguments: ["sh", "-s"],
+                standardInputScript: SSHRemoteCommandScripts.listenerCapabilities
+            )
+        case .listenerSnapshot:
+            return SSHRemoteCommandSpec(
+                remoteArguments: ["sh", "-s"],
+                standardInputScript: SSHRemoteCommandScripts.listenerSnapshot
+            )
         case .readAuthorizedKeys:
             return SSHRemoteCommandSpec(
                 remoteArguments: ["sh", "-s"],
@@ -74,6 +88,49 @@ public enum SSHRemoteCommand: Hashable, Sendable {
 /// 编译进应用的固定脚本文本。密码等秘密永远不会进入脚本或参数；
 /// 密码只经 AskPass FIFO 传递（见 App 侧 SSH 服务）。
 public enum SSHRemoteCommandScripts {
+    public static let listenerCapabilities = """
+    export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+    export LC_ALL=C
+    platform=$(uname -s 2>/dev/null || printf unknown)
+    case "$platform" in
+    Linux)
+      printf 'platform=linux\\n'
+      if command -v ss >/dev/null 2>&1; then printf 'tool=ss\\n'; fi
+      if command -v lsof >/dev/null 2>&1; then printf 'tool=lsof\\n'; fi
+      ;;
+    Darwin)
+      printf 'platform=macos\\n'
+      if [ -x /usr/sbin/lsof ]; then printf 'tool=lsof\\n'; fi
+      ;;
+    *)
+      printf 'platform=unsupported\\n'
+      ;;
+    esac
+    """
+
+    public static let listenerSnapshot = """
+    export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+    export LC_ALL=C
+    platform=$(uname -s 2>/dev/null || printf unknown)
+    case "$platform" in
+    Linux)
+      if command -v ss >/dev/null 2>&1; then
+        exec ss -H -lntp
+      fi
+      if command -v lsof >/dev/null 2>&1; then
+        exec lsof -nP -a -iTCP -sTCP:LISTEN -F0pcnT
+      fi
+      exit 127
+      ;;
+    Darwin)
+      exec /usr/sbin/lsof -nP -a -iTCP -sTCP:LISTEN -F0pcnT
+      ;;
+    *)
+      exit 125
+      ;;
+    esac
+    """
+
     public static let machineInspection = """
     hostname_value=$(hostname 2>/dev/null || uname -n)
     kernel_value=$(uname -sr 2>/dev/null || uname -a)
