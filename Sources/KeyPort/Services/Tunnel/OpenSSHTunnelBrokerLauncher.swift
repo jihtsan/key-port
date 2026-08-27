@@ -176,6 +176,8 @@ private final class OpenSSHTunnelBrokerSession: TunnelBrokerTerminationObserving
             switch event {
             case .forwardEstablished:
                 resolve(.success(()))
+            case .forwardRejected:
+                resolve(.failure(TunnelBrokerLaunchError.forwardRejected))
             case .targetRefused:
                 resolve(.failure(TunnelBrokerLaunchError.targetRefused))
             case .targetTimedOut:
@@ -217,6 +219,8 @@ private final class OpenSSHTunnelBrokerSession: TunnelBrokerTerminationObserving
             switch event {
             case .forwardEstablished:
                 resolve(.success(()))
+            case .forwardRejected:
+                resolve(.failure(TunnelBrokerLaunchError.forwardRejected))
             case .targetRefused:
                 resolve(.failure(TunnelBrokerLaunchError.targetRefused))
             case .targetTimedOut:

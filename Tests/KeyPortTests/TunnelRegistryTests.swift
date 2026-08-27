@@ -57,25 +57,60 @@ final class TunnelRegistryTests: XCTestCase {
         XCTAssertTrue(evidence.isValid(at: evidence.verifiedAt.addingTimeInterval(1), networkEpoch: request.networkEpoch))
     }
 
-    func testAdoptValidDiscoveryEvidenceBeforeOpeningTheTunnel() async throws {
-        let request = makeRequest()
-        let verifiedAt = Date(timeIntervalSince1970: 100)
-        let evidence = TargetVerificationEvidence(subject: request.subject, verifiedAt: verifiedAt)
+    func testAdoptRekeysAnActiveCandidateAndReusesItAfterSavingTheService() async throws {
+        let request = makeRequest(serviceID: nil)
+        let broker = TestBroker(outcomes: [.success])
         let registry = TunnelRegistry(
             serviceAccessEnabled: true,
             portReserver: TestPortAllocator(ports: [41026]),
-            brokerLauncher: TestBroker(outcomes: [.success]),
+            brokerLauncher: broker,
             leaseStore: TestLeaseStore()
         )
 
-        let handle = try await registry.adopt(
-            evidence,
-            for: request,
-            at: verifiedAt.addingTimeInterval(1)
+        let candidate = try await registry.open(request)
+        let evidence = try XCTUnwrap(candidate.verificationEvidence)
+        let serviceID = UUID()
+        let adopted = try await registry.adopt(
+            tunnelID: candidate.id,
+            serviceID: serviceID,
+            evidence: evidence,
+            at: evidence.verifiedAt.addingTimeInterval(1)
         )
 
-        XCTAssertEqual(handle.subject, request.subject)
-        XCTAssertNotNil(handle.verificationEvidence)
+        XCTAssertEqual(adopted.id, candidate.id)
+        XCTAssertEqual(adopted.serviceID, serviceID)
+        XCTAssertEqual(adopted.local, candidate.local)
+        XCTAssertTrue(adopted.reused)
+        XCTAssertNil(candidate.serviceID)
+        XCTAssertNil(candidate.subject.serviceID)
+        XCTAssertEqual(adopted.subject.serviceID, serviceID)
+        XCTAssertEqual(adopted.verificationEvidence?.subject, adopted.subject)
+
+        let savedRequest = TunnelRequest(
+            operationID: UUID(),
+            serviceID: serviceID,
+            hostID: request.hostID,
+            sshIdentityID: request.sshIdentityID,
+            sshAddressID: request.sshAddressID,
+            serviceProtocol: request.serviceProtocol,
+            sshHost: request.sshHost,
+            sshPort: request.sshPort,
+            username: request.username,
+            identityPath: request.identityPath,
+            knownHostsPath: request.knownHostsPath,
+            remote: request.remote,
+            networkEpoch: request.networkEpoch,
+            originSensitive: request.originSensitive,
+            sessionID: UUID(),
+            candidateID: UUID()
+        )
+        let reopened = try await registry.open(savedRequest)
+
+        XCTAssertEqual(reopened.id, candidate.id)
+        XCTAssertEqual(reopened.local, candidate.local)
+        XCTAssertTrue(reopened.reused)
+        let launchCount = await broker.launchCount
+        XCTAssertEqual(launchCount, 1)
     }
 
     func testAdoptRejectsEvidenceForAnotherCandidateBeforeReservingAPort() async throws {
@@ -101,10 +136,13 @@ final class TunnelRegistryTests: XCTestCase {
             leaseStore: TestLeaseStore()
         )
 
+        let candidate = try await registry.open(request)
+
         do {
             _ = try await registry.adopt(
-                evidence,
-                for: request,
+                tunnelID: candidate.id,
+                serviceID: UUID(),
+                evidence: evidence,
                 at: evidence.verifiedAt.addingTimeInterval(1)
             )
             XCTFail("Evidence for another candidate unexpectedly opened a tunnel")
@@ -112,7 +150,8 @@ final class TunnelRegistryTests: XCTestCase {
             XCTAssertEqual(failure.code, .targetProbeIndeterminate)
         }
         let reserveCount = await allocator.reserveCount
-        XCTAssertEqual(reserveCount, 0)
+        XCTAssertEqual(reserveCount, 1)
+        _ = await registry.close(id: candidate.id, reason: .userRequested)
     }
 
     func testDuplicateActiveOpenReusesTheSameLocalEndpointWithoutAnotherBroker() async throws {
@@ -460,7 +499,7 @@ final class TunnelRegistryTests: XCTestCase {
 
     private func makeRequest(
         hostID: UUID = UUID(),
-        serviceID: UUID = UUID(),
+        serviceID: UUID? = UUID(),
         networkEpoch: UInt64 = 0
     ) -> TunnelRequest {
         TunnelRequest(

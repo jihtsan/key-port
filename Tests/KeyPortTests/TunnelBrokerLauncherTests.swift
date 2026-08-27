@@ -47,6 +47,25 @@ final class TunnelBrokerLauncherTests: XCTestCase {
         }
     }
 
+    func testForwardRejectionPreservesTheBrokerLaunchFailureCode() async throws {
+        let executable = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("KeyPortTunnelBroker-forward-rejected-(UUID().uuidString)")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: executable)
+        }
+        try Data("#!/bin/sh\nprintf 'FORWARD_FAILED forward_rejected\\n'\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+
+        let launcher = OpenSSHTunnelBrokerLauncher(executablePath: executable.path)
+        do {
+            _ = try await launcher.launch(makeConfiguration())
+            XCTFail("A rejected forward unexpectedly launched")
+        } catch let error as TunnelBrokerLaunchError {
+            XCTAssertEqual(error, .forwardRejected)
+        }
+    }
+
     func testBrokerFailureWithoutTrailingNewlinePreservesFailureCode() async throws {
         let executable = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("KeyPortTunnelBroker-unterminated-(UUID().uuidString)")

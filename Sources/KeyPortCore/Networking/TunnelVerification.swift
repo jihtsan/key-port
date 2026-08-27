@@ -22,9 +22,10 @@ public extension RemoteServiceEndpoint {
 }
 
 public struct TunnelSubject: Codable, Hashable, Sendable {
-    public let operationID: UUID
-    public let sessionID: UUID
-    public let candidateID: UUID
+    public let operationID: UUID?
+    public let sessionID: UUID?
+    public let candidateID: UUID?
+    public let serviceID: UUID?
     public let sshIdentityID: UUID
     public let sshAddressID: UUID
     public let remoteDigest: String
@@ -62,10 +63,52 @@ public struct TunnelSubject: Codable, Hashable, Sendable {
         self.operationID = operationID
         self.sessionID = sessionID
         self.candidateID = candidateID
+        self.serviceID = nil
         self.sshIdentityID = sshIdentityID
         self.sshAddressID = sshAddressID
         self.remoteDigest = remoteDigest
         self.networkEpoch = networkEpoch
+    }
+
+    public init(
+        serviceID: UUID,
+        sshIdentityID: UUID,
+        sshAddressID: UUID,
+        remote: RemoteServiceEndpoint,
+        networkEpoch: UInt64
+    ) {
+        self.init(
+            serviceID: serviceID,
+            sshIdentityID: sshIdentityID,
+            sshAddressID: sshAddressID,
+            remoteDigest: remote.remoteDigest,
+            networkEpoch: networkEpoch
+        )
+    }
+
+    public init(
+        serviceID: UUID,
+        sshIdentityID: UUID,
+        sshAddressID: UUID,
+        remoteDigest: String,
+        networkEpoch: UInt64
+    ) {
+        self.operationID = nil
+        self.sessionID = nil
+        self.candidateID = nil
+        self.serviceID = serviceID
+        self.sshIdentityID = sshIdentityID
+        self.sshAddressID = sshAddressID
+        self.remoteDigest = remoteDigest
+        self.networkEpoch = networkEpoch
+    }
+
+    public var isCandidate: Bool {
+        serviceID == nil && operationID != nil && sessionID != nil && candidateID != nil
+    }
+
+    public var isSaved: Bool {
+        serviceID != nil && operationID == nil && sessionID == nil && candidateID == nil
     }
 }
 
@@ -82,9 +125,10 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
     public let verifiedAt: Date
     public let expiresAt: Date
 
-    public var operationID: UUID { subject.operationID }
-    public var sessionID: UUID { subject.sessionID }
-    public var candidateID: UUID { subject.candidateID }
+    public var operationID: UUID? { subject.operationID }
+    public var sessionID: UUID? { subject.sessionID }
+    public var candidateID: UUID? { subject.candidateID }
+    public var serviceID: UUID? { subject.serviceID }
     public var sshIdentityID: UUID { subject.sshIdentityID }
     public var sshAddressID: UUID { subject.sshAddressID }
     public var remoteDigest: String { subject.remoteDigest }
@@ -110,12 +154,7 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
     }
 
     public func adopt(candidate: TunnelSubject, at date: Date) throws -> TunnelSubject {
-        guard subject.operationID == candidate.operationID,
-              subject.sessionID == candidate.sessionID,
-              subject.candidateID == candidate.candidateID,
-              subject.sshIdentityID == candidate.sshIdentityID,
-              subject.sshAddressID == candidate.sshAddressID,
-              subject.remoteDigest == candidate.remoteDigest else {
+        guard subject == candidate else {
             throw TargetVerificationEvidenceError.subjectMismatch
         }
         guard subject.networkEpoch == candidate.networkEpoch else {
@@ -127,6 +166,30 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
         return candidate
     }
 
+    public func adopting(
+        savedSubject: TunnelSubject,
+        at date: Date
+    ) throws -> TargetVerificationEvidence {
+        guard subject.isCandidate,
+              savedSubject.isSaved,
+              subject.sshIdentityID == savedSubject.sshIdentityID,
+              subject.sshAddressID == savedSubject.sshAddressID,
+              subject.remoteDigest == savedSubject.remoteDigest else {
+            throw TargetVerificationEvidenceError.subjectMismatch
+        }
+        guard subject.networkEpoch == savedSubject.networkEpoch else {
+            throw TargetVerificationEvidenceError.networkEpochMismatch
+        }
+        guard date >= verifiedAt, date < expiresAt else {
+            throw TargetVerificationEvidenceError.expired
+        }
+        return TargetVerificationEvidence(
+            subject: savedSubject,
+            verifiedAt: verifiedAt,
+            expiresAt: expiresAt
+        )
+    }
+
     public func validate(for candidate: TunnelSubject, at date: Date) throws {
         _ = try adopt(candidate: candidate, at: date)
     }
@@ -135,38 +198,55 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
 public struct OpenSSHVersion: Codable, Comparable, Hashable, Sendable {
     public let major: Int
     public let minor: Int
+    public let patch: Int
+    public let build: String
 
-    public init(major: Int, minor: Int) {
+    public init(major: Int, minor: Int, patch: Int = 1, build: String = "") {
         self.major = major
         self.minor = minor
+        self.patch = patch
+        self.build = build
     }
 
     public static func < (lhs: OpenSSHVersion, rhs: OpenSSHVersion) -> Bool {
-        (lhs.major, lhs.minor) < (rhs.major, rhs.minor)
+        if (lhs.major, lhs.minor, lhs.patch) != (rhs.major, rhs.minor, rhs.patch) {
+            return (lhs.major, lhs.minor, lhs.patch) < (rhs.major, rhs.minor, rhs.patch)
+        }
+        return lhs.build < rhs.build
     }
 }
 
 public enum OpenSSHVersionPolicy {
     public static let supportedVersions: Set<OpenSSHVersion> = [
-        OpenSSHVersion(major: 9, minor: 7),
-        OpenSSHVersion(major: 10, minor: 2)
+        OpenSSHVersion(major: 9, minor: 7, patch: 1, build: "LibreSSL 3.3.6"),
+        OpenSSHVersion(major: 10, minor: 2, patch: 1, build: "LibreSSL 3.3.6")
     ]
 
     public static func parse(_ output: String) -> OpenSSHVersion? {
         guard output.utf8.count <= 4 * 1024 else { return nil }
-        let pattern = #"OpenSSH_(\d+)\.(\d+)"#
-        guard let match = output.range(of: pattern, options: .regularExpression) else {
+        let normalized = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = normalized.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false)
+        guard components.count == 2 else {
             return nil
         }
-        let versionText = String(output[match])
-            .dropFirst("OpenSSH_".count)
-        let components = versionText.split(separator: ".")
-        guard components.count == 2,
-              let major = Int(components[0]),
-              let minor = Int(components[1]) else {
+        let token = String(components[0]).trimmingCharacters(in: .whitespaces)
+        let build = String(components[1]).trimmingCharacters(in: .whitespaces)
+        let pattern = #"^OpenSSH_\d+\.\d+p\d+$"#
+        guard !build.isEmpty,
+              token.range(of: pattern, options: .regularExpression) != nil else {
             return nil
         }
-        return OpenSSHVersion(major: major, minor: minor)
+        let versionText = token.dropFirst("OpenSSH_".count)
+        let versionComponents = versionText.split { character in
+            character == "." || character == "p"
+        }
+        guard versionComponents.count == 3,
+              let major = Int(versionComponents[0]),
+              let minor = Int(versionComponents[1]),
+              let patch = Int(versionComponents[2]) else {
+            return nil
+        }
+        return OpenSSHVersion(major: major, minor: minor, patch: patch, build: build)
     }
 
     public static func isSupported(_ output: String) -> Bool {
