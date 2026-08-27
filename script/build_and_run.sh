@@ -20,6 +20,7 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
+APP_TUNNEL_BROKER="$APP_HELPERS/KeyPortTunnelBroker"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_NAME="KeyPort.icns"
 APP_ICON_SOURCE="$ROOT_DIR/Resources/$APP_ICON_NAME"
@@ -45,12 +46,14 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 cd "$ROOT_DIR"
 swift build --product KeyPort
 swift build --product KeyPortAskPass
+swift build --product KeyPortTunnelBroker
 BUILD_DIR="$(swift build --show-bin-path)"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_DIR/KeyPort" "$APP_BINARY"
 cp "$BUILD_DIR/KeyPortAskPass" "$APP_HELPERS/KeyPortAskPass"
+cp "$BUILD_DIR/KeyPortTunnelBroker" "$APP_TUNNEL_BROKER"
 if [[ ! -f "$APP_ICON_SOURCE" ]]; then
   echo "App icon is missing: $APP_ICON_SOURCE" >&2
   exit 2
@@ -58,7 +61,11 @@ fi
 cp "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
 cp "$ROOT_DIR/Sources/KeyPort/Resources/key-hub@1x.png" "$APP_RESOURCES/key-hub@1x.png"
 cp "$ROOT_DIR/Sources/KeyPort/Resources/key-hub@2x.png" "$APP_RESOURCES/key-hub@2x.png"
-chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass"
+chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass" "$APP_TUNNEL_BROKER"
+if [[ ! -x "$APP_TUNNEL_BROKER" ]]; then
+  echo "Tunnel broker helper is missing or not executable: $APP_TUNNEL_BROKER" >&2
+  exit 2
+fi
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -87,6 +94,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>NSApplication</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSLocationWhenInUseUsageDescription</key>
+  <string>KeyPort uses your current Wi-Fi network name as an optional local hint in the on-device connection history. It is only read after you enable the network hint, and never leaves this Mac.</string>
 </dict>
 </plist>
 PLIST
@@ -102,6 +111,7 @@ if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   # Ad-hoc signing is useful for local UI and SSH workflow checks, but cannot
   # activate CloudKit or iCloud Keychain.
   codesign --force --sign - "$APP_HELPERS/KeyPortAskPass" >/dev/null
+  codesign --force --sign - "$APP_TUNNEL_BROKER" >/dev/null
   codesign --force --sign - "$APP_BUNDLE" >/dev/null
   codesign --verify --deep --strict "$APP_BUNDLE"
   echo "Signed ad-hoc (iCloud disabled)"
@@ -258,6 +268,7 @@ else
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$ENTITLEMENTS_FILE"
 
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_HELPERS/KeyPortAskPass" >/dev/null
+  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_TUNNEL_BROKER" >/dev/null
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" \
     --entitlements "$ENTITLEMENTS_FILE" "$APP_BUNDLE" >/dev/null
   SIGNED_TEAM_ID="$(codesign -dvv "$APP_BUNDLE" 2>&1 | sed -n 's/^TeamIdentifier=//p')"

@@ -736,6 +736,180 @@ do {
         // Expected authenticated-decryption failure.
     }
 
+    // Slice E: local connection history and network hint degradation.
+    var historyEnvelope = ConnectionHistoryEnvelope()
+    let historyHostID = UUID(uuidString: "00000000-0000-0000-0000-000000000044")!
+    let historyContext = OperationContext(
+        operationID: UUID(), hostID: historyHostID, action: .sshCheck, startedAt: checkedAt
+    )
+    try ConnectionHistoryCore.begin(&historyEnvelope, context: historyContext)
+    try ConnectionHistoryCore.begin(&historyEnvelope, context: historyContext)
+    try expect(historyEnvelope.inflight.count == 1, "begin replay created a second inflight context")
+    let terminalRecord = try ConnectionHistoryCore.finish(
+        &historyEnvelope, operationID: historyContext.operationID,
+        outcome: SanitizedOutcome(result: .succeeded), endedAt: checkedAt.addingTimeInterval(1), ssid: nil
+    )
+    let replayedRecord = try ConnectionHistoryCore.finish(
+        &historyEnvelope, operationID: historyContext.operationID,
+        outcome: SanitizedOutcome(result: .succeeded), endedAt: checkedAt.addingTimeInterval(9), ssid: nil
+    )
+    try expect(replayedRecord == terminalRecord && historyEnvelope.records.count == 1, "finish replay was not idempotent")
+    do {
+        _ = try ConnectionHistoryCore.finish(
+            &historyEnvelope, operationID: historyContext.operationID,
+            outcome: SanitizedOutcome(result: .failed, failureCode: .tcpTimeout), endedAt: checkedAt, ssid: nil
+        )
+        throw CheckFailure.failed("conflicting terminal outcome accepted")
+    } catch ConnectionHistoryError.terminalConflict {
+        // Expected single-terminal conflict.
+    }
+    let recoveredHistory = ConnectionHistoryCore.recoverInterrupted(
+        &historyEnvelope, endedAt: checkedAt.addingTimeInterval(60)
+    )
+    try expect(recoveredHistory.isEmpty, "recovery rewrote a finished operation")
+    var crashEnvelope = ConnectionHistoryEnvelope()
+    try ConnectionHistoryCore.begin(&crashEnvelope, context: historyContext)
+    let interrupted = ConnectionHistoryCore.recoverInterrupted(&crashEnvelope, endedAt: checkedAt.addingTimeInterval(60))
+    try expect(
+        interrupted.count == 1 && interrupted.first?.result == .interruptedByPreviousTermination,
+        "crash did not close into exactly one interrupted terminal"
+    )
+    var retentionEnvelope = ConnectionHistoryEnvelope()
+    for index in 0..<205 {
+        let stamp = checkedAt.addingTimeInterval(TimeInterval(index))
+        retentionEnvelope.records.append(ConnectionRecord(
+            id: UUID(), hostID: historyHostID, action: .sshCheck,
+            result: .succeeded, startedAt: stamp, endedAt: stamp
+        ))
+    }
+    ConnectionHistoryCore.prune(&retentionEnvelope, now: checkedAt.addingTimeInterval(205))
+    try expect(
+        retentionEnvelope.records.count == ConnectionHistoryCore.maximumRecordsPerHost
+            && !retentionEnvelope.records.contains(where: { $0.endedAt == checkedAt }),
+        "per-host retention did not evict oldest records first"
+    )
+    let historyJSON = String(decoding: try JSONEncoder().encode(retentionEnvelope), as: UTF8.self)
+    try expect(!historyJSON.contains("bssid") && !historyJSON.contains("rawOutput"), "history encoded forbidden fields")
+
+    var ssidReaderInvoked = false
+    let disabledHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: false, authorization: .authorized, locationServicesEnabled: true
+    ) {
+        ssidReaderInvoked = true
+        return "SHOULD_NOT_BE_READ"
+    }
+    try expect(disabledHint == .disabled && !ssidReaderInvoked, "disabled hint touched the platform SSID reader")
+    let deniedHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: true, authorization: .denied, locationServicesEnabled: true
+    ) {
+        ssidReaderInvoked = true
+        return "SHOULD_NOT_BE_READ"
+    }
+    try expect(deniedHint == .denied && !ssidReaderInvoked, "denied hint touched the platform SSID reader")
+    let availableHint = NetworkHintEvaluator.evaluate(
+        hintEnabled: true, authorization: .authorized, locationServicesEnabled: true
+    ) { "FixtureNet" }
+    try expect(NetworkHintEvaluator.recordedSSID(for: availableHint) == "FixtureNet", "authorized hint did not record the SSID")
+    try expect(
+        NetworkHintEvaluator.recordedSSID(for: .servicesDisabled) == nil
+            && NetworkHintEvaluator.recordedSSID(for: .restricted) == nil
+            && NetworkHintEvaluator.recordedSSID(for: .unavailable) == nil,
+        "degraded hint results must fold to nil"
+    )
+    let migrationIdentityID = UUID(uuidString: "12345678-1234-4234-8234-123456789abc")!
+    let migrationDate = Date(timeIntervalSince1970: 1_787_616_000)
+    var migrationSnapshot = AppSnapshot()
+    migrationSnapshot.servers = [ServerConnection(
+        id: migrationIdentityID,
+        name: "Migration Check",
+        host: "migration-check.example",
+        username: "fixture",
+        alias: "migration-check",
+        createdAt: migrationDate,
+        updatedAt: migrationDate
+    )]
+    let migrationEncoder = JSONEncoder()
+    migrationEncoder.dateEncodingStrategy = .iso8601
+    migrationEncoder.outputFormatting = [.sortedKeys]
+    let migrationInput = try migrationEncoder.encode(migrationSnapshot)
+    let migrationArtifacts = [
+        "state-v1.json": HostV6.CanonicalJSON.sha256(migrationInput),
+    ]
+    let migrationInspection = HostV6.ShadowMigrationInspection(
+        keychainAccountsBefore: [migrationIdentityID.uuidString.lowercased(): .missing],
+        keychainAccountsAfter: [migrationIdentityID.uuidString.lowercased(): .missing],
+        artifactHashesBefore: migrationArtifacts,
+        artifactHashesAfter: migrationArtifacts,
+        existingSSHHostAliases: []
+    )
+    let migrationEngine = HostV6.ShadowMigrationEngine(currentDeviceID: "device_core_checks")
+    let migrationShadow = try migrationEngine.prepare(
+        legacyData: migrationInput,
+        previousStateData: nil,
+        inspection: migrationInspection
+    )
+    let migrationReplay = try migrationEngine.prepare(
+        legacyData: migrationInput,
+        previousStateData: nil,
+        inspection: migrationInspection
+    )
+    try expect(migrationShadow.envelope.schemaVersion == 6, "shadow migration did not emit schema 6")
+    try expect(
+        migrationShadow.envelope.migrationProvenance.authorityManifest == nil,
+        "shadow migration signed authority before rollout gates"
+    )
+    try expect(migrationShadow.stateData == migrationReplay.stateData, "shadow migration replay changed state bytes")
+    try expect(migrationShadow.reportData == migrationReplay.reportData, "shadow migration replay changed report bytes")
+    var v6PrivacyEnvelope = migrationShadow.envelope
+    v6PrivacyEnvelope.local.keyStates = [.init(
+        keyID: "key_core_checks",
+        privateKeyPath: "/V6_PRIVATE_KEY_PATH_MARKER",
+        isInAgent: true,
+        isLocallyAvailable: true
+    )]
+    v6PrivacyEnvelope.local.auditEvents = [.init(
+        id: UUID(uuidString: "00000000-0000-4000-8000-000000000901")!,
+        timestamp: migrationDate,
+        category: "fixture",
+        action: "privacy",
+        targetID: nil,
+        result: "V6_AUDIT_RESULT_MARKER",
+        level: .info
+    )]
+    let v6CloudPayload = try HostV6.CloudPayloadCodec.encode(v6PrivacyEnvelope)
+    let v6CloudText = String(decoding: v6CloudPayload, as: UTF8.self)
+    try expect(
+        v6CloudPayload.count < HostV6.CloudPayloadCodec.maximumPayloadByteCount,
+        "v6 Cloud payload exceeded the strict capacity gate"
+    )
+    try expect(!v6CloudText.contains("V6_PRIVATE_KEY_PATH_MARKER"), "v6 Cloud payload included a private key path")
+    try expect(!v6CloudText.contains("V6_AUDIT_RESULT_MARKER"), "v6 Cloud payload included a local audit event")
+    var unexpectedV6Object = try JSONSerialization.jsonObject(with: v6CloudPayload) as! [String: Any]
+    unexpectedV6Object["privateKeyPath"] = "/UNEXPECTED_V6_FIELD"
+    let unexpectedV6Data = try JSONSerialization.data(withJSONObject: unexpectedV6Object, options: [.sortedKeys])
+    do {
+        _ = try HostV6.CloudPayloadCodec.decodeStrict(unexpectedV6Data)
+        throw CheckFailure.failed("v6 Cloud decoder accepted an unexpected field")
+    } catch HostV6.CloudV2Error.unexpectedFields(let paths) {
+        try expect(paths == ["privateKeyPath"], "v6 Cloud decoder reported unstable unexpected-field paths")
+    }
+    // Address-selection pure seams (slice D, architecture 9.1).
+    let ipv6DirectURL = try ServiceEndpointFormatter.directURL(scheme: .https, host: "fd00::10", port: 443)
+    try expect(ipv6DirectURL.absoluteString == "https://[fd00::10]:443", "IPv6 direct URL was not bracketed")
+    let tunnelURL = try ServiceEndpointFormatter.tunnelURL(scheme: .http, localPort: 5000)
+    try expect(tunnelURL.absoluteString == "http://127.0.0.1:5000", "tunnel URL did not bind IPv4 loopback")
+    let dnsHostPort = try ServiceEndpointFormatter.directHostPort(host: "db.internal", port: 5432)
+    try expect(dnsHostPort == "db.internal:5432", "DNS host:port formatting changed")
+    let ipv6HostPort = try ServiceEndpointFormatter.directHostPort(host: "fd00::10", port: 22)
+    try expect(ipv6HostPort == "[fd00::10]:22", "IPv6 host:port formatting changed")
+    try expect(!AddressSelectionV2Gate.defaultEnabled, "addressSelectionV2 must ship dark")
+    do {
+        _ = try ServiceEndpointFormatter.directURL(scheme: .http, host: "h", port: 80, path: "../escape")
+        throw CheckFailure.failed("non-normalized path accepted")
+    } catch ServiceEndpointFormatter.FormattingError.invalidPath {
+        // Expected rejection.
+    }
+
     print("KeyPortCoreChecks: all assertions passed")
 } catch {
     FileHandle.standardError.write(Data("KeyPortCoreChecks failed: \(error)\n".utf8))

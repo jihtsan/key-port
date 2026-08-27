@@ -250,6 +250,11 @@ private struct SharedServerFields {
 @MainActor
 @Observable
 final class AppModel {
+    private struct ActiveDiscoveryOperation {
+        let operationID: UUID
+        let hostID: UUID
+    }
+
     var snapshot = AppSnapshot()
     var destination: SidebarDestination = .servers
     var selectedServerID: UUID?
@@ -258,6 +263,7 @@ final class AppModel {
     var selectedDeviceItemID: DevicePresence.ID?
     var searchText = ""
     var isLoaded = false
+    private(set) var isMetadataReadOnly = false
     var isBusy = false
     var errorMessage: String?
     var pendingHostKeys: [HostKeyRecord] = []
@@ -271,6 +277,8 @@ final class AppModel {
     var passwordSaveError: String?
     var isSavingPassword = false
     var discoveredSSHConnections: [DiscoveredSSHConnection] = []
+    var listenerDiscoveryResults: [UUID: DiscoveryResult] = [:]
+    private(set) var discoveryEnabled: Bool
     var retainedSSHCheckLog: SSHCheckLog?
     var machineConfigurationSyncingServerID: UUID?
     var machineConfigurationSyncError: String?
@@ -289,6 +297,11 @@ final class AppModel {
     private let tailscaleService: TailscaleService
     private let localAuthentication: LocalAuthenticationService
     private let cloudSync: any CloudSyncing
+    private let hostV6Runtime: HostV6Runtime?
+    private let defaults: UserDefaults
+    private let discoveryExecutor: any ProcessExecuting
+    private let discoveryAdapter: any ListenerDiscoveryAdapter
+    private let discoveryCoordinator: DiscoveryCoordinator
     private let archiveService = MetadataArchiveService()
     private let audit = AuditLogService()
     private let clipboard = ClipboardService()
@@ -297,14 +310,24 @@ final class AppModel {
     private var isSynchronizingCloud = false
     private var isInitialLoadInProgress = false
     private var automaticCloudRetryAttempt = 0
+    private var activeDiscoveryOperations: [UUID: ActiveDiscoveryOperation] = [:]
+    private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
+    private var discoveryGeneration = 0
 
-    init(cloudSync: any CloudSyncing = CloudKitSyncService()) {
-        let defaults = UserDefaults.standard
+    init(
+        hostV6Runtime: HostV6Runtime? = nil,
+        cloudSync: any CloudSyncing = CloudKitSyncService(),
+        paths: KeyPortPaths = KeyPortPaths(),
+        defaults: UserDefaults = .standard,
+        discoveryExecutor: (any ProcessExecuting)? = nil,
+        discoveryAdapter: (any ListenerDiscoveryAdapter)? = nil,
+        discoveryCoordinator: DiscoveryCoordinator = DiscoveryCoordinator()
+    ) {
         let storedCloudSyncAt = defaults.object(forKey: "KeyPort.lastCloudSyncAt") as? Date
+        self.discoveryEnabled = DiscoveryFeatureFlags.isEnabled(defaults: defaults)
         self.lastCloudSyncAt = storedCloudSyncAt
         self.cloudState = defaults.bool(forKey: "KeyPort.cloudSyncEnabled") ? .checking : .disabled
         let runner = ProcessRunner()
-        let paths = KeyPortPaths()
         let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent()
         let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/KeyPortAskPass").path
         let siblingHelper = executableDirectory?.appendingPathComponent("KeyPortAskPass").path ?? bundledHelper
@@ -319,6 +342,11 @@ final class AppModel {
         self.tailscaleService = TailscaleService(runner: runner)
         self.localAuthentication = LocalAuthenticationService()
         self.cloudSync = cloudSync
+        self.hostV6Runtime = hostV6Runtime
+        self.defaults = defaults
+        self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
+        self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
+        self.discoveryCoordinator = discoveryCoordinator
     }
 
     var activeServers: [ServerConnection] {
@@ -420,6 +448,7 @@ final class AppModel {
         serverID: UUID,
         expectedRevision: Int?
     ) async -> NodeAssociation? {
+        guard await authorizeLegacyMutation() else { return nil }
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return nil }
         isBusy = true
@@ -460,6 +489,7 @@ final class AppModel {
         target: ActualNodeReference,
         expectedRevision: Int?
     ) async -> NodeAssociation? {
+        guard await authorizeLegacyMutation() else { return nil }
         guard !isBusy else { return nil }
         isBusy = true
         defer { isBusy = false }
@@ -490,6 +520,7 @@ final class AppModel {
     }
 
     func unlinkNodeAssociation(testCaseNodeID: String, expectedRevision: Int) async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let association = nodeAssociation(testCaseNodeID: testCaseNodeID) else { return }
         isBusy = true
@@ -508,6 +539,7 @@ final class AppModel {
     }
 
     func resumeAutomaticNodeAssociation(testCaseNodeID: String, expectedRevision: Int) async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let association = nodeAssociation(testCaseNodeID: testCaseNodeID),
               let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else { return }
@@ -702,10 +734,26 @@ final class AppModel {
         guard !isLoaded else { return }
         isInitialLoadInProgress = true
         do {
-            snapshot = try await store.load()
-            normalizeStableMetadataIDs()
-            ensureCurrentDevice()
-            try await refreshKeys(recordAudit: false)
+            let presentation: HostV6Presentation
+            if let hostV6Runtime {
+                presentation = try await hostV6Runtime.loadPresentationSnapshot(from: store)
+            } else {
+                presentation = HostV6Presentation(snapshot: try await store.load(), mode: .canary)
+            }
+            snapshot = presentation.snapshot
+            isMetadataReadOnly = !presentation.mode.allowsLegacyWrites
+            if presentation.mode.allowsLegacyWrites {
+                _ = try? await configService.adoptExistingManagedConfigBaseline(
+                    servers: snapshot.servers.filter { !$0.isDeleted },
+                    keys: snapshot.keys,
+                    authorizations: snapshot.authorizations
+                )
+                normalizeStableMetadataIDs()
+                ensureCurrentDevice()
+                try await refreshKeys(recordAudit: false)
+            } else {
+                discoveredSSHConnections = await configService.discoverConnections()
+            }
             await refreshPasswordAvailability()
             if selectedServerID == nil { selectedServerID = activeServers.first?.id }
             if selectedKeyItemID == nil {
@@ -717,16 +765,133 @@ final class AppModel {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
             }
             isLoaded = true
-            await refreshTailscale()
-            appendAudit(category: "app", action: "load", result: "success")
-            await refreshMissingMachineConfigurations()
-            await persist()
+            if presentation.mode.allowsLegacyWrites {
+                await refreshTailscale()
+                appendAudit(category: "app", action: "load", result: "success")
+                await refreshMissingMachineConfigurations()
+                await persist()
+            }
             isInitialLoadInProgress = false
-            scheduleCloudSyncIfNeeded()
+            if presentation.mode.allowsLegacyWrites {
+                scheduleCloudSyncIfNeeded()
+            }
         } catch {
             isLoaded = true
             isInitialLoadInProgress = false
+            if hostV6Runtime != nil {
+                isMetadataReadOnly = true
+            }
             present(error)
+        }
+    }
+
+    /// 用户明确触发的一次性监听发现。结果只进入内存，不调用 `persist()`，
+    /// 也不创建、更新或删除任何 v5 Server/Service 对象。
+    func discoverListeners(
+        for serverID: UUID,
+        limits: DiscoveryLimits = .default
+    ) async throws -> DiscoveryResult {
+        guard discoveryEnabled else { throw ListenerDiscoveryTriggerError.featureDisabled }
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
+            throw ListenerDiscoveryTriggerError.hostNotFound
+        }
+        guard server.status == .authorized else {
+            throw ListenerDiscoveryTriggerError.hostNotAuthorized
+        }
+        guard let route = sshOperationServer(for: server) else {
+            throw StableOperationFailure(
+                stage: .sshTrust,
+                objectID: serverID.uuidString.lowercased(),
+                code: .identityUnavailable,
+                recoveryAction: .edit
+            )
+        }
+        guard let identity = key(for: route) else {
+            throw StableOperationFailure(
+                stage: .sshTrust,
+                objectID: serverID.uuidString.lowercased(),
+                code: .identityUnavailable,
+                recoveryAction: .prepareLocalKey
+            )
+        }
+
+        let operationID = UUID()
+        let generation = discoveryGeneration
+        let hostID = HostV6.StableID.host(
+            legacyHost: route.host,
+            port: UInt16(clamping: route.port)
+        )
+        activeDiscoveryOperations[serverID] = ActiveDiscoveryOperation(
+            operationID: operationID,
+            hostID: hostID
+        )
+        activeDiscoveryOperationsByHost[hostID] = operationID
+        let executor = discoveryExecutor
+        let adapter = discoveryAdapter
+        defer {
+            if activeDiscoveryOperations[serverID]?.operationID == operationID {
+                activeDiscoveryOperations.removeValue(forKey: serverID)
+            }
+            if activeDiscoveryOperationsByHost[hostID] == operationID {
+                activeDiscoveryOperationsByHost.removeValue(forKey: hostID)
+            }
+        }
+
+        let result = try await discoveryCoordinator.discover(
+            hostID: hostID,
+            operationID: operationID
+        ) {
+            let session = try await TrustedSSHSession.establish(
+                route: route,
+                observedHostKeys: route.confirmedHostKeys,
+                identity: identity,
+                executor: executor
+            )
+            return try await adapter.discover(using: session, limits: limits)
+        }
+
+        try Task.checkCancellation()
+        guard discoveryEnabled,
+              discoveryGeneration == generation,
+              activeDiscoveryOperations[serverID]?.operationID == operationID,
+              activeDiscoveryOperationsByHost[hostID] == operationID else {
+            throw DiscoveryCoordinatorError.cancelled
+        }
+        listenerDiscoveryResults[serverID] = result
+        return result
+    }
+
+    /// 页面关闭或用户取消时立即丢弃本机内存中的候选，并取消远端进程。
+    func clearListenerDiscovery(for serverID: UUID) async {
+        await cancelListenerDiscovery(for: serverID)
+        listenerDiscoveryResults.removeValue(forKey: serverID)
+    }
+
+    func cancelListenerDiscovery(for serverID: UUID) async {
+        guard let active = activeDiscoveryOperations[serverID] else { return }
+        activeDiscoveryOperations.removeValue(forKey: serverID)
+        if activeDiscoveryOperationsByHost[active.hostID] == active.operationID {
+            activeDiscoveryOperationsByHost.removeValue(forKey: active.hostID)
+        }
+        await discoveryCoordinator.cancel(operationID: active.operationID)
+    }
+
+    /// 关闭 flag 即可回滚该切片；同时清除候选并请求取消所有在途发现。
+    func setDiscoveryEnabled(_ enabled: Bool) {
+        let stateChanged = discoveryEnabled != enabled
+        discoveryEnabled = enabled
+        defaults.set(enabled, forKey: DiscoveryFeatureFlags.discoveryEnabledKey)
+        if stateChanged || !enabled {
+            discoveryGeneration &+= 1
+        }
+        guard !enabled else { return }
+
+        let operationIDs = Set(activeDiscoveryOperations.values.map(\.operationID))
+        activeDiscoveryOperations.removeAll()
+        activeDiscoveryOperationsByHost.removeAll()
+        listenerDiscoveryResults.removeAll()
+        for operationID in operationIDs {
+            Task { await discoveryCoordinator.cancel(operationID: operationID) }
         }
     }
 
@@ -749,6 +914,15 @@ final class AppModel {
         trustedHostKeys: [HostKeyRecord]
     ) async -> ServerEditorValidationResult {
         var log = ["正在解析 \(draft.username)@\(draft.host):\(draft.port)", "正在扫描服务器主机密钥..."]
+        guard await authorizeLegacyMutation() else {
+            let detail = errorMessage ?? "v6 已取得元数据写权，旧编辑流程已停用。"
+            log.append(detail)
+            return failedEditorValidation(
+                detail: detail,
+                log: log,
+                confirmedHostKeys: trustedHostKeys
+            )
+        }
         let server = editorServer(draft: draft, existingServerID: existingServerID, confirmedHostKeys: trustedHostKeys)
 
         do {
@@ -843,6 +1017,7 @@ final class AppModel {
     }
 
     func saveServerEditor(_ submission: ServerEditorSubmission, existingServerID: UUID?) async throws -> UUID {
+        try await requireLegacyMutation()
         try await validateEditorDraft(submission.draft, existingServerID: existingServerID)
         let existingServer = existingServerID.flatMap { id in
             snapshot.servers.first(where: { $0.id == id && !$0.isDeleted })
@@ -1017,6 +1192,7 @@ final class AppModel {
     }
 
     func deleteServer(_ id: UUID) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let index = snapshot.servers.firstIndex(where: { $0.id == id }) else { return }
         snapshot.servers[index].isDeleted = true
         snapshot.servers[index].updatedAt = .now
@@ -1031,6 +1207,7 @@ final class AppModel {
     }
 
     func refreshKeys(recordAudit: Bool = true) async throws {
+        try await requireLegacyMutation()
         ensureCurrentDevice()
         guard let device = currentDevice else { return }
         let scanned = try await keyService.scan(deviceID: device.id)
@@ -1055,6 +1232,7 @@ final class AppModel {
     }
 
     func generateKey() async {
+        guard await authorizeLegacyMutation() else { return }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1065,6 +1243,7 @@ final class AppModel {
     }
 
     func importKey() async {
+        guard await authorizeLegacyMutation() else { return }
         guard let device = currentDevice, let url = await fileSelection.selectPrivateKey() else { return }
         isBusy = true
         defer { isBusy = false }
@@ -1083,6 +1262,7 @@ final class AppModel {
     }
 
     func addSelectedKeyToAgent() async {
+        guard await authorizeLegacyMutation() else { return }
         guard let selectedKeyID, let key = snapshot.keys.first(where: { $0.id == selectedKeyID }) else { return }
         do {
             try await keyService.addToAgent(key)
@@ -1151,8 +1331,13 @@ final class AppModel {
     }
 
     func synchronizeSSHAuthorization(serverID: UUID) async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: .key)
+            return
+        }
 
         isBusy = true
         retainedSSHCheckLog = SSHCheckLog(
@@ -1165,9 +1350,9 @@ final class AppModel {
         defer { isBusy = false }
 
         do {
-            let observed = try await hostKeyService.scan(server: server)
+            let observed = try await hostKeyService.scan(server: routeServer)
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
-            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) {
+            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
             case .pending:
                 let detail = "同步 SSH 授权前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
@@ -1219,8 +1404,8 @@ final class AppModel {
             updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
             appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
             try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-            try await authorize(server: server, key: key)
-            await synchronizeMachineConfigurationWithKey(server: server, key: key)
+            try await authorize(server: routeServer, key: key)
+            await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
             appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
             appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
         } catch {
@@ -1269,6 +1454,7 @@ final class AppModel {
     }
 
     func synchronizeMachineConfiguration(serverID: UUID) async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
         guard server.status == .authorized else {
@@ -1281,14 +1467,20 @@ final class AppModel {
             machineConfigurationSyncError = "当前 Mac 没有可用于机器配置同步的本地私钥。"
             return
         }
+        guard let routeServer = sshOperationServer(for: server) else {
+            machineConfigurationSyncErrorServerID = serverID
+            machineConfigurationSyncError = "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
+            return
+        }
 
         isBusy = true
         defer { isBusy = false }
-        await synchronizeMachineConfigurationWithKey(server: server, key: key)
+        await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
         await persist()
     }
 
     func checkAll() async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy, !isInitialLoadInProgress else {
             scheduleCloudRetry(after: 5)
             return
@@ -1303,6 +1495,7 @@ final class AppModel {
     }
 
     func confirmPendingHostKeys() async {
+        guard await authorizeLegacyMutation() else { return }
         guard let serverID = pendingHostKeyServerID,
               let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) else { return }
         let now = Date()
@@ -1337,6 +1530,7 @@ final class AppModel {
     }
 
     func authorizeCurrentDevice(serverID: UUID) async {
+        guard await authorizeLegacyMutation() else { return }
         guard !isBusy else { return }
         do {
             if preferredKey == nil {
@@ -1353,6 +1547,7 @@ final class AppModel {
     }
 
     func authorizePendingServers() async {
+        guard await authorizeLegacyMutation() else { return }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1409,12 +1604,17 @@ final class AppModel {
     }
 
     func refreshRemoteAuthorizations(serverID: UUID) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let server = snapshot.servers.first(where: { $0.id == serverID }),
               let identity = key(for: server)?.privateKeyPath else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: .key)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
-            let lines = try await sshService.readAuthorizedKeys(server: server, identityPath: identity)
+            let lines = try await sshService.readAuthorizedKeys(server: routeServer, identityPath: identity)
             var discoveredKeys: [SSHKeyRecord] = []
             var existingByID: [String: Authorization] = [:]
             for authorization in snapshot.authorizations where authorization.serverID == serverID {
@@ -1479,21 +1679,26 @@ final class AppModel {
     }
 
     func revokeAuthorization(_ authorizationID: String) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let authorization = snapshot.authorizations.first(where: { $0.id == authorizationID }),
               let server = snapshot.servers.first(where: { $0.id == authorization.serverID }),
               let credentialKey = key(for: server),
               let identity = credentialKey.privateKeyPath,
               let targetKey = snapshot.keys.first(where: { $0.fingerprint == authorization.fingerprint }),
               let parsed = PublicKeyParser.parse(targetKey.publicKey) else { return }
+        guard let routeServer = sshOperationServer(for: server) else {
+            markSSHRouteUnavailable(serverID: server.id, kind: .key)
+            return
+        }
         isBusy = true
         defer { isBusy = false }
         do {
             try await localAuthentication.authorize(reason: "撤销所选 KeyPort 服务器授权")
-            let observed = try await hostKeyService.scan(server: server)
-            guard HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) == .confirmed else {
+            let observed = try await hostKeyService.scan(server: routeServer)
+            guard HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) == .confirmed else {
                 throw SSHServiceError.hostKeyChanged
             }
-            try await sshService.revokePublicKey(server: server, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
+            try await sshService.revokePublicKey(server: routeServer, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
             if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
                 snapshot.authorizations[index].status = .needsAuthorization
                 snapshot.authorizations[index].isDeleted = true
@@ -1511,8 +1716,12 @@ final class AppModel {
     }
 
     func synchronizeCloud(userInitiated: Bool = true) async {
-        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled") else {
+        guard defaults.bool(forKey: "KeyPort.cloudSyncEnabled") else {
             cloudState = .disabled
+            return
+        }
+        guard await authorizeLegacyMutation() else {
+            cloudState = .failed(errorMessage ?? "v6 已取得元数据写权，Cloud v1 同步已停用。")
             return
         }
         guard !isBusy else { return }
@@ -1553,7 +1762,7 @@ final class AppModel {
             await refreshMissingMachineConfigurations()
             let synchronizedAt = Date.now
             lastCloudSyncAt = synchronizedAt
-            UserDefaults.standard.set(synchronizedAt, forKey: "KeyPort.lastCloudSyncAt")
+            defaults.set(synchronizedAt, forKey: "KeyPort.lastCloudSyncAt")
             automaticCloudRetryAttempt = 0
             cloudState = .succeeded(synchronizedAt)
             appendAudit(category: "cloud", action: "sync", result: "success")
@@ -1573,16 +1782,22 @@ final class AppModel {
 
     func refreshTailscale() async {
         guard tailscaleDiscoveryState != .refreshing else { return }
+        let readOnlyPresentation = isMetadataReadOnly
         tailscaleDiscoveryState = .refreshing
         do {
             let status = try await tailscaleService.status()
             tailscaleStatus = status
-            await recordCurrentDeviceIdentity(from: status)
-            if status.isCompleteAssociationSnapshot {
+            if readOnlyPresentation {
+                tailscaleDiscoveryState = status.isCompleteAssociationSnapshot
+                    ? .available
+                    : .unavailable("Tailscale 状态不完整，已保留现有节点关联。")
+            } else if status.isCompleteAssociationSnapshot {
+                await recordCurrentDeviceIdentity(from: status)
                 await discoverLogicalNameAssociations(using: status)
                 await revalidateNodeAssociations(status: status, sourceState: .complete)
                 tailscaleDiscoveryState = .available
             } else {
+                await recordCurrentDeviceIdentity(from: status)
                 await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
                 tailscaleDiscoveryState = .unavailable("Tailscale 状态不完整，已保留现有节点关联。")
             }
@@ -1591,7 +1806,9 @@ final class AppModel {
             }
         } catch {
             tailscaleStatus = nil
-            await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+            if !readOnlyPresentation {
+                await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+            }
             tailscaleDiscoveryState = .unavailable(error.localizedDescription)
         }
     }
@@ -1620,6 +1837,7 @@ final class AppModel {
     }
 
     func clearAuditLog() async {
+        guard await authorizeLegacyMutation() else { return }
         snapshot.auditEvents.removeAll()
         await persist()
     }
@@ -1688,6 +1906,7 @@ final class AppModel {
     }
 
     func addDiscoveredConnectionToServers(_ connection: DiscoveredSSHConnection) async {
+        guard await authorizeLegacyMutation() else { return }
         if let existing = server(matching: connection) {
             showServer(existing.id)
             return
@@ -1741,7 +1960,12 @@ final class AppModel {
         guard !trimmedUsername.isEmpty else {
             return AuthenticationCheck(state: .failed, detail: "测试前请输入用户名。", checkedAt: .now)
         }
-        var candidateServer = server
+        var candidateServer: ServerConnection
+        if let routed = sshOperationServer(for: server) {
+            candidateServer = routed
+        } else {
+            return AuthenticationCheck(state: .blocked, detail: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。", checkedAt: .now)
+        }
         candidateServer.username = trimmedUsername
 
         do {
@@ -1779,6 +2003,7 @@ final class AppModel {
         authorizeAfterSave: Bool,
         validatedCheck: AuthenticationCheck
     ) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let server = promptedPasswordServer, !password.isEmpty, !isSavingPassword else { return }
         let trimmedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedUsername.isEmpty else {
@@ -1869,12 +2094,15 @@ final class AppModel {
         guard let destination = await fileSelection.selectArchiveDestination() else { return }
         do {
             try await archiveService.export(snapshot: snapshot, password: password, destination: destination)
-            appendAudit(category: "archive", action: "export", result: "encrypted-metadata")
-            await persist()
+            if !isMetadataReadOnly {
+                appendAudit(category: "archive", action: "export", result: "encrypted-metadata")
+                await persist()
+            }
         } catch { present(error) }
     }
 
     func importMetadata(password: String) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let source = await fileSelection.selectArchiveForImport() else { return }
         do {
             let imported = try await archiveService.importArchive(from: source, password: password)
@@ -1903,6 +2131,7 @@ final class AppModel {
     }
 
     private func authorizeServer(_ serverID: UUID) async throws {
+        try await requireLegacyMutation()
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
             throw SSHServiceError.operationFailed("找不到要启用免密的服务器。")
         }
@@ -2003,8 +2232,33 @@ final class AppModel {
         snapshot.schemaVersion = 4
     }
 
+    /// flag 感知的 SSH 路由（切片 C 适配层）：默认原样返回 legacy 对象；
+    /// `KeyPort.sshCompatAdapterV6` 开启时改用 v6 只读兼容投影，投影被关闭
+    /// （blocking 冲突或无可用地址）时 fail closed 返回 nil。审计只记稳定码，
+    /// 不含地址、用户名或秘密。关闭 flag 即整体回退 legacy adapter。
+    private func sshOperationServer(for server: ServerConnection) -> ServerConnection? {
+        let provider = SSHCompatFeatureFlags.routeProvider(servers: snapshot.servers, defaults: defaults)
+        if let routed = provider.sshRoute(for: server.id) { return routed }
+        if let failure = provider.blockingFailure(for: server.id) {
+            appendAudit(category: "ssh-auth", action: "route", targetID: server.id.uuidString, result: failure.code.rawValue, level: .error)
+        }
+        return nil
+    }
+
+    private func markSSHRouteUnavailable(serverID: UUID, kind: ServerCheckKind) {
+        let detail = "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
+        updateServer(id: serverID, status: .syncPending, detail: detail)
+        updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+        appendSSHCheckLog(detail, serverID: serverID)
+    }
+
     private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
+        guard await authorizeLegacyMutation() else { return }
         guard let initial = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        guard let routeServer = sshOperationServer(for: initial) else {
+            markSSHRouteUnavailable(serverID: serverID, kind: kind)
+            return
+        }
         if ownsBusyState { isBusy = true }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
@@ -2017,9 +2271,9 @@ final class AppModel {
         }
         defer { if ownsBusyState { isBusy = false } }
         do {
-            let observed = try await hostKeyService.scan(server: initial)
+            let observed = try await hostKeyService.scan(server: routeServer)
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
-            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: initial.confirmedHostKeys) {
+            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
             case .pending:
                 let detail = "身份验证前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
@@ -2041,9 +2295,9 @@ final class AppModel {
             case .confirmed:
                 switch kind {
                 case .password:
-                    try await checkPasswordAuthentication(server: initial)
+                    try await checkPasswordAuthentication(server: routeServer)
                 case .key:
-                    try await checkKeyAuthentication(server: initial)
+                    try await checkKeyAuthentication(server: routeServer)
                 }
             }
         } catch {
@@ -2138,6 +2392,7 @@ final class AppModel {
     }
 
     private func authorize(server: ServerConnection, key: SSHKeyRecord) async throws {
+        guard let server = sshOperationServer(for: server) else { throw SSHServiceError.identityRouteUnavailable }
         guard await keychain.hasServerCredential(serverID: server.id) else { throw SSHServiceError.missingPassword }
         var credential = try await keychain.serverCredential(serverID: server.id)
         defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
@@ -2172,6 +2427,7 @@ final class AppModel {
     }
 
     private func writeConfig() async {
+        guard await authorizeLegacyMutation() else { return }
         do {
             try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
             appendAudit(category: "ssh-config", action: "write", result: "success")
@@ -2211,7 +2467,6 @@ final class AppModel {
     }
 
     private func ensureCurrentDevice() {
-        let defaults = UserDefaults.standard
         let storedID = defaults.string(forKey: "KeyPort.deviceID")
         let deviceID = storedID ?? KeyPortNaming.newDeviceID()
         if storedID == nil { defaults.set(deviceID, forKey: "KeyPort.deviceID") }
@@ -2412,13 +2667,14 @@ final class AppModel {
         }
 
         for server in servers {
-            guard let key = key(for: server),
+            guard let routeServer = sshOperationServer(for: server),
+                  let key = key(for: routeServer),
                   key.isLocallyAvailable,
                   key.privateKeyPath != nil else { continue }
 
             markMachineConfigurationRefreshAttempt(serverID: server.id, at: refreshDate)
             await persist()
-            await synchronizeMachineConfigurationWithKey(server: server, key: key)
+            await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
         }
     }
 
@@ -2699,14 +2955,32 @@ final class AppModel {
 
     private func persist() async {
         do {
-            try await store.save(snapshot)
+            if let hostV6Runtime {
+                try await hostV6Runtime.saveLegacySnapshot(snapshot, to: store)
+            } else {
+                try await store.save(snapshot)
+            }
             scheduleCloudSyncIfNeeded()
         }
         catch { present(error) }
     }
 
+    private func authorizeLegacyMutation() async -> Bool {
+        do {
+            try await requireLegacyMutation()
+            return true
+        } catch {
+            present(error)
+            return false
+        }
+    }
+
+    private func requireLegacyMutation() async throws {
+        try await hostV6Runtime?.authorizeLegacyWrite()
+    }
+
     private func scheduleCloudSyncIfNeeded() {
-        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled"),
+        guard defaults.bool(forKey: "KeyPort.cloudSyncEnabled"),
               !isSynchronizingCloud,
               !isInitialLoadInProgress else { return }
         automaticCloudRetryAttempt = 0
@@ -2735,7 +3009,7 @@ final class AppModel {
     }
 
     private func scheduleCloudRetry(after minimumDelay: TimeInterval) {
-        guard UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled") else { return }
+        guard defaults.bool(forKey: "KeyPort.cloudSyncEnabled") else { return }
         automaticCloudRetryAttempt += 1
         let exponentialDelay = min(300, 15 * pow(2, Double(max(0, automaticCloudRetryAttempt - 1))))
         let delay = max(minimumDelay, exponentialDelay)
