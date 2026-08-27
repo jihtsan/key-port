@@ -12,7 +12,10 @@ struct ContentView: View {
         @Bindable var model = model
         NavigationSplitView {
             List(SidebarDestination.allCases, selection: $model.destination) { destination in
-                Label(destination.title, systemImage: destination.systemImage)
+                Label(
+                    destination == .servers && model.isHostWorkbenchEnabled ? "主机" : destination.title,
+                    systemImage: destination.systemImage
+                )
                     .tag(destination)
             }
             .listStyle(.sidebar)
@@ -204,12 +207,22 @@ struct ContentView: View {
     private var contentColumn: some View {
         switch model.destination {
         case .servers:
-            ServerListView(model: model) { serverID in
-                model.selectedServerID = serverID
-                accountSourceServerID = serverID
-            } onEdit: { serverID in
-                model.selectedServerID = serverID
-                showsEditServer = true
+            if model.isHostWorkbenchEnabled {
+                HostWorkbenchListView(model: model) { identityID in
+                    model.selectedServerID = identityID
+                    accountSourceServerID = identityID
+                } onEdit: { serverID in
+                    model.selectedServerID = serverID
+                    showsEditServer = true
+                }
+            } else {
+                ServerListView(model: model) { serverID in
+                    model.selectedServerID = serverID
+                    accountSourceServerID = serverID
+                } onEdit: { serverID in
+                    model.selectedServerID = serverID
+                    showsEditServer = true
+                }
             }
         case .keys:
             KeyListView(model: model)
@@ -224,10 +237,18 @@ struct ContentView: View {
     private var detailColumn: some View {
         switch model.destination {
         case .servers:
-            if let server = model.selectedServer {
+            if model.isHostWorkbenchEnabled, let row = model.selectedHostRow {
+                HostWorkbenchDetailView(row: row, model: model)
+            } else if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)
             } else {
-                ContentUnavailableView("未选择用户", systemImage: "person.crop.circle", description: Text("请在服务器下选择一个 SSH 用户。"))
+                ContentUnavailableView(
+                    model.isHostWorkbenchEnabled ? "未选择主机" : "未选择用户",
+                    systemImage: model.isHostWorkbenchEnabled ? "server.rack" : "person.crop.circle",
+                    description: Text(
+                        model.isHostWorkbenchEnabled ? "请在主机列表中选择一台主机。" : "请在服务器下选择一个 SSH 用户。"
+                    )
+                )
             }
         case .keys:
             if let row = model.selectedKeyServerRow {
@@ -255,7 +276,7 @@ struct ContentView: View {
                 Button {
                     showsAddServer = true
                 } label: {
-                    Label("添加服务器", systemImage: "plus")
+                    Label(model.isHostWorkbenchEnabled ? "添加主机" : "添加服务器", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
@@ -339,7 +360,7 @@ struct KeyPortCommands: Commands {
     let model: AppModel
 
     var body: some Commands {
-        CommandMenu("服务器") {
+        CommandMenu(model.isHostWorkbenchEnabled ? "主机" : "服务器") {
             Button(passwordlessAction.title) {
                 guard let serverID = model.selectedServerID else { return }
                 Task { await model.performPasswordlessPrimaryAction(serverID: serverID) }

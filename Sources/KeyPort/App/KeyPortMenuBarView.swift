@@ -9,7 +9,11 @@ struct KeyPortMenuBarView: View {
     @State private var copiedServerID: UUID?
 
     var body: some View {
-        authorizedServiceSections
+        if model.isHostWorkbenchEnabled {
+            hostWorkbenchSections
+        } else {
+            authorizedServiceSections
+        }
 
         Divider()
 
@@ -24,6 +28,42 @@ struct KeyPortMenuBarView: View {
             NSApp.terminate(nil)
         } label: {
             Label("退出 KeyPort", systemImage: "power")
+        }
+    }
+
+    @ViewBuilder
+    private var hostWorkbenchSections: some View {
+        if !model.isLoaded {
+            Section("免密已验证") {
+                Text("正在加载...")
+            }
+        } else if hostWorkbenchGroups.isEmpty {
+            Section("免密已验证") {
+                Text("暂无免密已验证的身份")
+            }
+        } else {
+            ForEach(hostWorkbenchGroups) { group in
+                authorizedServiceSection(group)
+            }
+        }
+    }
+
+    private var hostWorkbenchGroups: [AuthorizedServiceGroup] {
+        guard let rows = model.hostWorkbenchProjection?.rows else { return [] }
+        let authorizedByID = Dictionary(uniqueKeysWithValues: model.authorizedSSHAccounts.map { ($0.id, $0) })
+        return rows.compactMap { row in
+            let accounts = row.identities.compactMap { authorizedByID[$0.id] }
+            guard !accounts.isEmpty else { return nil }
+            return AuthorizedServiceGroup(
+                id: "host:\(row.id.uuidString)",
+                title: row.host.name,
+                accounts: sortedAccounts(accounts)
+            )
+        }
+        .sorted {
+            let order = ($0.title ?? "").localizedCaseInsensitiveCompare($1.title ?? "")
+            if order != .orderedSame { return order == .orderedAscending }
+            return $0.id < $1.id
         }
     }
 

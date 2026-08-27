@@ -258,6 +258,7 @@ final class AppModel {
     var snapshot = AppSnapshot()
     var destination: SidebarDestination = .servers
     var selectedServerID: UUID?
+    var selectedHostID: UUID?
     var selectedKeyID: String?
     var selectedKeyItemID: String?
     var selectedDeviceItemID: DevicePresence.ID?
@@ -286,6 +287,10 @@ final class AppModel {
     var tailscaleStatus: TailscaleStatus?
     var tailscaleDiscoveryState: TailscaleDiscoveryState = .idle
     var nodeAssociationCandidates: [String: [NodeAssociationCandidate]] = [:]
+    private(set) var hostV6Envelope: HostV6.MetadataEnvelope?
+    private(set) var hostV6PresentationMode: HostV6PresentationMode?
+    private(set) var isHostWorkbenchEnabled = false
+    private(set) var networkEpoch: UInt64 = 0
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
 
     private let store: SnapshotStore
@@ -302,6 +307,7 @@ final class AppModel {
     private let discoveryExecutor: any ProcessExecuting
     private let discoveryAdapter: any ListenerDiscoveryAdapter
     private let discoveryCoordinator: DiscoveryCoordinator
+    private let connectionHistory: ConnectionHistoryStore
     private let archiveService = MetadataArchiveService()
     private let audit = AuditLogService()
     private let clipboard = ClipboardService()
@@ -313,6 +319,7 @@ final class AppModel {
     private var activeDiscoveryOperations: [UUID: ActiveDiscoveryOperation] = [:]
     private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
     private var discoveryGeneration = 0
+    private var hostWorkbenchHistory: [ConnectionRecord] = []
 
     init(
         hostV6Runtime: HostV6Runtime? = nil,
@@ -347,6 +354,7 @@ final class AppModel {
         self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
         self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
         self.discoveryCoordinator = discoveryCoordinator
+        self.connectionHistory = .makeDefault(paths: paths)
     }
 
     var activeServers: [ServerConnection] {
@@ -372,6 +380,69 @@ final class AppModel {
                     .contains { $0.localizedLowercase.contains(needle) }
             }
         }
+    }
+
+    var activeHostRows: [HostV6.HostWorkbenchProjection.Row] {
+        guard let projection = hostWorkbenchProjection else { return [] }
+        guard !searchText.isEmpty else { return projection.rows }
+        let needle = searchText.localizedLowercase
+        return projection.rows.filter { row in
+            let addressValues = row.addresses.flatMap { address in
+                [address.address.normalizedHost, address.address.originalLabel]
+            }
+            let identityValues = row.identities.flatMap { [$0.username, $0.alias] }
+            let serviceValues = row.services.map(\.name)
+            return ([row.host.name, row.host.group] + addressValues + identityValues + serviceValues)
+                .contains { $0.localizedLowercase.contains(needle) }
+        }
+    }
+
+    var hostWorkbenchRows: [HostV6.HostWorkbenchProjection.Row] { activeHostRows }
+
+    var hostWorkbenchProjection: HostV6.HostWorkbenchProjection? {
+        guard isHostWorkbenchEnabled, let hostV6Envelope else { return nil }
+        return HostV6.HostWorkbenchProjection.make(
+            from: hostV6Envelope,
+            currentNetworkEpoch: networkEpoch,
+            history: hostWorkbenchHistory
+        )
+    }
+
+    var selectedHostRow: HostV6.HostWorkbenchProjection.Row? {
+        guard let selectedHostID else { return activeHostRows.first }
+        return activeHostRows.first { $0.id == selectedHostID }
+    }
+
+    var selectedHostAggregate: HostV6.HostAggregate? {
+        guard let selectedHostID else { return nil }
+        return hostWorkbenchProjection?.aggregates[selectedHostID]
+    }
+
+    func selectHost(_ hostID: UUID) {
+        selectedHostID = hostID
+        let identityID = hostWorkbenchProjection?.aggregates[hostID]?.identities
+            .filter { $0.deletedAt == nil }
+            .sorted {
+                let aliasOrder = $0.alias.localizedCaseInsensitiveCompare($1.alias)
+                if aliasOrder != .orderedSame { return aliasOrder == .orderedAscending }
+                let usernameOrder = $0.username.localizedCaseInsensitiveCompare($1.username)
+                if usernameOrder != .orderedSame { return usernameOrder == .orderedAscending }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            .first?.id
+        if let identityID { selectedServerID = identityID }
+    }
+
+    func setHostWorkbenchEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: HostV6RuntimeFeatureFlags.workbenchKey)
+        isHostWorkbenchEnabled = enabled && hostV6Envelope != nil
+        guard isHostWorkbenchEnabled else { return }
+        if selectedHostID == nil { selectedHostID = activeHostRows.first?.id }
+        if let selectedHostID { selectHost(selectedHostID) }
+    }
+
+    func updateNetworkEpoch(_ epoch: UInt64) {
+        networkEpoch = max(networkEpoch, epoch)
     }
 
     private var managedAliases: Set<String> {
@@ -734,6 +805,8 @@ final class AppModel {
         guard !isLoaded else { return }
         isInitialLoadInProgress = true
         do {
+            _ = try? await connectionHistory.recoverInterruptedInflight()
+            hostWorkbenchHistory = await connectionHistory.records(hostID: nil)
             let presentation: HostV6Presentation
             if let hostV6Runtime {
                 presentation = try await hostV6Runtime.loadPresentationSnapshot(from: store)
@@ -741,6 +814,10 @@ final class AppModel {
                 presentation = HostV6Presentation(snapshot: try await store.load(), mode: .canary)
             }
             snapshot = presentation.snapshot
+            hostV6Envelope = presentation.envelope
+            hostV6PresentationMode = presentation.mode
+            isHostWorkbenchEnabled = HostV6RuntimeFeatureFlags.isWorkbenchEnabled(defaults: defaults)
+                && presentation.envelope != nil
             isMetadataReadOnly = !presentation.mode.allowsLegacyWrites
             if presentation.mode.allowsLegacyWrites {
                 _ = try? await configService.adoptExistingManagedConfigBaseline(
@@ -756,6 +833,10 @@ final class AppModel {
             }
             await refreshPasswordAvailability()
             if selectedServerID == nil { selectedServerID = activeServers.first?.id }
+            if isHostWorkbenchEnabled {
+                if selectedHostID == nil { selectedHostID = activeHostRows.first?.id }
+                if let selectedHostID { selectHost(selectedHostID) }
+            }
             if selectedKeyItemID == nil {
                 selectedKeyItemID = keyServerRows.first?.id
                     ?? discoveredSSHConnections.first.map { "config:\($0.alias)" }
@@ -778,6 +859,9 @@ final class AppModel {
         } catch {
             isLoaded = true
             isInitialLoadInProgress = false
+            hostV6Envelope = nil
+            hostV6PresentationMode = nil
+            isHostWorkbenchEnabled = false
             if hostV6Runtime != nil {
                 isMetadataReadOnly = true
             }

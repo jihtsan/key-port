@@ -1,3 +1,5 @@
+import AppKit
+import KeyPortCore
 import SwiftUI
 
 struct SettingsView: View {
@@ -5,7 +7,9 @@ struct SettingsView: View {
     @AppStorage("KeyPort.clipboardClearSeconds") private var clipboardClearSeconds = 30.0
     @AppStorage("KeyPort.cloudSyncEnabled") private var cloudSyncEnabled = false
     @AppStorage("KeyPort.defaultPasswordSync") private var defaultPasswordSync = false
+    @AppStorage(UserDefaultsNetworkHintSettings.key) private var networkHintEnabled = false
     @State private var archivePassword = ""
+    @State private var networkHintStatus: NetworkHintResult = .disabled
 
     var body: some View {
         TabView {
@@ -17,6 +21,23 @@ struct SettingsView: View {
                 Section("SSH 文件") {
                     LabeledContent("托管配置", value: "~/.ssh/keyport/config")
                     LabeledContent("已知主机", value: "~/.ssh/keyport/known_hosts")
+                }
+                Section("网络提示") {
+                    Toggle("记录私网连接的 Wi-Fi 名称", isOn: $networkHintEnabled)
+                    LabeledContent("权限状态") {
+                        Label(networkHintStatus.displayTitle, systemImage: networkHintStatus.systemImage)
+                    }
+                    Text("仅保存在本机连接记录中，不影响 SSH 或服务访问。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if networkHintStatus.needsLocationSettings {
+                        Button {
+                            openLocationSettings()
+                        } label: {
+                            Label("打开位置服务设置", systemImage: "gearshape")
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -100,6 +121,52 @@ struct SettingsView: View {
         }
         .onChange(of: cloudSyncEnabled) { _, enabled in
             model.cloudSyncSettingChanged(enabled)
+        }
+        .task(id: networkHintEnabled) {
+            await updateNetworkHintStatus()
+        }
+    }
+
+    private func updateNetworkHintStatus() async {
+        let settings = UserDefaultsNetworkHintSettings()
+        networkHintStatus = await SystemNetworkHintProvider(settings: settings).currentSSID()
+    }
+
+    private func openLocationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+}
+
+private extension NetworkHintResult {
+    var displayTitle: String {
+        switch self {
+        case .available: "可用"
+        case .disabled: "已关闭"
+        case .notDetermined: "尚未授权"
+        case .denied: "已拒绝"
+        case .restricted: "受限制"
+        case .servicesDisabled: "系统服务已关闭"
+        case .unavailable: "不可用"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .available: "checkmark.circle"
+        case .disabled: "minus.circle"
+        case .notDetermined: "questionmark.circle"
+        case .denied, .restricted, .servicesDisabled: "location.slash"
+        case .unavailable: "wifi.slash"
+        }
+    }
+
+    var needsLocationSettings: Bool {
+        switch self {
+        case .notDetermined, .denied, .restricted, .servicesDisabled: true
+        case .available, .disabled, .unavailable: false
         }
     }
 }

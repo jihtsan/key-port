@@ -5,6 +5,8 @@ enum HostV6RuntimeFeatureFlags {
     static let canaryKey = "KeyPort.hostV6CanaryEnabled"
     static let cloudV2Key = "KeyPort.hostV6CloudV2Enabled"
     static let mutationWorkflowKey = "KeyPort.hostV6MutationWorkflowEnabled"
+    static let workbenchKey = "KeyPort.hostV6WorkbenchEnabled"
+    static let hostWorkbenchKey = workbenchKey
 
     static func isCanaryEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.bool(forKey: canaryKey)
@@ -16,6 +18,10 @@ enum HostV6RuntimeFeatureFlags {
 
     static func isMutationWorkflowEnabled(defaults: UserDefaults = .standard) -> Bool {
         defaults.bool(forKey: mutationWorkflowKey)
+    }
+
+    static func isWorkbenchEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: workbenchKey)
     }
 }
 
@@ -30,6 +36,17 @@ enum HostV6PresentationMode: Equatable, Sendable {
 struct HostV6Presentation: Sendable {
     let snapshot: AppSnapshot
     let mode: HostV6PresentationMode
+    let envelope: HostV6.MetadataEnvelope?
+
+    init(
+        snapshot: AppSnapshot,
+        mode: HostV6PresentationMode,
+        envelope: HostV6.MetadataEnvelope? = nil
+    ) {
+        self.snapshot = snapshot
+        self.mode = mode
+        self.envelope = envelope
+    }
 }
 
 actor HostV6Runtime {
@@ -118,12 +135,14 @@ actor HostV6Runtime {
         case .v6Authoritative:
             return HostV6Presentation(
                 snapshot: try compatibilitySnapshot(from: envelope),
-                mode: .authoritative
+                mode: .authoritative,
+                envelope: envelope
             )
         case .compatibilityRollback:
             return HostV6Presentation(
                 snapshot: try compatibilitySnapshot(from: envelope),
-                mode: .compatibilityRollback
+                mode: .compatibilityRollback,
+                envelope: envelope
             )
         }
     }

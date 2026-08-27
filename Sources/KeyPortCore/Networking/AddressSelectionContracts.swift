@@ -65,6 +65,7 @@ public struct AddressCandidate: Hashable, Sendable, Identifiable {
 /// network epoch, never stored: evidence from an older epoch is stale the
 /// moment the epoch moves (architecture 7.2).
 public enum ReachabilityState: String, Hashable, Sendable {
+    case unknown
     case reachable
     case unreachable
     case stale
