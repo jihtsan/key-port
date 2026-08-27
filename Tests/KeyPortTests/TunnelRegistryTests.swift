@@ -29,6 +29,8 @@ final class TunnelRegistryTests: XCTestCase {
             XCTFail("Target verification evidence was not recorded")
             return
         }
+        XCTAssertEqual(evidence.tunnelID, handle.id)
+        XCTAssertEqual(evidence.operationID, request.operationID)
         XCTAssertEqual(evidence.subject, request.subject)
         XCTAssertEqual(
             states[5],
@@ -53,6 +55,8 @@ final class TunnelRegistryTests: XCTestCase {
 
         XCTAssertEqual(handle.subject, request.subject)
         let evidence = try XCTUnwrap(handle.verificationEvidence)
+        XCTAssertEqual(evidence.tunnelID, handle.id)
+        XCTAssertEqual(evidence.operationID, request.operationID)
         XCTAssertEqual(evidence.subject, request.subject)
         XCTAssertTrue(evidence.isValid(at: evidence.verifiedAt.addingTimeInterval(1), networkEpoch: request.networkEpoch))
     }
@@ -84,6 +88,8 @@ final class TunnelRegistryTests: XCTestCase {
         XCTAssertNil(candidate.serviceID)
         XCTAssertNil(candidate.subject.serviceID)
         XCTAssertEqual(adopted.subject.serviceID, serviceID)
+        XCTAssertEqual(adopted.verificationEvidence?.tunnelID, candidate.id)
+        XCTAssertEqual(adopted.verificationEvidence?.operationID, request.operationID)
         XCTAssertEqual(adopted.verificationEvidence?.subject, adopted.subject)
 
         let savedRequest = TunnelRequest(
@@ -125,6 +131,8 @@ final class TunnelRegistryTests: XCTestCase {
             networkEpoch: request.networkEpoch
         )
         let evidence = TargetVerificationEvidence(
+            tunnelID: UUID(),
+            operationID: request.operationID,
             subject: mismatchedSubject,
             verifiedAt: Date(timeIntervalSince1970: 100)
         )
@@ -151,6 +159,41 @@ final class TunnelRegistryTests: XCTestCase {
         }
         let reserveCount = await allocator.reserveCount
         XCTAssertEqual(reserveCount, 1)
+        _ = await registry.close(id: candidate.id, reason: .userRequested)
+    }
+
+    func testAdoptRejectsEvidenceForAnotherTunnelWithTheSameSubject() async throws {
+        let request = makeRequest(serviceID: nil)
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41028]),
+            brokerLauncher: TestBroker(outcomes: [.success]),
+            leaseStore: TestLeaseStore()
+        )
+        let candidate = try await registry.open(request)
+        let evidence = try XCTUnwrap(candidate.verificationEvidence)
+        let swappedEvidence = TargetVerificationEvidence(
+            tunnelID: UUID(),
+            operationID: evidence.operationID,
+            subject: evidence.subject,
+            verifiedAt: evidence.verifiedAt,
+            expiresAt: evidence.expiresAt
+        )
+
+        do {
+            _ = try await registry.adopt(
+                tunnelID: candidate.id,
+                serviceID: UUID(),
+                evidence: swappedEvidence,
+                at: evidence.verifiedAt.addingTimeInterval(1)
+            )
+            XCTFail("Evidence from another tunnel unexpectedly adopted the candidate")
+        } catch let failure as TunnelOpenFailure {
+            XCTAssertEqual(failure.code, .targetProbeIndeterminate)
+        }
+
+        let reopened = try await registry.open(request)
+        XCTAssertEqual(reopened.id, candidate.id)
         _ = await registry.close(id: candidate.id, reason: .userRequested)
     }
 
