@@ -71,6 +71,9 @@ swift build
 # 运行核心检查和 AskPass FIFO 集成检查
 ./script/test.sh
 
+# 启动隔离本地 sshd 并验证 C4 隧道闭环
+./script/test_c4.sh
+
 # 组装、签名并启动 KeyPort.app，同时验证应用进程已启动
 ./script/build_and_run.sh --verify
 ```
@@ -166,6 +169,7 @@ script/           构建、打包和测试脚本
 
 ```bash
 ./script/test.sh
+./script/test_c4.sh
 ```
 
 更完整的本地检查：
@@ -176,7 +180,7 @@ git diff --check
 ./script/build_and_run.sh --verify
 ```
 
-其中 `./script/test.sh` 会执行 `KeyPortCoreChecks`、构建 `KeyPortAskPass`，并通过受保护 FIFO 验证 helper 只消费一次密码输入。
+其中 `./script/test.sh` 会执行 `KeyPortCoreChecks`、构建 `KeyPortAskPass`，并通过受保护 FIFO 验证 helper 只消费一次密码输入。`./script/test_c4.sh` 仅使用临时 key、loopback `sshd` 和临时端口，覆盖支持版本的前台 broker、IPv4/IPv6 target、open-confirm/open-failed、target response、stdin EOF 与端口清理；不支持 allow-list 的 OpenSSH 版本会安全跳过成功路径。
 
 ## 已知限制
 
