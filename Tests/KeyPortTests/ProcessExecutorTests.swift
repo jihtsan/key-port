@@ -11,12 +11,14 @@ final class ProcessExecutorTests: XCTestCase {
         timeout: TimeInterval = 10,
         maxOut: Int = 512 * 1024,
         maxErr: Int = 512 * 1024,
+        maxCombined: Int? = nil,
         grace: TimeInterval = 2
     ) -> ProcessExecutionLimits {
         ProcessExecutionLimits(
             timeout: timeout,
             maximumStdoutBytes: maxOut,
             maximumStderrBytes: maxErr,
+            maximumCombinedOutputBytes: maxCombined,
             terminationGrace: grace
         )
     }
@@ -76,6 +78,19 @@ final class ProcessExecutorTests: XCTestCase {
             return XCTFail("超过 stderr 上限必须是 outputLimitExceeded，实际 \(result.ending)")
         }
         XCTAssertLessThanOrEqual(result.stderr.count, 2048)
+    }
+
+    func testCombinedOutputLimitTerminatesWhenNeitherStreamIsIndividuallyOverLimit() async throws {
+        let result = try await executor.execute(ProcessExecutionRequest(
+            executable: "/bin/sh",
+            arguments: ["-c", "head -c 3000 /dev/zero; head -c 3000 /dev/zero >&2"],
+            limits: limits(maxOut: 4096, maxErr: 4096, maxCombined: 4096)
+        ))
+
+        guard case .outputLimitExceeded = result.ending else {
+            return XCTFail("stdout/stderr 总量超过上限必须终止，实际 \(result.ending)")
+        }
+        XCTAssertLessThanOrEqual(result.stdout.count + result.stderr.count, 4096)
     }
 
     func testTimeoutTerminatesCooperativeProcessWithTERM() async throws {

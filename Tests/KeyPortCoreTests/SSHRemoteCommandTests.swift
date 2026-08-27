@@ -39,6 +39,34 @@ final class SSHRemoteCommandTests: XCTestCase {
         )
     }
 
+    func testListenerCapabilityProbeIsFixedAndReadOnly() {
+        let spec = SSHRemoteCommand.listenerCapabilities.spec
+        let script = try! XCTUnwrap(spec.standardInputScript)
+
+        XCTAssertEqual(spec.remoteArguments, ["sh", "-s"])
+        XCTAssertTrue(script.contains("uname -s"))
+        XCTAssertTrue(script.contains("command -v ss"))
+        XCTAssertTrue(script.contains("command -v lsof"))
+        XCTAssertTrue(script.contains("/usr/sbin/lsof"))
+        XCTAssertFalse(script.contains("sudo"))
+        XCTAssertFalse(script.contains("docker"))
+        XCTAssertFalse(script.contains("podman"))
+    }
+
+    func testListenerSnapshotUsesOnlyFixedPlatformCommands() {
+        let spec = SSHRemoteCommand.listenerSnapshot.spec
+        let script = try! XCTUnwrap(spec.standardInputScript)
+
+        XCTAssertEqual(spec.remoteArguments, ["sh", "-s"])
+        XCTAssertTrue(script.contains("ss -H -lntp"))
+        XCTAssertTrue(script.contains("lsof -nP -a -iTCP -sTCP:LISTEN -F0pcnT"))
+        XCTAssertTrue(script.contains("exit 127"))
+        XCTAssertFalse(script.contains("$1"))
+        XCTAssertFalse(script.contains("sudo"))
+        XCTAssertFalse(script.contains("docker"))
+        XCTAssertFalse(script.contains("podman"))
+    }
+
     func testInstallAuthorizedKeyScriptKeepsBackupAtomicReplaceAndVerify() {
         guard let command = SSHRemoteCommand.installAuthorizedKey(publicKeyLine: publicKeyLine) else {
             return XCTFail("合法公钥必须能构造安装命令")

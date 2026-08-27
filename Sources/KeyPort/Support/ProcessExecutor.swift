@@ -8,6 +8,9 @@ struct ProcessExecutionLimits: Sendable, Equatable {
     var timeout: TimeInterval
     var maximumStdoutBytes: Int
     var maximumStderrBytes: Int
+    /// Optional combined stdout/stderr budget. A discovery command uses this
+    /// to keep the total bounded even when both pipes produce output.
+    var maximumCombinedOutputBytes: Int?
     /// 超限/超时/取消后先 SIGTERM，超过该宽限仍存活则 SIGKILL。
     var terminationGrace: TimeInterval
 
@@ -15,11 +18,13 @@ struct ProcessExecutionLimits: Sendable, Equatable {
         timeout: TimeInterval,
         maximumStdoutBytes: Int,
         maximumStderrBytes: Int,
+        maximumCombinedOutputBytes: Int? = nil,
         terminationGrace: TimeInterval = 2
     ) {
         self.timeout = timeout
         self.maximumStdoutBytes = maximumStdoutBytes
         self.maximumStderrBytes = maximumStderrBytes
+        self.maximumCombinedOutputBytes = maximumCombinedOutputBytes
         self.terminationGrace = terminationGrace
     }
 
@@ -27,7 +32,8 @@ struct ProcessExecutionLimits: Sendable, Equatable {
     static let sshDefault = ProcessExecutionLimits(
         timeout: 10,
         maximumStdoutBytes: 512 * 1024,
-        maximumStderrBytes: 512 * 1024
+        maximumStderrBytes: 512 * 1024,
+        maximumCombinedOutputBytes: 512 * 1024
     )
 }
 
@@ -176,6 +182,7 @@ private final class ProcessExecutionState: @unchecked Sendable {
     private var stderrData = Data()
     private var stdoutReceived = 0
     private var stderrReceived = 0
+    private var combinedReceived = 0
     private var stdoutEOF = false
     private var stderrEOF = false
     private var terminationReason: TerminationReason?
@@ -207,13 +214,22 @@ private final class ProcessExecutionState: @unchecked Sendable {
         }
         lock.lock()
         stdoutReceived += data.count
+        combinedReceived += data.count
         if stdoutData.count < limits.maximumStdoutBytes {
             let remaining = limits.maximumStdoutBytes - stdoutData.count
-            stdoutData.append(data.prefix(remaining))
+            let combinedRemaining = limits.maximumCombinedOutputBytes.map {
+                max(0, $0 - stdoutData.count - stderrData.count)
+            } ?? remaining
+            stdoutData.append(data.prefix(min(remaining, combinedRemaining)))
         }
-        let overflow = stdoutReceived > limits.maximumStdoutBytes
+        let streamOverflow = stdoutReceived > limits.maximumStdoutBytes
+        let combinedOverflow = limits.maximumCombinedOutputBytes.map {
+            combinedReceived > $0
+        } ?? false
         lock.unlock()
-        if overflow { requestTermination(reason: .outputLimitExceeded) }
+        if streamOverflow || combinedOverflow {
+            requestTermination(reason: .outputLimitExceeded)
+        }
     }
 
     func appendStderr(_ data: Data) {
@@ -225,13 +241,22 @@ private final class ProcessExecutionState: @unchecked Sendable {
         }
         lock.lock()
         stderrReceived += data.count
+        combinedReceived += data.count
         if stderrData.count < limits.maximumStderrBytes {
             let remaining = limits.maximumStderrBytes - stderrData.count
-            stderrData.append(data.prefix(remaining))
+            let combinedRemaining = limits.maximumCombinedOutputBytes.map {
+                max(0, $0 - stdoutData.count - stderrData.count)
+            } ?? remaining
+            stderrData.append(data.prefix(min(remaining, combinedRemaining)))
         }
-        let overflow = stderrReceived > limits.maximumStderrBytes
+        let streamOverflow = stderrReceived > limits.maximumStderrBytes
+        let combinedOverflow = limits.maximumCombinedOutputBytes.map {
+            combinedReceived > $0
+        } ?? false
         lock.unlock()
-        if overflow { requestTermination(reason: .outputLimitExceeded) }
+        if streamOverflow || combinedOverflow {
+            requestTermination(reason: .outputLimitExceeded)
+        }
     }
 
     /// 只记录第一个终止原因；重复调用幂等。
