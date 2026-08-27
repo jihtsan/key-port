@@ -16,6 +16,9 @@ struct KeyPortPaths: Sendable {
     var applicationSupport: URL {
         home.appendingPathComponent("Library/Application Support/KeyPort", isDirectory: true)
     }
+    var tunnelRuntimeDirectory: URL {
+        applicationSupport.appendingPathComponent("tunnel-runtime", isDirectory: true)
+    }
     var snapshot: URL { applicationSupport.appendingPathComponent("state-v1.json") }
     var connectionHistory: URL { applicationSupport.appendingPathComponent("history-v1.json") }
     var shadowMigrationRoot: URL {
@@ -33,6 +36,7 @@ struct KeyPortPaths: Sendable {
         try secureDirectory(keyPortDirectory)
         try secureDirectory(identitiesDirectory)
         try secureDirectory(applicationSupport)
+        try secureDirectory(tunnelRuntimeDirectory)
     }
 
     func prepareShadowMigrationDirectories() throws {
