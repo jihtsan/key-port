@@ -20,11 +20,12 @@ public extension HostV6 {
     }
 
     struct AuthorityC3Report: Codable, Hashable, Sendable {
-        public static let currentSchemaVersion = 1
+        public static let currentSchemaVersion = 2
 
         public var schemaVersion: Int
         public var deviceID: String
         public var teamIdentifier: String
+        public var signerCertificateSHA256: String
         public var completedRequirements: Set<AuthorityRequirement>
         public var acknowledgedDeviceIDs: [String]
         public var verifiedCloudPayloadHash: String
@@ -35,6 +36,7 @@ public extension HostV6 {
             schemaVersion: Int = currentSchemaVersion,
             deviceID: String,
             teamIdentifier: String,
+            signerCertificateSHA256: String,
             completedRequirements: Set<AuthorityRequirement>,
             acknowledgedDeviceIDs: [String],
             verifiedCloudPayloadHash: String,
@@ -44,6 +46,7 @@ public extension HostV6 {
             self.schemaVersion = schemaVersion
             self.deviceID = deviceID
             self.teamIdentifier = teamIdentifier
+            self.signerCertificateSHA256 = signerCertificateSHA256
             self.completedRequirements = completedRequirements
             self.acknowledgedDeviceIDs = Array(Set(acknowledgedDeviceIDs)).sorted()
             self.verifiedCloudPayloadHash = verifiedCloudPayloadHash
@@ -52,34 +55,69 @@ public extension HostV6 {
         }
     }
 
+    struct AuthoritySignedDeviceEvidence: Hashable, Sendable {
+        public let deviceID: String
+        public let signerCertificateSHA256: String
+        public let artifactDigest: String
+
+        package init(
+            deviceID: String,
+            signerCertificateSHA256: String,
+            artifactDigest: String
+        ) {
+            self.deviceID = deviceID
+            self.signerCertificateSHA256 = signerCertificateSHA256
+            self.artifactDigest = artifactDigest
+        }
+    }
+
     struct AuthorityActivationEvidence: Hashable, Sendable {
         public let completedRequirements: Set<AuthorityRequirement>
-        public let signedMacDeviceIDs: [String]
+        public let signedDevices: [AuthoritySignedDeviceEvidence]
         public let acknowledgedDeviceIDs: [String]
         public let verifiedCloudPayloadHash: String
         public let cloudChangeTag: String
         public let codeVersion: String
         public let signerTeamIdentifier: String
-        public let signedArtifactDigests: [String]
+
+        public var signedMacDeviceIDs: [String] { signedDevices.map(\.deviceID) }
+        public var signedArtifactDigests: [String] { signedDevices.map(\.artifactDigest) }
 
         package init(
             completedRequirements: Set<AuthorityRequirement>,
-            signedMacDeviceIDs: [String],
+            signedDevices: [AuthoritySignedDeviceEvidence],
             acknowledgedDeviceIDs: [String],
             verifiedCloudPayloadHash: String,
             cloudChangeTag: String,
             codeVersion: String,
-            signerTeamIdentifier: String,
-            signedArtifactDigests: [String]
+            signerTeamIdentifier: String
         ) {
             self.completedRequirements = completedRequirements
-            self.signedMacDeviceIDs = Array(Set(signedMacDeviceIDs)).sorted()
+            self.signedDevices = signedDevices.sorted {
+                ($0.deviceID, $0.signerCertificateSHA256, $0.artifactDigest)
+                    < ($1.deviceID, $1.signerCertificateSHA256, $1.artifactDigest)
+            }
             self.acknowledgedDeviceIDs = Array(Set(acknowledgedDeviceIDs)).sorted()
             self.verifiedCloudPayloadHash = verifiedCloudPayloadHash
             self.cloudChangeTag = cloudChangeTag
             self.codeVersion = codeVersion
             self.signerTeamIdentifier = signerTeamIdentifier
-            self.signedArtifactDigests = Array(Set(signedArtifactDigests)).sorted()
+        }
+    }
+
+    struct AuthorityCloudRoundTrip: Hashable, Sendable {
+        public let evidenceChangeTag: String
+        public let committedChangeTag: String
+        public let payloadHash: String
+
+        package init(
+            evidenceChangeTag: String,
+            committedChangeTag: String,
+            payloadHash: String
+        ) {
+            self.evidenceChangeTag = evidenceChangeTag
+            self.committedChangeTag = committedChangeTag
+            self.payloadHash = payloadHash
         }
     }
 
@@ -124,14 +162,29 @@ public extension HostV6 {
         public static func activate(
             envelope: MetadataEnvelope,
             legacyData: Data,
-            evidence: AuthorityActivationEvidence
+            evidence: AuthorityActivationEvidence,
+            cloudRoundTrip: AuthorityCloudRoundTrip
         ) throws -> AuthorityCommitPlan {
+            let signedDeviceIDs = evidence.signedDevices.map(\.deviceID)
+            let signerCertificateHashes = evidence.signedDevices.map(\.signerCertificateSHA256)
+            let signedArtifactDigests = evidence.signedDevices.map(\.artifactDigest)
             guard evidence.completedRequirements == Set(AuthorityRequirement.allCases),
-                  Set(evidence.signedMacDeviceIDs).count >= 2,
-                  evidence.signedArtifactDigests.count >= 2,
+                  evidence.signedDevices.count >= 2,
+                  Set(signedDeviceIDs).count == evidence.signedDevices.count,
+                  Set(signerCertificateHashes).count == evidence.signedDevices.count,
+                  Set(signedArtifactDigests).count == evidence.signedDevices.count,
+                  evidence.signedDevices.allSatisfy({
+                      !$0.deviceID.isEmpty
+                        && !$0.signerCertificateSHA256.isEmpty
+                        && !$0.artifactDigest.isEmpty
+                  }),
                   !evidence.signerTeamIdentifier.isEmpty,
                   !evidence.cloudChangeTag.isEmpty,
-                  !evidence.codeVersion.isEmpty else {
+                  !evidence.codeVersion.isEmpty,
+                  cloudRoundTrip.evidenceChangeTag == evidence.cloudChangeTag,
+                  cloudRoundTrip.payloadHash == evidence.verifiedCloudPayloadHash,
+                  !cloudRoundTrip.committedChangeTag.isEmpty,
+                  cloudRoundTrip.committedChangeTag != cloudRoundTrip.evidenceChangeTag else {
                 throw CloudV2Error.failure(.authorityGateFailed)
             }
             let activeDeviceIDs = Set(
@@ -139,7 +192,7 @@ public extension HostV6 {
             )
             let acknowledgedDeviceIDs = Set(evidence.acknowledgedDeviceIDs)
             guard activeDeviceIDs.isSubset(of: acknowledgedDeviceIDs),
-                  Set(evidence.signedMacDeviceIDs).isSubset(of: activeDeviceIDs) else {
+                  Set(signedDeviceIDs).isSubset(of: activeDeviceIDs) else {
                 throw CloudV2Error.failure(.mixedVersionPending)
             }
             guard envelope.schemaVersion == 6,
@@ -169,7 +222,7 @@ public extension HostV6 {
                 mode: .v6Authoritative,
                 v1Hash: CanonicalJSON.sha256(legacyData),
                 acknowledgedDeviceIDs: evidence.acknowledgedDeviceIDs,
-                cloudChangeTag: evidence.cloudChangeTag,
+                cloudChangeTag: cloudRoundTrip.committedChangeTag,
                 firstV6MutationID: nil,
                 codeVersion: evidence.codeVersion,
                 requiresCompleteCompatibilityProjection: true

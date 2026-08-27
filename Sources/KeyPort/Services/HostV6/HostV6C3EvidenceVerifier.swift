@@ -5,6 +5,7 @@ import Security
 struct HostV6VerifiedCMSArtifact: Sendable {
     let content: Data
     let signerTeamIdentifier: String
+    let signerCertificateSHA256: String
 }
 
 enum HostV6CertificateFieldParser {
@@ -37,25 +38,31 @@ protocol HostV6CMSArtifactVerifying: Sendable {
 struct HostV6C3EvidenceVerifier: Sendable {
     private let cmsVerifier: any HostV6CMSArtifactVerifying
     private let currentTeamIdentifier: @Sendable () -> String?
+    private let currentBuildIdentifier: @Sendable () -> String?
 
     init(
         cmsVerifier: any HostV6CMSArtifactVerifying = SecurityHostV6CMSArtifactVerifier(),
-        currentTeamIdentifier: @escaping @Sendable () -> String? = { CodeSigningInfo.teamIdentifier }
+        currentTeamIdentifier: @escaping @Sendable () -> String? = { CodeSigningInfo.teamIdentifier },
+        currentBuildIdentifier: @escaping @Sendable () -> String? = { CodeSigningInfo.uniqueBuildIdentifier }
     ) {
         self.cmsVerifier = cmsVerifier
         self.currentTeamIdentifier = currentTeamIdentifier
+        self.currentBuildIdentifier = currentBuildIdentifier
     }
 
     func verify(_ artifacts: [Data]) throws -> HostV6.AuthorityActivationEvidence {
         guard let expectedTeamIdentifier = currentTeamIdentifier(),
               !expectedTeamIdentifier.isEmpty,
+              let expectedBuildIdentifier = currentBuildIdentifier(),
+              !expectedBuildIdentifier.isEmpty,
               artifacts.count >= 2 else {
             throw gateFailure()
         }
 
         let verified = try artifacts.map { artifact -> (
             report: HostV6.AuthorityC3Report,
-            digest: String
+            digest: String,
+            signerCertificateSHA256: String
         ) in
             let signed = try cmsVerifier.verify(artifact)
             guard signed.signerTeamIdentifier == expectedTeamIdentifier else {
@@ -72,19 +79,27 @@ struct HostV6C3EvidenceVerifier: Sendable {
             }
             guard report.schemaVersion == HostV6.AuthorityC3Report.currentSchemaVersion,
                   report.teamIdentifier == expectedTeamIdentifier,
+                  !signed.signerCertificateSHA256.isEmpty,
+                  report.signerCertificateSHA256 == signed.signerCertificateSHA256,
                   report.completedRequirements == Set(HostV6.AuthorityRequirement.allCases),
                   !report.deviceID.isEmpty,
                   !report.verifiedCloudPayloadHash.isEmpty,
                   !report.cloudChangeTag.isEmpty,
-                  !report.codeVersion.isEmpty else {
+                  report.codeVersion == expectedBuildIdentifier else {
                 throw gateFailure()
             }
-            return (report, HostV6.CanonicalJSON.sha256(artifact))
+            return (
+                report,
+                HostV6.CanonicalJSON.sha256(artifact),
+                signed.signerCertificateSHA256
+            )
         }
 
         guard let baseline = verified.first?.report,
-              Set(verified.map(\.report.deviceID)).count >= 2,
-              Set(verified.map(\.digest)).count >= 2,
+              verified.count >= 2,
+              Set(verified.map(\.report.deviceID)).count == verified.count,
+              Set(verified.map(\.signerCertificateSHA256)).count == verified.count,
+              Set(verified.map(\.digest)).count == verified.count,
               verified.allSatisfy({ candidate in
                   candidate.report.completedRequirements == baseline.completedRequirements
                     && candidate.report.acknowledgedDeviceIDs == baseline.acknowledgedDeviceIDs
@@ -97,13 +112,18 @@ struct HostV6C3EvidenceVerifier: Sendable {
 
         return HostV6.AuthorityActivationEvidence(
             completedRequirements: baseline.completedRequirements,
-            signedMacDeviceIDs: verified.map(\.report.deviceID),
+            signedDevices: verified.map {
+                HostV6.AuthoritySignedDeviceEvidence(
+                    deviceID: $0.report.deviceID,
+                    signerCertificateSHA256: $0.signerCertificateSHA256,
+                    artifactDigest: $0.digest
+                )
+            },
             acknowledgedDeviceIDs: baseline.acknowledgedDeviceIDs,
             verifiedCloudPayloadHash: baseline.verifiedCloudPayloadHash,
             cloudChangeTag: baseline.cloudChangeTag,
             codeVersion: baseline.codeVersion,
-            signerTeamIdentifier: expectedTeamIdentifier,
-            signedArtifactDigests: verified.map(\.digest)
+            signerTeamIdentifier: expectedTeamIdentifier
         )
     }
 
@@ -161,7 +181,10 @@ struct SecurityHostV6CMSArtifactVerifier: HostV6CMSArtifactVerifying {
         }
         return HostV6VerifiedCMSArtifact(
             content: content as Data,
-            signerTeamIdentifier: teamIdentifier
+            signerTeamIdentifier: teamIdentifier,
+            signerCertificateSHA256: HostV6.CanonicalJSON.sha256(
+                SecCertificateCopyData(certificate) as Data
+            )
         )
     }
 

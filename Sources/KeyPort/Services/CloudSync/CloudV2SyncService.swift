@@ -36,6 +36,55 @@ actor HostV6CloudSyncCoordinator {
         self.importer = HostV6.ShadowMigrationEngine(currentDeviceID: currentDeviceID)
     }
 
+    func validateAuthorityRoundTrip(
+        _ local: HostV6.MetadataEnvelope,
+        evidence: HostV6.AuthorityActivationEvidence
+    ) async throws -> HostV6.AuthorityCloudRoundTrip {
+        do {
+            guard local.migrationProvenance.authorityManifest == nil else {
+                throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+            }
+            let expectedPayload = try HostV6.CloudPayloadCodec.encode(local)
+            let payloadHash = HostV6.CanonicalJSON.sha256(expectedPayload)
+            guard payloadHash == evidence.verifiedCloudPayloadHash,
+                  let current = try await transport.fetchV2(),
+                  current.changeTag == evidence.cloudChangeTag,
+                  current.payload == expectedPayload else {
+                throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+            }
+            _ = try strictPayload(current.payload)
+
+            let saved = try await transport.saveV2(
+                expectedPayload,
+                replacing: current.changeTag
+            )
+            guard !saved.changeTag.isEmpty,
+                  saved.changeTag != current.changeTag,
+                  saved.payload == expectedPayload,
+                  let readBack = try await transport.fetchV2(),
+                  readBack == saved,
+                  HostV6.CanonicalJSON.sha256(readBack.payload) == payloadHash else {
+                throw HostV6.CloudV2Error.failure(.concurrentConflict)
+            }
+            _ = try strictPayload(readBack.payload)
+            return HostV6.AuthorityCloudRoundTrip(
+                evidenceChangeTag: current.changeTag,
+                committedChangeTag: readBack.changeTag,
+                payloadHash: payloadHash
+            )
+        } catch HostV6CloudTransportError.conflict {
+            throw HostV6.CloudV2Error.failure(.concurrentConflict)
+        } catch HostV6CloudTransportError.cloud(let error) {
+            throw error
+        } catch HostV6CloudTransportError.malformedRecord {
+            throw CloudSyncError.malformedRecord
+        } catch HostV6CloudTransportError.operationFailed {
+            throw CloudSyncError.operationFailed
+        } catch is CancellationError {
+            throw CloudSyncError.cancelled
+        }
+    }
+
     func synchronize(_ local: HostV6.MetadataEnvelope) async throws -> HostV6CloudSyncResult {
         if local.migrationProvenance.authorityManifest?.mode == .compatibilityRollback {
             throw HostV6.CloudV2Error.failure(.authorityGateFailed)

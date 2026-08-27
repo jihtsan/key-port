@@ -584,6 +584,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         let reportA = HostV6.AuthorityC3Report(
             deviceID: "device-a",
             teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
             completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
             acknowledgedDeviceIDs: ["device-a", "device-b"],
             verifiedCloudPayloadHash: payloadHash,
@@ -592,6 +593,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         )
         var reportB = reportA
         reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
         let artifactA = Data("signed-c3-a".utf8)
         let artifactB = Data("signed-c3-b".utf8)
         let evidenceDirectory = paths.applicationSupport
@@ -607,15 +609,22 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             cmsVerifier: StubCMSArtifactVerifier(contents: [
                 artifactA: .init(
                     content: try HostV6.CanonicalJSON.encode(reportA),
-                    signerTeamIdentifier: "TEAMID1234"
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-a"
                 ),
                 artifactB: .init(
                     content: try HostV6.CanonicalJSON.encode(reportB),
-                    signerTeamIdentifier: "TEAMID1234"
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-b"
                 ),
             ]),
-            currentTeamIdentifier: { "TEAMID1234" }
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-c3" }
         )
+        let cloudTransport = AuthorityRoundTripCloudV2Transport(remote: .init(
+            payload: try HostV6.CloudPayloadCodec.encode(bundle.envelope),
+            changeTag: "cloud-tag-c3"
+        ))
         defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
         defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
         defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
@@ -623,7 +632,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             currentDeviceID: "device-a",
             defaults: defaults,
             paths: paths,
-            evidenceVerifier: verifier
+            evidenceVerifier: verifier,
+            cloudTransport: cloudTransport
         ))
 
         let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
@@ -631,6 +641,11 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertEqual(presentation.mode, .authoritative)
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.stateV6.path))
+        let committedManifest = try HostV6.CanonicalJSON.decode(
+            HostV6.AuthorityManifest.self,
+            from: Data(contentsOf: paths.authorityManifest)
+        )
+        XCTAssertEqual(committedManifest.cloudChangeTag, "cloud-tag-committed")
         do {
             try await runtime.authorizeLegacyWrite()
             XCTFail("Expected v1 write authority to be revoked")
@@ -665,7 +680,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             paths: paths,
             evidenceVerifier: HostV6C3EvidenceVerifier(
                 cmsVerifier: StubCMSArtifactVerifier(contents: [:]),
-                currentTeamIdentifier: { "TEAMID1234" }
+                currentTeamIdentifier: { "TEAMID1234" },
+                currentBuildIdentifier: { "unused-invalid-artifact" }
             )
         ))
 
@@ -701,6 +717,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         let reportA = HostV6.AuthorityC3Report(
             deviceID: "device-a",
             teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
             completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
             acknowledgedDeviceIDs: ["device-a", "device-b"],
             verifiedCloudPayloadHash: payloadHash,
@@ -709,6 +726,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         )
         var reportB = reportA
         reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
         let artifactA = Data("signed-config-mismatch-a".utf8)
         let artifactB = Data("signed-config-mismatch-b".utf8)
         try FileManager.default.createDirectory(
@@ -722,14 +740,17 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             cmsVerifier: StubCMSArtifactVerifier(contents: [
                 artifactA: .init(
                     content: try HostV6.CanonicalJSON.encode(reportA),
-                    signerTeamIdentifier: "TEAMID1234"
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-a"
                 ),
                 artifactB: .init(
                     content: try HostV6.CanonicalJSON.encode(reportB),
-                    signerTeamIdentifier: "TEAMID1234"
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-b"
                 ),
             ]),
-            currentTeamIdentifier: { "TEAMID1234" }
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-c3" }
         )
         defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
         defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
@@ -894,6 +915,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         let reportA = HostV6.AuthorityC3Report(
             deviceID: "device-a",
             teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
             completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
             acknowledgedDeviceIDs: ["device-a", "device-b"],
             verifiedCloudPayloadHash: "payload-hash",
@@ -902,15 +924,25 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         )
         var reportB = reportA
         reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
         let artifactA = Data("signed-a".utf8)
         let artifactB = Data("signed-b".utf8)
         let cms = StubCMSArtifactVerifier(contents: [
-            artifactA: .init(content: try HostV6.CanonicalJSON.encode(reportA), signerTeamIdentifier: "TEAMID1234"),
-            artifactB: .init(content: try HostV6.CanonicalJSON.encode(reportB), signerTeamIdentifier: "TEAMID1234"),
+            artifactA: .init(
+                content: try HostV6.CanonicalJSON.encode(reportA),
+                signerTeamIdentifier: "TEAMID1234",
+                signerCertificateSHA256: "certificate-a"
+            ),
+            artifactB: .init(
+                content: try HostV6.CanonicalJSON.encode(reportB),
+                signerTeamIdentifier: "TEAMID1234",
+                signerCertificateSHA256: "certificate-b"
+            ),
         ])
         let verifier = HostV6C3EvidenceVerifier(
             cmsVerifier: cms,
-            currentTeamIdentifier: { "TEAMID1234" }
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-test" }
         )
 
         let evidence = try verifier.verify([artifactA, artifactB])
@@ -924,6 +956,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         let reportA = HostV6.AuthorityC3Report(
             deviceID: "device-a",
             teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
             completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
             acknowledgedDeviceIDs: ["device-a", "device-b"],
             verifiedCloudPayloadHash: "payload-hash",
@@ -932,21 +965,100 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         )
         var reportB = reportA
         reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
         let artifactA = Data("signed-by-current-team".utf8)
         let artifactB = Data("signed-by-other-team".utf8)
         let cms = StubCMSArtifactVerifier(contents: [
             artifactA: .init(
                 content: try HostV6.CanonicalJSON.encode(reportA),
-                signerTeamIdentifier: "TEAMID1234"
+                signerTeamIdentifier: "TEAMID1234",
+                signerCertificateSHA256: "certificate-a"
             ),
             artifactB: .init(
                 content: try HostV6.CanonicalJSON.encode(reportB),
-                signerTeamIdentifier: "OTHERTEAM"
+                signerTeamIdentifier: "OTHERTEAM",
+                signerCertificateSHA256: "certificate-b"
             ),
         ])
         let verifier = HostV6C3EvidenceVerifier(
             cmsVerifier: cms,
-            currentTeamIdentifier: { "TEAMID1234" }
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-test" }
+        )
+
+        XCTAssertThrowsError(try verifier.verify([artifactA, artifactB])) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
+    func testC3EvidenceVerifierRejectsReportFromStaleRuntimeBuild() throws {
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: "payload-hash",
+            cloudChangeTag: "change-tag",
+            codeVersion: "build-stale"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
+        let artifactA = Data("stale-build-a".utf8)
+        let artifactB = Data("stale-build-b".utf8)
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [
+                artifactA: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportA),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-a"
+                ),
+                artifactB: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportB),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-b"
+                ),
+            ]),
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "build-current" }
+        )
+
+        XCTAssertThrowsError(try verifier.verify([artifactA, artifactB])) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
+    func testC3EvidenceVerifierRejectsTwoDeviceIDsFromTheSameCertificate() throws {
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-same",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: "payload-hash",
+            cloudChangeTag: "change-tag",
+            codeVersion: "build-current"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        let artifactA = Data("same-certificate-a".utf8)
+        let artifactB = Data("same-certificate-b".utf8)
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [
+                artifactA: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportA),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-same"
+                ),
+                artifactB: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportB),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-same"
+                ),
+            ]),
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "build-current" }
         )
 
         XCTAssertThrowsError(try verifier.verify([artifactA, artifactB])) { error in
@@ -1231,18 +1343,34 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             from: envelope,
             requiresCompleteRoutes: true
         ).data
+        let evidence = HostV6.AuthorityActivationEvidence(
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            signedDevices: [
+                .init(
+                    deviceID: "device-a",
+                    signerCertificateSHA256: "certificate-a",
+                    artifactDigest: "artifact-a"
+                ),
+                .init(
+                    deviceID: "device-b",
+                    signerCertificateSHA256: "certificate-b",
+                    artifactDigest: "artifact-b"
+                ),
+            ],
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+            cloudChangeTag: "tag-1",
+            codeVersion: "6-test",
+            signerTeamIdentifier: "TEAMID1234"
+        )
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
-            evidence: .init(
-                completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
-                signedMacDeviceIDs: ["device-a", "device-b"],
-                acknowledgedDeviceIDs: ["device-a", "device-b"],
-                verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
-                cloudChangeTag: "tag-1",
-                codeVersion: "6-test",
-                signerTeamIdentifier: "TEAMID1234",
-                signedArtifactDigests: ["artifact-a", "artifact-b"]
+            evidence: evidence,
+            cloudRoundTrip: .init(
+                evidenceChangeTag: evidence.cloudChangeTag,
+                committedChangeTag: "tag-committed",
+                payloadHash: evidence.verifiedCloudPayloadHash
             )
         ).envelope
     }
@@ -1468,6 +1596,26 @@ private actor EmptyCloudV2Transport: HostV6CloudV2Transport {
     func fetchLegacyV1() async throws -> Data? { nil }
     func saveV2(_ payload: Data, replacing changeTag: String?) async throws -> HostV6CloudRecord {
         HostV6CloudRecord(payload: payload, changeTag: "tag-test")
+    }
+}
+
+private actor AuthorityRoundTripCloudV2Transport: HostV6CloudV2Transport {
+    private var remote: HostV6CloudRecord?
+
+    init(remote: HostV6CloudRecord?) {
+        self.remote = remote
+    }
+
+    func fetchV2() async throws -> HostV6CloudRecord? { remote }
+    func fetchLegacyV1() async throws -> Data? { nil }
+
+    func saveV2(_ payload: Data, replacing changeTag: String?) async throws -> HostV6CloudRecord {
+        guard remote?.changeTag == changeTag else {
+            throw HostV6CloudTransportError.conflict
+        }
+        let saved = HostV6CloudRecord(payload: payload, changeTag: "cloud-tag-committed")
+        remote = saved
+        return saved
     }
 }
 

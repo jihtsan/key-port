@@ -6,6 +6,14 @@ enum CodeSigningInfo {
         signingInformation?[kSecCodeInfoTeamIdentifier] as? String
     }
 
+    static var uniqueBuildIdentifier: String? {
+        guard let value = signingInformation?[kSecCodeInfoUnique] as? Data,
+              !value.isEmpty else {
+            return nil
+        }
+        return value.map { String(format: "%02x", $0) }.joined()
+    }
+
     static func entitlementValue(_ key: String) -> Any? {
         guard let entitlements = signingInformation?[kSecCodeInfoEntitlementsDict] as? NSDictionary else {
             return nil
