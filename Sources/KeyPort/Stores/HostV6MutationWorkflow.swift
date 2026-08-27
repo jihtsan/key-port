@@ -13,6 +13,7 @@ protocol HostV6MutationWorkflowJournalStoring: Sendable {
 }
 
 protocol HostV6MutationEffectApplying: Sendable {
+    func closeTunnels(_ effects: [HostV6.PendingExternalEffect]) async throws
     func rebuildSSHConfig(from envelope: HostV6.MetadataEnvelope) async throws
     func rebuildKnownHosts(from envelope: HostV6.MetadataEnvelope) async throws
     func deleteCredentials(_ identityIDs: [UUID]) async throws
@@ -25,6 +26,7 @@ enum HostV6MutationPhase: String, Codable, CaseIterable, Sendable {
     case remoteResultRecorded
     case prepared
     case modelSnapshotCommitted
+    case tunnelCleanupCommitted
     case sshConfigCommitted
     case knownHostsCommitted
     case credentialCleanupCommitted
@@ -345,6 +347,21 @@ actor HostV6MutationWorkflow: HostV6MetadataRepositoryPort {
             try await advance(&journal, to: .modelSnapshotCommitted)
         }
         if journal.phase == .modelSnapshotCommitted {
+            let tunnelEffects = tunnelEffects(in: journal.result)
+            if let warning = try await performCommittedStep(
+                &journal,
+                nextPhase: .tunnelCleanupCommitted,
+                warning: .cleanupPending,
+                operation: {
+                    if !tunnelEffects.isEmpty {
+                        try await self.effects.closeTunnels(tunnelEffects)
+                    }
+                }
+            ) {
+                return warning
+            }
+        }
+        if journal.phase == .tunnelCleanupCommitted {
             let shouldRebuildSSHConfig = journal.result.pendingEffects.contains(.rebuildSSHConfig)
             if let warning = try await performCommittedStep(
                 &journal,
@@ -484,6 +501,19 @@ actor HostV6MutationWorkflow: HostV6MetadataRepositoryPort {
             guard case .deleteCredential(let identityID) = effect else { return nil }
             return identityID
         }.sorted { $0.uuidString < $1.uuidString }
+    }
+
+    private func tunnelEffects(
+        in result: HostV6.ModelCommandResult
+    ) -> [HostV6.PendingExternalEffect] {
+        result.pendingEffects.filter { effect in
+            switch effect {
+            case .closeHostTunnels, .closeIdentityTunnels, .closeAddressTunnels, .closeServiceTunnel:
+                true
+            default:
+                false
+            }
+        }
     }
 
     private func privateKeyIDs(in result: HostV6.ModelCommandResult) -> [String] {

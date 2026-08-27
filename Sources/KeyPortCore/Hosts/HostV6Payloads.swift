@@ -39,24 +39,23 @@ public extension HostV6 {
         public static func decode(_ data: Data) throws -> CloudPayloadDecodeResult {
             let rawObject = try JSONSerialization.jsonObject(with: data)
             let unexpectedFields = scanUnexpectedFields(in: rawObject)
+            guard unexpectedFields.isEmpty else {
+                throw CloudV2Error.unexpectedFields(unexpectedFields)
+            }
             var payload = try CanonicalJSON.decode(CloudPayload.self, from: data)
             payload.synced.removeUnexpectedMergeCandidateFields()
+            guard payload.schemaVersion == 6 else {
+                throw CloudV2Error.failure(.decodeFailed)
+            }
             return CloudPayloadDecodeResult(
                 payload: payload,
-                diagnosticCodes: unexpectedFields.isEmpty ? [] : [.unexpectedCloudField],
-                unexpectedFieldPaths: unexpectedFields
+                diagnosticCodes: [],
+                unexpectedFieldPaths: []
             )
         }
 
         public static func decodeStrict(_ data: Data) throws -> CloudPayload {
-            let result = try decode(data)
-            guard result.unexpectedFieldPaths.isEmpty else {
-                throw CloudV2Error.unexpectedFields(result.unexpectedFieldPaths)
-            }
-            guard result.payload.schemaVersion == 6 else {
-                throw CloudV2Error.failure(.decodeFailed)
-            }
-            return result.payload
+            try decode(data).payload
         }
 
         private static func scanUnexpectedFields(in object: Any) -> [String] {

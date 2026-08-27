@@ -19,21 +19,58 @@ public extension HostV6 {
         case derivedArtifactSemanticDiff
     }
 
-    struct AuthorityActivationEvidence: Hashable, Sendable {
+    struct AuthorityC3Report: Codable, Hashable, Sendable {
+        public static let currentSchemaVersion = 1
+
+        public var schemaVersion: Int
+        public var deviceID: String
+        public var teamIdentifier: String
         public var completedRequirements: Set<AuthorityRequirement>
-        public var signedMacDeviceIDs: [String]
         public var acknowledgedDeviceIDs: [String]
         public var verifiedCloudPayloadHash: String
         public var cloudChangeTag: String
         public var codeVersion: String
 
         public init(
+            schemaVersion: Int = currentSchemaVersion,
+            deviceID: String,
+            teamIdentifier: String,
+            completedRequirements: Set<AuthorityRequirement>,
+            acknowledgedDeviceIDs: [String],
+            verifiedCloudPayloadHash: String,
+            cloudChangeTag: String,
+            codeVersion: String
+        ) {
+            self.schemaVersion = schemaVersion
+            self.deviceID = deviceID
+            self.teamIdentifier = teamIdentifier
+            self.completedRequirements = completedRequirements
+            self.acknowledgedDeviceIDs = Array(Set(acknowledgedDeviceIDs)).sorted()
+            self.verifiedCloudPayloadHash = verifiedCloudPayloadHash
+            self.cloudChangeTag = cloudChangeTag
+            self.codeVersion = codeVersion
+        }
+    }
+
+    struct AuthorityActivationEvidence: Hashable, Sendable {
+        public let completedRequirements: Set<AuthorityRequirement>
+        public let signedMacDeviceIDs: [String]
+        public let acknowledgedDeviceIDs: [String]
+        public let verifiedCloudPayloadHash: String
+        public let cloudChangeTag: String
+        public let codeVersion: String
+        public let signerTeamIdentifier: String
+        public let signedArtifactDigests: [String]
+
+        package init(
             completedRequirements: Set<AuthorityRequirement>,
             signedMacDeviceIDs: [String],
             acknowledgedDeviceIDs: [String],
             verifiedCloudPayloadHash: String,
             cloudChangeTag: String,
-            codeVersion: String
+            codeVersion: String,
+            signerTeamIdentifier: String,
+            signedArtifactDigests: [String]
         ) {
             self.completedRequirements = completedRequirements
             self.signedMacDeviceIDs = Array(Set(signedMacDeviceIDs)).sorted()
@@ -41,6 +78,8 @@ public extension HostV6 {
             self.verifiedCloudPayloadHash = verifiedCloudPayloadHash
             self.cloudChangeTag = cloudChangeTag
             self.codeVersion = codeVersion
+            self.signerTeamIdentifier = signerTeamIdentifier
+            self.signedArtifactDigests = Array(Set(signedArtifactDigests)).sorted()
         }
     }
 
@@ -89,6 +128,8 @@ public extension HostV6 {
         ) throws -> AuthorityCommitPlan {
             guard evidence.completedRequirements == Set(AuthorityRequirement.allCases),
                   Set(evidence.signedMacDeviceIDs).count >= 2,
+                  evidence.signedArtifactDigests.count >= 2,
+                  !evidence.signerTeamIdentifier.isEmpty,
                   !evidence.cloudChangeTag.isEmpty,
                   !evidence.codeVersion.isEmpty else {
                 throw CloudV2Error.failure(.authorityGateFailed)
@@ -110,6 +151,16 @@ public extension HostV6 {
             }
             let cloudPayload = try CloudPayloadCodec.encode(envelope)
             guard CanonicalJSON.sha256(cloudPayload) == evidence.verifiedCloudPayloadHash else {
+                throw CloudV2Error.failure(.authorityGateFailed)
+            }
+            let projection = try compatibilityProjection(
+                from: envelope,
+                requiresCompleteRoutes: true
+            )
+            guard try compatibilitySemanticData(projection.snapshot)
+                    == compatibilitySemanticData(decodedLegacySnapshot(legacyData)),
+                  try sshRouteSemanticData(projection.snapshot)
+                    == sshRouteSemanticData(decodedLegacySnapshot(legacyData)) else {
                 throw CloudV2Error.failure(.authorityGateFailed)
             }
 
@@ -250,7 +301,7 @@ public extension HostV6 {
                 )
                 guard hash == manifest.v6Hash,
                       hash == manifest.checkpointHash,
-                      CanonicalJSON.sha256(projection.data) == manifest.compatibilityHash,
+                      try compatibilitySemanticHash(projection.snapshot) == manifest.compatibilityHash,
                       projection.notRepresentable == manifest.notRepresentable else {
                     throw CloudV2Error.failure(.rollbackProjectionInvalid)
                 }
@@ -299,7 +350,7 @@ public extension HostV6 {
                     tailscaleIdentity: device.tailscaleIdentity
                 )
             }.sorted { $0.id < $1.id }
-            snapshot.keys = envelope.synced.sshKeys.map { key in
+            snapshot.keys = envelope.synced.sshKeys.filter { $0.deletedAt == nil }.map { key in
                 let local = localKeys[key.id]
                 return LegacySSHKeyRecord(
                     id: key.id,
@@ -384,7 +435,7 @@ public extension HostV6 {
                 mode: mode,
                 v1Hash: v1Hash,
                 v6Hash: hash,
-                compatibilityHash: CanonicalJSON.sha256(projection.data),
+                compatibilityHash: try compatibilitySemanticHash(projection.snapshot),
                 checkpointHash: hash,
                 acknowledgedDeviceIDs: acknowledgedDeviceIDs,
                 cloudChangeTag: cloudChangeTag,
@@ -408,7 +459,98 @@ public extension HostV6 {
         private static func contentHash(_ envelope: MetadataEnvelope) throws -> String {
             var content = envelope
             content.migrationProvenance.authorityManifest = nil
-            return CanonicalJSON.sha256(try CanonicalJSON.encode(content))
+            return CanonicalJSON.sha256(try CanonicalJSON.encode(CloudPayload(envelope: content)))
+        }
+
+        public static func compatibilitySemanticHash(_ snapshot: AppSnapshot) throws -> String {
+            CanonicalJSON.sha256(try compatibilitySemanticData(
+                cloudStableCompatibilitySnapshot(snapshot)
+            ))
+        }
+
+        private static func decodedLegacySnapshot(_ data: Data) throws -> AppSnapshot {
+            do {
+                var snapshot = try CanonicalJSON.decode(AppSnapshot.self, from: data)
+                guard (1...5).contains(snapshot.schemaVersion) else {
+                    throw CloudV2Error.failure(.authorityGateFailed)
+                }
+                snapshot.migrateNodeAssociationsSchemaIfNeeded()
+                return snapshot
+            } catch let error as CloudV2Error {
+                throw error
+            } catch {
+                throw CloudV2Error.failure(.authorityGateFailed)
+            }
+        }
+
+        private static func compatibilitySemanticData(_ snapshot: AppSnapshot) throws -> Data {
+            var normalized = snapshot
+            normalized.schemaVersion = 5
+            for index in normalized.servers.indices {
+                normalized.servers[index].confirmedHostKeys.sort {
+                    ($0.algorithm, $0.fingerprint, $0.knownHostsLine)
+                        < ($1.algorithm, $1.fingerprint, $1.knownHostsLine)
+                }
+            }
+            normalized.servers.sort { $0.id.uuidString < $1.id.uuidString }
+            normalized.devices.sort { $0.id < $1.id }
+            normalized.keys.sort { $0.id < $1.id }
+            normalized.authorizations.sort { $0.id < $1.id }
+            normalized.nodeAssociations.sort { $0.id < $1.id }
+            return try CanonicalJSON.encode(normalized)
+        }
+
+        private struct SSHRouteSemantic: Codable {
+            let identityID: UUID
+            let alias: String
+            let host: String
+            let port: Int
+            let username: String
+            let identityPath: String?
+            let knownHostsLines: [String]
+        }
+
+        private static func sshRouteSemanticData(_ snapshot: AppSnapshot) throws -> Data {
+            let keys = Dictionary(uniqueKeysWithValues: snapshot.keys.map { ($0.id, $0) })
+            let authorizations = Dictionary(grouping: snapshot.authorizations.filter {
+                !$0.isDeleted && $0.status == .authorized
+            }, by: \.serverID)
+            let routes = snapshot.servers.filter { !$0.isDeleted }.map { server in
+                let authorization = authorizations[server.id]?.sorted { $0.id < $1.id }.first
+                return SSHRouteSemantic(
+                    identityID: server.id,
+                    alias: server.alias,
+                    host: server.host,
+                    port: server.port,
+                    username: server.username,
+                    identityPath: authorization.flatMap { keys[$0.keyID]?.privateKeyPath },
+                    knownHostsLines: server.confirmedHostKeys.map(\.knownHostsLine).sorted()
+                )
+            }.sorted { $0.identityID.uuidString < $1.identityID.uuidString }
+            return try CanonicalJSON.encode(routes)
+        }
+
+        private static func cloudStableCompatibilitySnapshot(_ snapshot: AppSnapshot) -> AppSnapshot {
+            var stable = snapshot
+            for index in stable.servers.indices {
+                stable.servers[index].notes = ""
+                stable.servers[index].status = .hostKeyPending
+                stable.servers[index].statusDetail = nil
+                stable.servers[index].lastCheckedAt = nil
+                stable.servers[index].passwordCheck = nil
+                stable.servers[index].keyCheck = nil
+                stable.servers[index].machineConfigurationRefreshAttemptedAt = nil
+            }
+            for index in stable.devices.indices {
+                stable.devices[index].isCurrent = false
+            }
+            for index in stable.keys.indices {
+                stable.keys[index].privateKeyPath = nil
+                stable.keys[index].isInAgent = false
+                stable.keys[index].isLocallyAvailable = false
+            }
+            stable.auditEvents = []
+            return stable
         }
 
         private static func legacyAuthorizationStatus(_ value: HostV6.Authorization) -> AuthorizationStatus {
@@ -438,6 +580,9 @@ public extension HostV6 {
             projectedIdentityIDs: Set<UUID>
         ) -> [EntityReference] {
             var result = Set(envelope.synced.services.map { EntityReference.service($0.id) })
+            result.formUnion(envelope.synced.sshKeys.lazy
+                .filter { $0.deletedAt != nil }
+                .map { .sshKeyRecord($0.id) })
             let representedHostIDs = Set(envelope.synced.identities.lazy
                 .filter { projectedIdentityIDs.contains($0.id) }
                 .map(\.hostID))

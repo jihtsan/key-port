@@ -88,7 +88,8 @@ actor HostV6AuthorityFileStore {
                 requiresCompleteRoutes: false
             )
             let currentCompatibility = try? Data(contentsOf: paths.stateV1Compatibility)
-            if currentCompatibility.map(HostV6.CanonicalJSON.sha256) != embedded.compatibilityHash {
+            if currentCompatibility.map(HostV6.CanonicalJSON.sha256)
+                != HostV6.CanonicalJSON.sha256(projection.data) {
                 try atomicReplace(projection.data, at: paths.stateV1Compatibility)
             }
             return envelope
@@ -170,7 +171,9 @@ actor HostV6AuthorityFileStore {
         )
         guard state == plan.envelope,
               state.migrationProvenance.authorityManifest == plan.manifest,
-              HostV6.CanonicalJSON.sha256(plan.compatibilityData) == plan.manifest.compatibilityHash else {
+              plan.compatibilityData == (try HostV6.CanonicalJSON.encode(plan.compatibilitySnapshot)),
+              try HostV6.AuthorityController.compatibilitySemanticHash(plan.compatibilitySnapshot)
+                == plan.manifest.compatibilityHash else {
             throw HostV6.CloudV2Error.failure(.rollbackProjectionInvalid)
         }
         let checkpoint = try HostV6.AuthorityController.verifyCheckpoint(plan.checkpointData)

@@ -8,6 +8,13 @@ final class HostV6MutationWorkflowTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_787_616_000)
     private let hostID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
 
+    private static var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
     func testMutationRunsJournaledEffectsInRequiredOrderAndDeduplicatesCommandID() async throws {
         let fixture = try makeFixture()
         let command = try deleteHostCommand(envelope: fixture.envelope)
@@ -18,6 +25,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertEqual(first.commandID, command.context.commandID)
         XCTAssertEqual(eventValues, [
             "modelSnapshot",
+            "tunnelCleanup",
             "sshConfig",
             "knownHosts",
             "credentialCleanup",
@@ -75,7 +83,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             XCTAssertEqual(recovered?.warnings, [])
             let expectedEvents = usesPrivateKeyCleanup
                 ? ["modelSnapshot", "privateKeyCleanup", "cloudV2"]
-                : ["modelSnapshot", "sshConfig", "knownHosts", "credentialCleanup", "cloudV2"]
+                : ["modelSnapshot", "tunnelCleanup", "sshConfig", "knownHosts", "credentialCleanup", "cloudV2"]
             XCTAssertEqual(eventValues, expectedEvents, "Incorrect recovery order at \(point.rawValue)")
             let committed = try await fixture.authority.recover()
             let committedStamp = usesPrivateKeyCleanup
@@ -236,6 +244,35 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.stateV6.path))
     }
 
+    func testDurableAuthorityStateForcesRuntimeAssemblyWhenRolloutFlagsAreDisabled() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-durable-authority")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let envelope = try authoritativeEnvelope()
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths
+        ))
+        let presentation = try await runtime.loadPresentationSnapshot(
+            from: SnapshotStore(paths: paths)
+        )
+
+        XCTAssertEqual(presentation.mode, .authoritative)
+        do {
+            try await runtime.authorizeLegacyWrite()
+            XCTFail("Expected durable authority to reject legacy writes")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
     func testNoOpCommandOnlyRecordsIdempotencyAndDoesNotOpenV6MutationOrCloud() async throws {
         var envelope = try authoritativeEnvelope()
         envelope.synced.hosts[0].deletedAt = now
@@ -326,6 +363,610 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             includingPropertiesForKeys: nil
         )
         XCTAssertFalse(files.contains { $0.lastPathComponent.contains("keyport-backup") })
+    }
+
+    func testSSHConfigRebuildRejectsManualChangesInsteadOfOverwritingThem() async throws {
+        let home = try temporaryHome(prefix: "keyport-config-manual-change")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let service = SSHConfigService(runner: ProcessRunner(), paths: paths)
+
+        try await service.write(servers: [], keys: [], authorizations: [])
+        let manual = "# manually edited after KeyPort generated this file\n"
+        try manual.write(to: paths.managedConfig, atomically: true, encoding: .utf8)
+
+        do {
+            try await service.write(servers: [], keys: [], authorizations: [])
+            XCTFail("Expected managed artifact mismatch")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.artifactMismatch))
+        }
+        XCTAssertEqual(try String(contentsOf: paths.managedConfig, encoding: .utf8), manual)
+    }
+
+    func testSSHConfigDerivationAdoptsExistingGeneratedFileBeforeFirstMutation() async throws {
+        let home = try temporaryHome(prefix: "keyport-config-derivation-upgrade")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        try paths.prepareDirectories()
+        try Data().write(to: paths.managedConfig)
+        let service = SSHConfigService(runner: ProcessRunner(), paths: paths)
+
+        let adopted = try await service.adoptExistingManagedConfigBaseline(
+            servers: [],
+            keys: [],
+            authorizations: []
+        )
+
+        XCTAssertTrue(adopted)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.managedConfigDerivationState.path))
+
+        let serverID = UUID(uuidString: "88888888-8888-4888-8888-888888888888")!
+        let server = ServerConnection(
+            id: serverID,
+            name: "Upgrade Fixture",
+            host: "upgrade.example.com",
+            username: "deploy",
+            alias: "upgrade-fixture"
+        )
+        let key = SSHKeyRecord(
+            id: "key-upgrade-fixture",
+            deviceID: "device-a",
+            kind: .ed25519,
+            publicKey: "ssh-ed25519 AAAA upgrade-fixture",
+            fingerprint: "SHA256:upgrade-fixture",
+            privateKeyPath: paths.identitiesDirectory
+                .appendingPathComponent("key-upgrade-fixture")
+                .path,
+            isInAgent: false,
+            origin: .generated,
+            isLocallyAvailable: true
+        )
+        let authorization = Authorization(
+            serverID: serverID,
+            keyID: key.id,
+            fingerprint: key.fingerprint,
+            remoteComment: "keyport:upgrade-fixture",
+            status: .authorized,
+            authorizedAt: now,
+            lastVerifiedAt: now,
+            updatedAt: now
+        )
+
+        try await service.write(
+            servers: [server],
+            keys: [key],
+            authorizations: [authorization]
+        )
+
+        let generated = try String(contentsOf: paths.managedConfig, encoding: .utf8)
+        XCTAssertTrue(generated.contains("Host upgrade-fixture"))
+    }
+
+    func testProductionApplicationEntryCallsHostV6RuntimeAssembly() throws {
+        let source = try String(
+            contentsOf: Self.repositoryRoot.appendingPathComponent("Sources/KeyPort/App/KeyPortApp.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains("HostV6RuntimeAssembly.makeIfEnabled"))
+        XCTAssertTrue(source.contains("AppModel(hostV6Runtime:"))
+    }
+
+    @MainActor
+    func testCanaryRuntimeKeepsLegacySnapshotWritableAndStagesV6Shadow() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-canary")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+        let model = AppModel(
+            hostV6Runtime: runtime,
+            cloudSync: RecordingLegacyCloudSync(),
+            paths: paths,
+            defaults: defaults
+        )
+
+        await model.load()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.snapshot.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.shadowMigrationCurrentPointer.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
+    }
+
+    @MainActor
+    func testLegacyApplicationLoadAdoptsMatchingManagedConfigBaselineWithV6Disabled() async throws {
+        let home = try temporaryHome(prefix: "keyport-legacy-config-baseline")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try await SnapshotStore(paths: paths).save(AppSnapshot())
+        try Data().write(to: paths.managedConfig)
+        let model = AppModel(
+            cloudSync: RecordingLegacyCloudSync(),
+            paths: paths,
+            defaults: defaults
+        )
+
+        await model.load()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.managedConfigDerivationState.path))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testCanaryRuntimeAdoptsMatchingLegacyManagedConfigDerivationBaseline() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-config-baseline")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let serverID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
+        let privateKeyPath = paths.identitiesDirectory.appendingPathComponent("key-runtime").path
+        let server = ServerConnection(
+            id: serverID,
+            name: "Runtime Fixture",
+            host: "runtime.example.com",
+            username: "deploy",
+            alias: "runtime-fixture"
+        )
+        let key = SSHKeyRecord(
+            id: "key-runtime",
+            deviceID: "device-a",
+            kind: .ed25519,
+            publicKey: "ssh-ed25519 AAAA runtime-fixture",
+            fingerprint: "SHA256:runtime-fixture",
+            privateKeyPath: privateKeyPath,
+            isInAgent: false,
+            origin: .generated,
+            isLocallyAvailable: true
+        )
+        let authorization = Authorization(
+            serverID: serverID,
+            keyID: key.id,
+            fingerprint: key.fingerprint,
+            remoteComment: "keyport:runtime-fixture",
+            status: .authorized,
+            authorizedAt: now,
+            lastVerifiedAt: now,
+            updatedAt: now
+        )
+        var legacy = AppSnapshot()
+        legacy.servers = [server]
+        legacy.devices = [Device(
+            id: "device-a",
+            name: "Mac A",
+            isCurrent: true,
+            registeredAt: now,
+            lastActiveAt: now
+        )]
+        legacy.keys = [key]
+        legacy.authorizations = [authorization]
+        let legacyStore = SnapshotStore(paths: paths)
+        try await legacyStore.save(legacy)
+        let managedConfig = SSHConfigGenerator.managedConfig(entries: [
+            SSHConfigEntry(
+                server: server,
+                identityPath: privateKeyPath.replacingOccurrences(of: paths.home.path, with: "~")
+            ),
+        ])
+        try managedConfig.write(to: paths.managedConfig, atomically: true, encoding: .utf8)
+        let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+
+        let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
+
+        XCTAssertEqual(presentation.mode, .canary)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.managedConfigDerivationState.path))
+        XCTAssertEqual(try Data(contentsOf: paths.managedConfig), Data(managedConfig.utf8))
+    }
+
+    func testRuntimeActivatesAuthorityOnlyFromCompleteVerifiedC3Artifacts() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-c3")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyStore = SnapshotStore(paths: paths)
+        var legacy = AppSnapshot()
+        legacy.devices = [
+            Device(id: "device-a", name: "Mac A", isCurrent: true, registeredAt: now, lastActiveAt: now),
+            Device(id: "device-b", name: "Mac B", isCurrent: false, registeredAt: now, lastActiveAt: now),
+        ]
+        try await legacyStore.save(legacy)
+        let bundle = try await legacyStore.stageV6Shadow(
+            currentDeviceID: "device-a",
+            credentialInspector: KeychainService(itemAPI: MissingKeychainItemAPI())
+        )
+        let payloadHash = HostV6.CanonicalJSON.sha256(
+            try HostV6.CloudPayloadCodec.encode(bundle.envelope)
+        )
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: payloadHash,
+            cloudChangeTag: "cloud-tag-c3",
+            codeVersion: "6-c3"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        let artifactA = Data("signed-c3-a".utf8)
+        let artifactB = Data("signed-c3-b".utf8)
+        let evidenceDirectory = paths.applicationSupport
+            .appendingPathComponent("authority-c3", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: evidenceDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try artifactA.write(to: evidenceDirectory.appendingPathComponent("device-a.cms"))
+        try artifactB.write(to: evidenceDirectory.appendingPathComponent("device-b.cms"))
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [
+                artifactA: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportA),
+                    signerTeamIdentifier: "TEAMID1234"
+                ),
+                artifactB: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportB),
+                    signerTeamIdentifier: "TEAMID1234"
+                ),
+            ]),
+            currentTeamIdentifier: { "TEAMID1234" }
+        )
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: verifier
+        ))
+
+        let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
+
+        XCTAssertEqual(presentation.mode, .authoritative)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.stateV6.path))
+        do {
+            try await runtime.authorizeLegacyWrite()
+            XCTFail("Expected v1 write authority to be revoked")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
+    func testRuntimeKeepsLegacyAuthorityWhenC3ArtifactsFailVerification() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-invalid-c3")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyStore = SnapshotStore(paths: paths)
+        try await legacyStore.save(AppSnapshot())
+        let evidenceDirectory = paths.applicationSupport
+            .appendingPathComponent("authority-c3", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: evidenceDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try Data("invalid-a".utf8).write(to: evidenceDirectory.appendingPathComponent("a.cms"))
+        try Data("invalid-b".utf8).write(to: evidenceDirectory.appendingPathComponent("b.cms"))
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: HostV6C3EvidenceVerifier(
+                cmsVerifier: StubCMSArtifactVerifier(contents: [:]),
+                currentTeamIdentifier: { "TEAMID1234" }
+            )
+        ))
+
+        let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
+        try await runtime.authorizeLegacyWrite()
+
+        XCTAssertEqual(presentation.mode, .canary)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.stateV6.path))
+    }
+
+    func testRuntimeKeepsLegacyAuthorityWhenManagedConfigDoesNotMatchC3Projection() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-c3-config-mismatch")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyStore = SnapshotStore(paths: paths)
+        var legacy = AppSnapshot()
+        legacy.devices = [
+            Device(id: "device-a", name: "Mac A", isCurrent: true, registeredAt: now, lastActiveAt: now),
+            Device(id: "device-b", name: "Mac B", isCurrent: false, registeredAt: now, lastActiveAt: now),
+        ]
+        try await legacyStore.save(legacy)
+        try Data("# manual managed config\n".utf8).write(to: paths.managedConfig)
+        let bundle = try await legacyStore.stageV6Shadow(
+            currentDeviceID: "device-a",
+            credentialInspector: KeychainService(itemAPI: MissingKeychainItemAPI())
+        )
+        let payloadHash = HostV6.CanonicalJSON.sha256(
+            try HostV6.CloudPayloadCodec.encode(bundle.envelope)
+        )
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: payloadHash,
+            cloudChangeTag: "cloud-tag-config-mismatch",
+            codeVersion: "6-c3"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        let artifactA = Data("signed-config-mismatch-a".utf8)
+        let artifactB = Data("signed-config-mismatch-b".utf8)
+        try FileManager.default.createDirectory(
+            at: paths.authorityC3EvidenceDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try artifactA.write(to: paths.authorityC3EvidenceDirectory.appendingPathComponent("device-a.cms"))
+        try artifactB.write(to: paths.authorityC3EvidenceDirectory.appendingPathComponent("device-b.cms"))
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [
+                artifactA: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportA),
+                    signerTeamIdentifier: "TEAMID1234"
+                ),
+                artifactB: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportB),
+                    signerTeamIdentifier: "TEAMID1234"
+                ),
+            ]),
+            currentTeamIdentifier: { "TEAMID1234" }
+        )
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: verifier
+        ))
+
+        let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
+
+        XCTAssertEqual(presentation.mode, .canary)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.stateV6.path))
+        XCTAssertEqual(
+            try String(contentsOf: paths.managedConfig, encoding: .utf8),
+            "# manual managed config\n"
+        )
+    }
+
+    @MainActor
+    func testAuthoritativeAndCompatibilityRuntimeLoadV6ProjectionWithoutRewritingLegacySnapshot() async throws {
+        for mode in [HostV6.AuthorityMode.v6Authoritative, .compatibilityRollback] {
+            let home = try temporaryHome(prefix: "keyport-runtime-\(mode.rawValue)")
+            defer { try? FileManager.default.removeItem(at: home) }
+            let paths = KeyPortPaths(home: home)
+            let (defaults, suiteName) = try runtimeDefaults()
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let legacyStore = SnapshotStore(paths: paths)
+            var legacy = AppSnapshot()
+            legacy.auditEvents = [.init(category: "legacy", action: "sentinel", result: mode.rawValue)]
+            try await legacyStore.save(legacy)
+            let legacyBytes = try Data(contentsOf: paths.snapshot)
+            let authoritative = try authoritativeEnvelope()
+            let plan = mode == .v6Authoritative
+                ? try HostV6.AuthorityController.rebindManifest(in: authoritative)
+                : try HostV6.AuthorityController.enterCompatibilityRollback(
+                    envelope: authoritative,
+                    checkpointData: HostV6.CanonicalJSON.encode(authoritative)
+                )
+            try await HostV6AuthorityFileStore(paths: paths).commit(plan)
+            let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+            let model = AppModel(
+                hostV6Runtime: runtime,
+                cloudSync: RecordingLegacyCloudSync(),
+                paths: paths,
+                defaults: defaults
+            )
+
+            await model.load()
+
+            XCTAssertEqual(model.activeServers.map(\.alias), ["database"], "mode=\(mode.rawValue)")
+            XCTAssertEqual(try Data(contentsOf: paths.snapshot), legacyBytes, "mode=\(mode.rawValue)")
+        }
+    }
+
+    @MainActor
+    func testAuthoritativeRuntimeRejectsLegacyDeleteBeforeSnapshotOrConfigWrite() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-write-gate")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyStore = SnapshotStore(paths: paths)
+        var legacy = AppSnapshot()
+        legacy.auditEvents = [.init(category: "legacy", action: "sentinel", result: "unchanged")]
+        try await legacyStore.save(legacy)
+        let legacyBytes = try Data(contentsOf: paths.snapshot)
+        let envelope = try authoritativeEnvelope()
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+        let model = AppModel(
+            hostV6Runtime: runtime,
+            cloudSync: RecordingLegacyCloudSync(),
+            paths: paths,
+            defaults: defaults
+        )
+        model.snapshot = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: false
+        ).snapshot
+        let serverID = try XCTUnwrap(model.snapshot.servers.first?.id)
+
+        await model.deleteServer(serverID)
+
+        XCTAssertFalse(model.snapshot.servers[0].isDeleted)
+        XCTAssertEqual(try Data(contentsOf: paths.snapshot), legacyBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.managedConfig.path))
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    @MainActor
+    func testAuthoritativeRuntimeRejectsLegacyEditorBeforeValidationOrSideEffects() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-editor-gate")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let envelope = try authoritativeEnvelope()
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+        let model = AppModel(
+            hostV6Runtime: runtime,
+            cloudSync: RecordingLegacyCloudSync(),
+            paths: paths,
+            defaults: defaults
+        )
+        let submission = ServerEditorSubmission(
+            draft: ServerDraft(),
+            password: "",
+            synchronizable: false,
+            confirmedHostKeys: [],
+            passwordCheck: nil,
+            machineConfiguration: nil
+        )
+
+        do {
+            _ = try await model.saveServerEditor(submission, existingServerID: nil)
+            XCTFail("Expected legacy editor rejection")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.knownHosts.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.managedConfig.path))
+    }
+
+    @MainActor
+    func testAuthoritativeRuntimeRejectsCloudV1BeforeCallingTransport() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-cloud-gate")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: "KeyPort.cloudSyncEnabled")
+        let envelope = try authoritativeEnvelope()
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let runtime = try enabledRuntime(defaults: defaults, paths: paths)
+        let cloud = RecordingLegacyCloudSync()
+        let model = AppModel(
+            hostV6Runtime: runtime,
+            cloudSync: cloud,
+            paths: paths,
+            defaults: defaults
+        )
+
+        await model.synchronizeCloud()
+
+        let synchronizeCallCount = await cloud.synchronizeCallCount()
+        XCTAssertEqual(synchronizeCallCount, 0)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
+    func testC3EvidenceVerifierRequiresTwoDistinctArtifactsFromCurrentSigningTeam() throws {
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: "payload-hash",
+            cloudChangeTag: "change-tag",
+            codeVersion: "6-test"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        let artifactA = Data("signed-a".utf8)
+        let artifactB = Data("signed-b".utf8)
+        let cms = StubCMSArtifactVerifier(contents: [
+            artifactA: .init(content: try HostV6.CanonicalJSON.encode(reportA), signerTeamIdentifier: "TEAMID1234"),
+            artifactB: .init(content: try HostV6.CanonicalJSON.encode(reportB), signerTeamIdentifier: "TEAMID1234"),
+        ])
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: cms,
+            currentTeamIdentifier: { "TEAMID1234" }
+        )
+
+        let evidence = try verifier.verify([artifactA, artifactB])
+
+        XCTAssertEqual(evidence.signedMacDeviceIDs, ["device-a", "device-b"])
+        XCTAssertEqual(evidence.signerTeamIdentifier, "TEAMID1234")
+        XCTAssertEqual(evidence.signedArtifactDigests.count, 2)
+    }
+
+    func testC3EvidenceVerifierRejectsArtifactFromAnotherSigningTeam() throws {
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: "payload-hash",
+            cloudChangeTag: "change-tag",
+            codeVersion: "6-test"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        let artifactA = Data("signed-by-current-team".utf8)
+        let artifactB = Data("signed-by-other-team".utf8)
+        let cms = StubCMSArtifactVerifier(contents: [
+            artifactA: .init(
+                content: try HostV6.CanonicalJSON.encode(reportA),
+                signerTeamIdentifier: "TEAMID1234"
+            ),
+            artifactB: .init(
+                content: try HostV6.CanonicalJSON.encode(reportB),
+                signerTeamIdentifier: "OTHERTEAM"
+            ),
+        ])
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: cms,
+            currentTeamIdentifier: { "TEAMID1234" }
+        )
+
+        XCTAssertThrowsError(try verifier.verify([artifactA, artifactB])) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
+    func testCertificateTeamIdentifierParserReadsPropertyValueInsteadOfLabel() {
+        let values: NSDictionary = [
+            kSecOIDOrganizationalUnitName: [
+                kSecPropertyKeyLabel: "Organizational Unit",
+                kSecPropertyKeyType: kSecPropertyTypeString,
+                kSecPropertyKeyValue: "TEAMID1234",
+            ] as NSDictionary,
+        ]
+
+        XCTAssertEqual(
+            HostV6CertificateFieldParser.organizationalUnit(in: values),
+            "TEAMID1234"
+        )
     }
 
     func testWorkflowJournalAndCommandLedgerFilesAreSecureAndRejectCorruption() async throws {
@@ -452,6 +1093,38 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
     }
 
+    func testProductionTunnelEffectFailsClosedWithoutTunnelCoordinator() async throws {
+        let home = try temporaryHome(prefix: "keyport-tunnel-cleanup-unavailable")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let envelope = try authoritativeEnvelope()
+        let events = MutationEventRecorder()
+        let authority = RecordingAuthorityStore(
+            envelope: envelope,
+            events: events,
+            failure: FailOnce(point: nil)
+        )
+        let runner = ProcessRunner()
+        let effects = ProductionHostV6MutationEffects(
+            configService: SSHConfigService(runner: runner, paths: paths),
+            hostKeyService: HostKeyService(runner: runner, paths: paths),
+            keychainService: KeychainService(itemAPI: MissingKeychainItemAPI()),
+            cloudCoordinator: HostV6CloudSyncCoordinator(
+                transport: EmptyCloudV2Transport(),
+                currentDeviceID: "device-a"
+            ),
+            authorityStore: authority,
+            paths: paths
+        )
+
+        do {
+            try await effects.closeTunnels([.closeHostTunnels(hostID)])
+            XCTFail("Expected missing tunnel coordinator to keep cleanup pending")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.artifactMismatch))
+        }
+    }
+
     private func makeFixture(
         failure: FailOnce = FailOnce(point: nil),
         envelope suppliedEnvelope: HostV6.MetadataEnvelope? = nil
@@ -554,18 +1227,41 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             migrationProvenance: .empty
         )
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let legacyData = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: true
+        ).data
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
-            legacyData: HostV6.CanonicalJSON.encode(AppSnapshot()),
+            legacyData: legacyData,
             evidence: .init(
                 completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
                 signedMacDeviceIDs: ["device-a", "device-b"],
                 acknowledgedDeviceIDs: ["device-a", "device-b"],
                 verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
                 cloudChangeTag: "tag-1",
-                codeVersion: "6-test"
+                codeVersion: "6-test",
+                signerTeamIdentifier: "TEAMID1234",
+                signedArtifactDigests: ["artifact-a", "artifact-b"]
             )
         ).envelope
+    }
+
+    private func runtimeDefaults() throws -> (defaults: UserDefaults, suiteName: String) {
+        let suiteName = "HostV6MutationWorkflowTests.runtime.\(UUID().uuidString)"
+        return (try XCTUnwrap(UserDefaults(suiteName: suiteName)), suiteName)
+    }
+
+    private func enabledRuntime(defaults: UserDefaults, paths: KeyPortPaths) throws -> HostV6Runtime {
+        defaults.set("device-a", forKey: "KeyPort.deviceID")
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        return try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths
+        ))
     }
 
     private func authoritativeEnvelopeWithAuthorization() throws -> HostV6.MetadataEnvelope {
@@ -588,6 +1284,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
 
     private func expectedWarning(for point: MutationFailurePoint) -> CommittedWarningCode {
         switch point {
+        case .tunnelCleanup:
+            return .cleanupPending
         case .sshConfig, .knownHosts:
             return .derivedConfigOutOfDate
         case .credentialCleanup:
@@ -647,6 +1345,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
 
 private enum MutationFailurePoint: String, CaseIterable, Sendable {
     case modelSnapshot
+    case tunnelCleanup
     case sshConfig
     case knownHosts
     case credentialCleanup
@@ -728,6 +1427,10 @@ private actor RecordingMutationEffects: HostV6MutationEffectApplying {
         self.failure = failure
     }
 
+    func closeTunnels(_ effects: [HostV6.PendingExternalEffect]) async throws {
+        try await record(.tunnelCleanup)
+    }
+
     func rebuildSSHConfig(from envelope: HostV6.MetadataEnvelope) async throws {
         try await record(.sshConfig)
     }
@@ -768,6 +1471,19 @@ private actor EmptyCloudV2Transport: HostV6CloudV2Transport {
     }
 }
 
+private actor RecordingLegacyCloudSync: CloudSyncing {
+    private var synchronizeCalls = 0
+
+    func availability() async -> CloudSyncAvailability { .available }
+
+    func synchronize(_ local: AppSnapshot) async throws -> AppSnapshot {
+        synchronizeCalls += 1
+        return local
+    }
+
+    func synchronizeCallCount() -> Int { synchronizeCalls }
+}
+
 private struct MissingKeychainItemAPI: KeychainItemAPI {
     func update(_ query: [CFString: Any], attributes: [CFString: Any]) -> OSStatus { errSecItemNotFound }
     func add(_ attributes: [CFString: Any], result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus { errSecSuccess }
@@ -775,4 +1491,15 @@ private struct MissingKeychainItemAPI: KeychainItemAPI {
         errSecItemNotFound
     }
     func delete(_ query: [CFString: Any]) -> OSStatus { errSecItemNotFound }
+}
+
+private struct StubCMSArtifactVerifier: HostV6CMSArtifactVerifying {
+    let contents: [Data: HostV6VerifiedCMSArtifact]
+
+    func verify(_ artifact: Data) throws -> HostV6VerifiedCMSArtifact {
+        guard let verified = contents[artifact] else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+        return verified
+    }
 }

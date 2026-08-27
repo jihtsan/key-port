@@ -28,8 +28,7 @@ final class HostV6AuthorityTests: XCTestCase {
 
     func testAuthorityManifestRequiresAcknowledgementFromEveryActiveDevice() throws {
         let envelope = makeEnvelope()
-        var evidence = try makeEvidence(envelope: envelope)
-        evidence.acknowledgedDeviceIDs = ["device-a"]
+        let evidence = try makeEvidence(envelope: envelope, acknowledged: ["device-a"])
 
         XCTAssertThrowsError(try HostV6.AuthorityController.activate(
             envelope: envelope,
@@ -62,7 +61,7 @@ final class HostV6AuthorityTests: XCTestCase {
         XCTAssertEqual(plan.compatibilitySnapshot.auditEvents.map(\.id), [uuid(900)])
         XCTAssertEqual(
             plan.manifest.compatibilityHash,
-            HostV6.CanonicalJSON.sha256(plan.compatibilityData)
+            try HostV6.AuthorityController.compatibilitySemanticHash(plan.compatibilitySnapshot)
         )
         XCTAssertNoThrow(try HostV6.AuthorityController.verifyCheckpoint(plan.checkpointData))
     }
@@ -88,6 +87,53 @@ final class HostV6AuthorityTests: XCTestCase {
         )) { error in
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
         }
+    }
+
+    func testAuthorityActivationRejectsCompatibilitySemanticMismatch() throws {
+        let envelope = makeEnvelope()
+        var legacy = try HostV6.CanonicalJSON.decode(AppSnapshot.self, from: legacyData())
+        legacy.servers[0].alias = "manually-diverged-alias"
+
+        XCTAssertThrowsError(try HostV6.AuthorityController.activate(
+            envelope: envelope,
+            legacyData: HostV6.CanonicalJSON.encode(legacy),
+            evidence: makeEvidence(envelope: envelope)
+        )) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
+    func testLocalOverlayDoesNotChangeCrossDeviceAuthorityManifestOrCloudPayload() throws {
+        let activation = try activate()
+        var secondMac = activation.envelope
+        secondMac.local.keyStates[0].privateKeyPath = "/another-mac/private-key"
+        secondMac.local.keyStates[0].isInAgent = false
+        secondMac.local.deviceStates = [
+            .init(deviceID: "device-a", isCurrent: false),
+            .init(deviceID: "device-b", isCurrent: true),
+        ]
+        secondMac.local.auditEvents = []
+
+        let rebound = try HostV6.AuthorityController.rebindManifest(in: secondMac)
+
+        XCTAssertEqual(rebound.manifest, activation.manifest)
+        XCTAssertEqual(
+            try HostV6.CloudPayloadCodec.encode(rebound.envelope),
+            try HostV6.CloudPayloadCodec.encode(activation.envelope)
+        )
+        XCTAssertNotEqual(rebound.compatibilityData, activation.compatibilityData)
+    }
+
+    func testRetiredSSHKeyIsNotProjectedAsLocallyUsable() throws {
+        var envelope = makeEnvelope()
+        envelope.synced.sshKeys[0].deletedAt = now
+
+        let projection = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: false
+        )
+
+        XCTAssertTrue(projection.snapshot.keys.isEmpty)
     }
 
     func testPostAuthorityBlockingReviewCreatesSafeCheckpointWithoutCompatRoute() throws {
@@ -178,16 +224,19 @@ final class HostV6AuthorityTests: XCTestCase {
 
     private func makeEvidence(
         envelope: HostV6.MetadataEnvelope,
-        completed: Set<HostV6.AuthorityRequirement> = Set(HostV6.AuthorityRequirement.allCases)
+        completed: Set<HostV6.AuthorityRequirement> = Set(HostV6.AuthorityRequirement.allCases),
+        acknowledged: [String] = ["device-a", "device-b"]
     ) throws -> HostV6.AuthorityActivationEvidence {
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
         return HostV6.AuthorityActivationEvidence(
             completedRequirements: completed,
             signedMacDeviceIDs: ["device-a", "device-b"],
-            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            acknowledgedDeviceIDs: acknowledged,
             verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
             cloudChangeTag: "change-tag-1",
-            codeVersion: "6.0-test"
+            codeVersion: "6.0-test",
+            signerTeamIdentifier: "TEAMID1234",
+            signedArtifactDigests: ["artifact-a", "artifact-b"]
         )
     }
 
@@ -318,18 +367,10 @@ final class HostV6AuthorityTests: XCTestCase {
     }
 
     private func legacyData() throws -> Data {
-        var snapshot = AppSnapshot()
-        snapshot.servers = [ServerConnection(
-            id: identityID,
-            name: "Database",
-            host: "db.example.com",
-            username: "deploy",
-            alias: "database",
-            createdAt: now,
-            updatedAt: now,
-            version: 1
-        )]
-        return try HostV6.CanonicalJSON.encode(snapshot)
+        try HostV6.AuthorityController.compatibilityProjection(
+            from: makeEnvelope(),
+            requiresCompleteRoutes: true
+        ).data
     }
 
     private func stamp(_ vector: [String: UInt64], mutation: Int) -> HostV6.SyncStamp {
