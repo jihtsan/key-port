@@ -36,6 +36,7 @@ actor HostV6Runtime {
     private let metadataRepository: any HostV6MetadataRepositoryPort
     private let authorityStore: any HostV6AuthorityStoring
     private let evidenceVerifier: HostV6C3EvidenceVerifier
+    private let cloudCoordinator: HostV6CloudSyncCoordinator
     private let currentDeviceID: String
     private let credentialInspector: any HostV6ShadowCredentialInspecting
     private let configService: SSHConfigService
@@ -45,6 +46,7 @@ actor HostV6Runtime {
         metadataRepository: any HostV6MetadataRepositoryPort,
         authorityStore: any HostV6AuthorityStoring,
         evidenceVerifier: HostV6C3EvidenceVerifier,
+        cloudCoordinator: HostV6CloudSyncCoordinator,
         currentDeviceID: String,
         credentialInspector: any HostV6ShadowCredentialInspecting,
         configService: SSHConfigService,
@@ -53,6 +55,7 @@ actor HostV6Runtime {
         self.metadataRepository = metadataRepository
         self.authorityStore = authorityStore
         self.evidenceVerifier = evidenceVerifier
+        self.cloudCoordinator = cloudCoordinator
         self.currentDeviceID = currentDeviceID
         self.credentialInspector = credentialInspector
         self.configService = configService
@@ -135,10 +138,15 @@ actor HostV6Runtime {
             )
             let artifacts = try artifactURLs.map { try Data(contentsOf: $0) }
             let evidence = try evidenceVerifier.verify(artifacts)
+            let cloudRoundTrip = try await cloudCoordinator.validateAuthorityRoundTrip(
+                bundle.envelope,
+                evidence: evidence
+            )
             plan = try HostV6.AuthorityController.activate(
                 envelope: bundle.envelope,
                 legacyData: legacyData,
-                evidence: evidence
+                evidence: evidence,
+                cloudRoundTrip: cloudRoundTrip
             )
         } catch is CancellationError {
             throw CancellationError()
@@ -191,7 +199,8 @@ enum HostV6RuntimeAssembly {
         currentDeviceID: String,
         defaults: UserDefaults = .standard,
         paths: KeyPortPaths = KeyPortPaths(),
-        evidenceVerifier: HostV6C3EvidenceVerifier = HostV6C3EvidenceVerifier()
+        evidenceVerifier: HostV6C3EvidenceVerifier = HostV6C3EvidenceVerifier(),
+        cloudTransport: any HostV6CloudV2Transport = CloudKitV2RecordTransport()
     ) -> HostV6Runtime? {
         let rolloutEnabled = HostV6RuntimeFeatureFlags.isCanaryEnabled(defaults: defaults)
             && HostV6RuntimeFeatureFlags.isCloudV2Enabled(defaults: defaults)
@@ -203,7 +212,7 @@ enum HostV6RuntimeAssembly {
         let runner = ProcessRunner()
         let authorityStore = HostV6AuthorityFileStore(paths: paths)
         let cloudCoordinator = HostV6CloudSyncCoordinator(
-            transport: CloudKitV2RecordTransport(),
+            transport: cloudTransport,
             currentDeviceID: currentDeviceID
         )
         let keychain = KeychainService()
@@ -230,6 +239,7 @@ enum HostV6RuntimeAssembly {
             metadataRepository: repository,
             authorityStore: authorityStore,
             evidenceVerifier: evidenceVerifier,
+            cloudCoordinator: cloudCoordinator,
             currentDeviceID: currentDeviceID,
             credentialInspector: keychain,
             configService: configService,

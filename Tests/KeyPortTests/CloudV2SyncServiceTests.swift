@@ -66,6 +66,92 @@ final class CloudV2SyncServiceTests: XCTestCase {
         XCTAssertEqual(result.cloudChangeTag, "tag-1")
     }
 
+    func testAuthorityRoundTripRejectsStaleRemoteTagBeforeCAS() async throws {
+        let envelope = makeEnvelope()
+        let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let transport = ScriptedCloudV2Transport(remoteV2: .init(
+            payload: payload,
+            changeTag: "tag-newer"
+        ))
+        let coordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-a"
+        )
+        let evidence = HostV6.AuthorityActivationEvidence(
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            signedDevices: signedDeviceEvidence(),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+            cloudChangeTag: "tag-c3",
+            codeVersion: "build-current",
+            signerTeamIdentifier: "TEAMID1234"
+        )
+
+        do {
+            _ = try await coordinator.validateAuthorityRoundTrip(envelope, evidence: evidence)
+            XCTFail("Expected stale C3 Cloud tag to fail closed")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+        let metrics = await transport.metrics()
+        XCTAssertEqual(metrics.v2Fetches, 1)
+        XCTAssertEqual(metrics.saveAttempts, 0)
+    }
+
+    func testAuthorityRoundTripCASWritesAndReadBackBindsCommittedTag() async throws {
+        let envelope = makeEnvelope()
+        let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let transport = ScriptedCloudV2Transport(remoteV2: .init(
+            payload: payload,
+            changeTag: "tag-c3"
+        ))
+        let coordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-a"
+        )
+        let evidence = activationEvidence(
+            payload: payload,
+            cloudChangeTag: "tag-c3"
+        )
+
+        let receipt = try await coordinator.validateAuthorityRoundTrip(
+            envelope,
+            evidence: evidence
+        )
+        let metrics = await transport.metrics()
+
+        XCTAssertEqual(receipt.evidenceChangeTag, "tag-c3")
+        XCTAssertEqual(receipt.committedChangeTag, "tag-1")
+        XCTAssertEqual(receipt.payloadHash, HostV6.CanonicalJSON.sha256(payload))
+        XCTAssertEqual(metrics.saveAttempts, 1)
+        XCTAssertGreaterThanOrEqual(metrics.v2Fetches, 2)
+    }
+
+    func testAuthorityRoundTripRejectsConcurrentReadBackChange() async throws {
+        let envelope = makeEnvelope()
+        let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let transport = ScriptedCloudV2Transport(
+            remoteV2: .init(payload: payload, changeTag: "tag-c3"),
+            readBackMismatchOnce: true
+        )
+        let coordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-a"
+        )
+
+        do {
+            _ = try await coordinator.validateAuthorityRoundTrip(
+                envelope,
+                evidence: activationEvidence(payload: payload, cloudChangeTag: "tag-c3")
+            )
+            XCTFail("Expected concurrent read-back change to fail closed")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.concurrentConflict))
+        }
+        let metrics = await transport.metrics()
+        XCTAssertEqual(metrics.saveAttempts, 1)
+    }
+
     func testCoordinatorDoesNotLeakTransportErrorWrapper() async throws {
         let coordinator = HostV6CloudSyncCoordinator(
             transport: ScriptedCloudV2Transport(fetchV2Error: .cloud(.permissionDenied)),
@@ -263,6 +349,36 @@ final class CloudV2SyncServiceTests: XCTestCase {
         )
     }
 
+    private func activationEvidence(
+        payload: Data,
+        cloudChangeTag: String
+    ) -> HostV6.AuthorityActivationEvidence {
+        HostV6.AuthorityActivationEvidence(
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            signedDevices: signedDeviceEvidence(),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+            cloudChangeTag: cloudChangeTag,
+            codeVersion: "build-current",
+            signerTeamIdentifier: "TEAMID1234"
+        )
+    }
+
+    private func signedDeviceEvidence() -> [HostV6.AuthoritySignedDeviceEvidence] {
+        [
+            .init(
+                deviceID: "device-a",
+                signerCertificateSHA256: "certificate-a",
+                artifactDigest: "artifact-a"
+            ),
+            .init(
+                deviceID: "device-b",
+                signerCertificateSHA256: "certificate-b",
+                artifactDigest: "artifact-b"
+            ),
+        ]
+    }
+
     private func authoritativeEnvelope() throws -> HostV6.MetadataEnvelope {
         var envelope = makeEnvelope()
         let stamp = envelope.synced.hosts[0].stamp
@@ -289,18 +405,15 @@ final class CloudV2SyncServiceTests: XCTestCase {
             from: envelope,
             requiresCompleteRoutes: true
         ).data
+        let evidence = activationEvidence(payload: payload, cloudChangeTag: "tag-activation")
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
-            evidence: .init(
-                completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
-                signedMacDeviceIDs: ["device-a", "device-b"],
-                acknowledgedDeviceIDs: ["device-a", "device-b"],
-                verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
-                cloudChangeTag: "tag-activation",
-                codeVersion: "6-test",
-                signerTeamIdentifier: "TEAMID1234",
-                signedArtifactDigests: ["artifact-a", "artifact-b"]
+            evidence: evidence,
+            cloudRoundTrip: .init(
+                evidenceChangeTag: evidence.cloudChangeTag,
+                committedChangeTag: "tag-activation-committed",
+                payloadHash: evidence.verifiedCloudPayloadHash
             )
         ).envelope
     }

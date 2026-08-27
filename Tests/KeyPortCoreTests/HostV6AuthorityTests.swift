@@ -19,7 +19,8 @@ final class HostV6AuthorityTests: XCTestCase {
         XCTAssertThrowsError(try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
-            evidence: evidence
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )) { error in
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
         }
@@ -33,7 +34,8 @@ final class HostV6AuthorityTests: XCTestCase {
         XCTAssertThrowsError(try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: try legacyData(),
-            evidence: evidence
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )) { error in
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.mixedVersionPending))
         }
@@ -42,14 +44,17 @@ final class HostV6AuthorityTests: XCTestCase {
     func testAuthorityActivationBuildsCheckpointAndLosslessReadOnlyCompatibilityView() throws {
         let envelope = makeEnvelope()
         let legacy = try legacyData()
+        let evidence = try makeEvidence(envelope: envelope)
         let plan = try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacy,
-            evidence: try makeEvidence(envelope: envelope)
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )
 
         XCTAssertEqual(plan.manifest.mode, .v6Authoritative)
         XCTAssertNil(plan.manifest.firstV6MutationID)
+        XCTAssertEqual(plan.manifest.cloudChangeTag, "change-tag-committed")
         XCTAssertEqual(plan.manifest.v1Hash, HostV6.CanonicalJSON.sha256(legacy))
         XCTAssertEqual(plan.manifest.acknowledgedDeviceIDs, ["device-a", "device-b"])
         XCTAssertTrue(plan.manifest.notRepresentable.contains(.service(serviceID)))
@@ -66,6 +71,25 @@ final class HostV6AuthorityTests: XCTestCase {
         XCTAssertNoThrow(try HostV6.AuthorityController.verifyCheckpoint(plan.checkpointData))
     }
 
+    func testAuthorityActivationRejectsCloudReceiptThatDoesNotMatchC3Evidence() throws {
+        let envelope = makeEnvelope()
+        let evidence = try makeEvidence(envelope: envelope)
+        let staleReceipt = HostV6.AuthorityCloudRoundTrip(
+            evidenceChangeTag: "stale-change-tag",
+            committedChangeTag: "change-tag-committed",
+            payloadHash: evidence.verifiedCloudPayloadHash
+        )
+
+        XCTAssertThrowsError(try HostV6.AuthorityController.activate(
+            envelope: envelope,
+            legacyData: legacyData(),
+            evidence: evidence,
+            cloudRoundTrip: staleReceipt
+        )) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+    }
+
     func testBlockingReviewPreventsAuthorityActivation() throws {
         var envelope = makeEnvelope()
         envelope.synced.mergeReviews = [HostV6.MergeReview(
@@ -80,10 +104,12 @@ final class HostV6AuthorityTests: XCTestCase {
             stamp: stamp(["device/A": 1, "device/B": 1], mutation: 80)
         )]
 
+        let evidence = try makeEvidence(envelope: envelope)
         XCTAssertThrowsError(try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: try legacyData(),
-            evidence: try makeEvidence(envelope: envelope)
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )) { error in
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
         }
@@ -93,11 +119,13 @@ final class HostV6AuthorityTests: XCTestCase {
         let envelope = makeEnvelope()
         var legacy = try HostV6.CanonicalJSON.decode(AppSnapshot.self, from: legacyData())
         legacy.servers[0].alias = "manually-diverged-alias"
+        let evidence = try makeEvidence(envelope: envelope)
 
         XCTAssertThrowsError(try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: HostV6.CanonicalJSON.encode(legacy),
-            evidence: makeEvidence(envelope: envelope)
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )) { error in
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
         }
@@ -215,10 +243,12 @@ final class HostV6AuthorityTests: XCTestCase {
 
     private func activate() throws -> HostV6.AuthorityCommitPlan {
         let envelope = makeEnvelope()
+        let evidence = try makeEvidence(envelope: envelope)
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData(),
-            evidence: makeEvidence(envelope: envelope)
+            evidence: evidence,
+            cloudRoundTrip: cloudRoundTrip(for: evidence)
         )
     }
 
@@ -230,13 +260,33 @@ final class HostV6AuthorityTests: XCTestCase {
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
         return HostV6.AuthorityActivationEvidence(
             completedRequirements: completed,
-            signedMacDeviceIDs: ["device-a", "device-b"],
+            signedDevices: [
+                .init(
+                    deviceID: "device-a",
+                    signerCertificateSHA256: "certificate-a",
+                    artifactDigest: "artifact-a"
+                ),
+                .init(
+                    deviceID: "device-b",
+                    signerCertificateSHA256: "certificate-b",
+                    artifactDigest: "artifact-b"
+                ),
+            ],
             acknowledgedDeviceIDs: acknowledged,
             verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
             cloudChangeTag: "change-tag-1",
             codeVersion: "6.0-test",
-            signerTeamIdentifier: "TEAMID1234",
-            signedArtifactDigests: ["artifact-a", "artifact-b"]
+            signerTeamIdentifier: "TEAMID1234"
+        )
+    }
+
+    private func cloudRoundTrip(
+        for evidence: HostV6.AuthorityActivationEvidence
+    ) -> HostV6.AuthorityCloudRoundTrip {
+        HostV6.AuthorityCloudRoundTrip(
+            evidenceChangeTag: evidence.cloudChangeTag,
+            committedChangeTag: "change-tag-committed",
+            payloadHash: evidence.verifiedCloudPayloadHash
         )
     }
 

@@ -295,18 +295,34 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
             from: envelope,
             requiresCompleteRoutes: true
         ).data
+        let evidence = HostV6.AuthorityActivationEvidence(
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            signedDevices: [
+                .init(
+                    deviceID: "device-a",
+                    signerCertificateSHA256: "certificate-a",
+                    artifactDigest: "artifact-a"
+                ),
+                .init(
+                    deviceID: "device-b",
+                    signerCertificateSHA256: "certificate-b",
+                    artifactDigest: "artifact-b"
+                ),
+            ],
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+            cloudChangeTag: "tag-1",
+            codeVersion: "6-test",
+            signerTeamIdentifier: "TEAMID1234"
+        )
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
-            evidence: .init(
-                completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
-                signedMacDeviceIDs: ["device-a", "device-b"],
-                acknowledgedDeviceIDs: ["device-a", "device-b"],
-                verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
-                cloudChangeTag: "tag-1",
-                codeVersion: "6-test",
-                signerTeamIdentifier: "TEAMID1234",
-                signedArtifactDigests: ["artifact-a", "artifact-b"]
+            evidence: evidence,
+            cloudRoundTrip: .init(
+                evidenceChangeTag: evidence.cloudChangeTag,
+                committedChangeTag: "tag-committed",
+                payloadHash: evidence.verifiedCloudPayloadHash
             )
         )
     }
