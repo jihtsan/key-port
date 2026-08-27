@@ -1,0 +1,304 @@
+import Foundation
+import XCTest
+@testable import KeyPort
+@testable import KeyPortCore
+
+final class HostV6AuthorityFileStoreTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_787_616_000)
+
+    func testInterruptedCommitRecoversStateCheckpointCompatAndManifest() async throws {
+        for failurePoint in HostV6AuthorityFileStore.FailurePoint.allCases {
+            let home = try temporaryHome()
+            defer { try? FileManager.default.removeItem(at: home) }
+            let paths = KeyPortPaths(home: home)
+            let plan = try authorityPlan()
+            let interrupted = HostV6AuthorityFileStore(
+                paths: paths,
+                failureInjector: { point in
+                    if point == failurePoint { throw InjectedFailure() }
+                }
+            )
+
+            do {
+                try await interrupted.commit(plan)
+                XCTFail("Expected injected interruption at \(failurePoint)")
+            } catch is InjectedFailure {
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: paths.v6CommitJournal.path))
+
+            let recovered = try await HostV6AuthorityFileStore(paths: paths).recover()
+            XCTAssertEqual(
+                try HostV6.CanonicalJSON.encode(recovered),
+                try HostV6.CanonicalJSON.encode(plan.envelope),
+                "Recovery mismatch at \(failurePoint)"
+            )
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6CommitJournal.path))
+            XCTAssertEqual(try permissions(paths.stateV6), 0o600)
+            XCTAssertEqual(try permissions(paths.stateV1Compatibility), 0o600)
+            XCTAssertEqual(try permissions(paths.authorityManifest), 0o600)
+            XCTAssertEqual(try permissions(paths.checkpoint(for: plan.manifest.checkpointHash)), 0o600)
+        }
+    }
+
+    func testCorruptCurrentStateRecoversFromCommittedCheckpoint() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let plan = try authorityPlan()
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(plan)
+        try Data("corrupt-current".utf8).write(to: paths.stateV6)
+
+        let recovered = try await store.recover()
+
+        XCTAssertEqual(recovered.migrationProvenance.authorityManifest, plan.manifest)
+        XCTAssertEqual(
+            try HostV6.CanonicalJSON.encode(recovered),
+            try Data(contentsOf: paths.stateV6)
+        )
+    }
+
+    func testValidCurrentStateRepairsCorruptCompatibilityProjection() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let plan = try authorityPlan()
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(plan)
+        try Data("corrupt-compatibility".utf8).write(to: paths.stateV1Compatibility)
+
+        _ = try await store.recover()
+
+        XCTAssertEqual(try Data(contentsOf: paths.stateV1Compatibility), plan.compatibilityData)
+    }
+
+    func testCorruptCurrentStateAndCheckpointFailClosed() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let plan = try authorityPlan()
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(plan)
+        try Data("corrupt-current".utf8).write(to: paths.stateV6)
+        try Data("corrupt-checkpoint".utf8).write(
+            to: paths.checkpoint(for: plan.manifest.checkpointHash)
+        )
+
+        do {
+            _ = try await store.recover()
+            XCTFail("Expected rollbackProjectionInvalid")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.rollbackProjectionInvalid))
+        }
+    }
+
+    func testRecoveryWithoutManifestUsesNewestValidCheckpointAndRejectsMismatchedFilename() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let first = try authorityPlan()
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(first)
+
+        var nextEnvelope = first.envelope
+        nextEnvelope.synced.hosts[0].name = "Database updated"
+        let mutationID = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
+        nextEnvelope.synced.hosts[0].stamp = try nextEnvelope.synced.hosts[0].stamp.incrementing(
+            deviceID: "device-a",
+            mutationID: mutationID,
+            at: now.addingTimeInterval(1)
+        )
+        let second = try HostV6.AuthorityController.recordMutation(mutationID, in: nextEnvelope)
+        try await store.commit(second)
+
+        let firstURL = paths.checkpoint(for: first.manifest.checkpointHash)
+        let secondURL = paths.checkpoint(for: second.manifest.checkpointHash)
+        let mismatchedURL = paths.v6CheckpointsDirectory.appendingPathComponent("zzzz-mismatched.json")
+        try FileManager.default.copyItem(at: firstURL, to: mismatchedURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-100)],
+            ofItemAtPath: firstURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-50)],
+            ofItemAtPath: mismatchedURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now],
+            ofItemAtPath: secondURL.path
+        )
+        try Data("corrupt-current".utf8).write(to: paths.stateV6)
+        try FileManager.default.removeItem(at: paths.authorityManifest)
+
+        let recovered = try await store.recover()
+
+        XCTAssertEqual(recovered.synced.hosts[0].name, "Database updated")
+        XCTAssertEqual(
+            recovered.migrationProvenance.authorityManifest?.checkpointHash,
+            second.manifest.checkpointHash
+        )
+    }
+
+    func testValidCurrentStateDoesNotTrustExternalManifestWithOnlyMatchingCheckpointHash() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let plan = try authorityPlan()
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(plan)
+
+        var tampered = plan.manifest
+        tampered.mode = .v6Canary
+        tampered.v1Hash = "tampered-v1-hash"
+        try HostV6.CanonicalJSON.encode(tampered).write(to: paths.authorityManifest)
+
+        let recovered = try await store.recover()
+        let repairedManifest = try HostV6.CanonicalJSON.decode(
+            HostV6.AuthorityManifest.self,
+            from: Data(contentsOf: paths.authorityManifest)
+        )
+
+        XCTAssertEqual(recovered.migrationProvenance.authorityManifest, plan.manifest)
+        XCTAssertEqual(repairedManifest, plan.manifest)
+    }
+
+    func testCheckpointFallbackRejectsExternalManifestThatClearsFirstMutationBoundary() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let activation = try authorityPlan()
+        let mutationID = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
+        let mutation = try HostV6.AuthorityController.recordMutation(mutationID, in: activation.envelope)
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(mutation)
+        try Data("corrupt-current".utf8).write(to: paths.stateV6)
+
+        var tampered = mutation.manifest
+        tampered.firstV6MutationID = nil
+        try HostV6.CanonicalJSON.encode(tampered).write(to: paths.authorityManifest)
+
+        do {
+            _ = try await store.recover()
+            XCTFail("Expected altered first mutation boundary to fail closed")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.rollbackProjectionInvalid))
+        }
+    }
+
+    func testCheckpointFallbackAllowsOnlyCompatibilityModeTransitionFromMatchingManifest() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let activation = try authorityPlan()
+        let mutationID = UUID(uuidString: "00000000-0000-4000-8000-000000000004")!
+        let mutation = try HostV6.AuthorityController.recordMutation(mutationID, in: activation.envelope)
+        let rollback = try HostV6.AuthorityController.enterCompatibilityRollback(
+            envelope: mutation.envelope,
+            checkpointData: mutation.checkpointData
+        )
+        let store = HostV6AuthorityFileStore(paths: paths)
+        try await store.commit(rollback)
+        try Data("corrupt-current".utf8).write(to: paths.stateV6)
+
+        let recovered = try await store.recover()
+
+        XCTAssertEqual(
+            recovered.migrationProvenance.authorityManifest?.mode,
+            .compatibilityRollback
+        )
+        XCTAssertEqual(
+            recovered.migrationProvenance.authorityManifest?.firstV6MutationID,
+            mutationID
+        )
+    }
+
+    private func authorityPlan() throws -> HostV6.AuthorityCommitPlan {
+        let hostID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
+        let addressID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        let identityID = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
+        let stamp = HostV6.SyncStamp(
+            vector: ["legacy/fixture": 1],
+            mutationID: UUID(uuidString: "00000000-0000-4000-8000-000000000001")!,
+            updatedAt: now
+        )
+        let envelope = HostV6.MetadataEnvelope(
+            synced: .init(
+                hosts: [.init(
+                    id: hostID,
+                    name: "Database",
+                    group: "",
+                    machineConfiguration: nil,
+                    fixedAddressID: nil,
+                    createdAt: now,
+                    stamp: stamp
+                )],
+                addresses: [.init(
+                    id: addressID,
+                    hostID: hostID,
+                    normalizedHost: "db.example.com",
+                    sshPort: 22,
+                    originalLabel: "db.example.com",
+                    source: .legacy,
+                    sortOrder: 0,
+                    stamp: stamp
+                )],
+                identities: [.init(
+                    id: identityID,
+                    hostID: hostID,
+                    username: "deploy",
+                    alias: "database",
+                    preferredAddressID: nil,
+                    createdAt: now,
+                    stamp: stamp
+                )],
+                devices: [
+                    .init(
+                        id: "device-a",
+                        name: "Mac A",
+                        registeredAt: now,
+                        lastActiveAt: now,
+                        tailscaleIdentity: nil,
+                        stamp: stamp
+                    ),
+                    .init(
+                        id: "device-b",
+                        name: "Mac B",
+                        registeredAt: now,
+                        lastActiveAt: now,
+                        tailscaleIdentity: nil,
+                        stamp: stamp
+                    ),
+                ]
+            ),
+            local: .init(),
+            migrationProvenance: .empty
+        )
+        let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        return try HostV6.AuthorityController.activate(
+            envelope: envelope,
+            legacyData: HostV6.CanonicalJSON.encode(AppSnapshot()),
+            evidence: .init(
+                completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+                signedMacDeviceIDs: ["device-a", "device-b"],
+                acknowledgedDeviceIDs: ["device-a", "device-b"],
+                verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+                cloudChangeTag: "tag-1",
+                codeVersion: "6-test"
+            )
+        )
+    }
+
+    private func temporaryHome() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-authority-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    private func permissions(_ url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+    }
+}
+
+private struct InjectedFailure: Error {}
