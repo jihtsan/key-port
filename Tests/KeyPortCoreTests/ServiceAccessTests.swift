@@ -178,6 +178,15 @@ final class ServiceAccessTests: XCTestCase {
         )
     }
 
+    func testBrokerRecognizerPreservesForwardRejectedFailureCode() {
+        var recognizer = TunnelBrokerOutputRecognizer()
+
+        XCTAssertEqual(
+            recognizer.consume(Data("FORWARD_FAILED forward_rejected\n".utf8)),
+            [.forwardRejected]
+        )
+    }
+
     func testBrokerRecognizerAcceptsAnyDirectTCPChannelAndFlushesAnUnterminatedLine() {
         var recognizer = TunnelBrokerOutputRecognizer()
         XCTAssertEqual(
@@ -241,7 +250,7 @@ final class ServiceAccessTests: XCTestCase {
         XCTAssertFalse(command.brokerArguments.contains(where: { $0.contains("ssh -") }))
     }
 
-    func testOpenSSHVersionPolicyAllowsOnlyKnownMajorMinorVersions() {
+    func testOpenSSHVersionPolicyAllowsOnlyKnownFullVersions() {
         XCTAssertTrue(
             OpenSSHVersionPolicy.isSupported(
                 "OpenSSH_10.2p1, LibreSSL 3.3.6"
@@ -253,6 +262,9 @@ final class ServiceAccessTests: XCTestCase {
             )
         )
         XCTAssertFalse(OpenSSHVersionPolicy.isSupported("OpenSSH_10.3p1, LibreSSL 3.3.6"))
+        XCTAssertFalse(OpenSSHVersionPolicy.isSupported("OpenSSH_10.2p99, LibreSSL 3.3.6"))
+        XCTAssertFalse(OpenSSHVersionPolicy.isSupported("OpenSSH_10.2p1, OpenSSL 3.0.0"))
+        XCTAssertFalse(OpenSSHVersionPolicy.isSupported("OpenSSH_10.2p1"))
         XCTAssertFalse(OpenSSHVersionPolicy.isSupported("ssh version unknown"))
     }
 
@@ -265,6 +277,8 @@ final class ServiceAccessTests: XCTestCase {
             ("supported-9.7p1.version", true),
             ("supported-10.2p1.version", true),
             ("unsupported-10.3p1.version", false),
+            ("unsupported-10.2p99.version", false),
+            ("unsupported-10.2p1-vendor.version", false),
             ("malformed.version", false)
         ]
 

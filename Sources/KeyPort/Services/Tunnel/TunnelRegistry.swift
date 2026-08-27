@@ -114,16 +114,16 @@ actor TunnelRegistry {
     static let maximumPortAllocationAttempts = 3
 
     private struct RegistryKey: Hashable, Sendable {
-        let serviceID: UUID
+        let subject: TunnelSubject
         let sshIdentityID: UUID
         let sshAddressID: UUID
         let remote: RemoteServiceEndpoint
     }
 
     private struct ActiveTunnel: Sendable {
-        let request: TunnelRequest
-        let handle: TunnelHandle
-        let verificationEvidence: TargetVerificationEvidence
+        var request: TunnelRequest
+        var handle: TunnelHandle
+        var verificationEvidence: TargetVerificationEvidence
         let broker: any TunnelBrokerSession
         let lease: TunnelLease
         let leaseSaved: Bool
@@ -188,16 +188,72 @@ actor TunnelRegistry {
     }
 
     func adopt(
-        _ evidence: TargetVerificationEvidence,
-        for request: TunnelRequest,
+        tunnelID: UUID,
+        serviceID: UUID,
+        evidence: TargetVerificationEvidence,
         at date: Date = Date()
     ) async throws -> TunnelHandle {
+        guard let match = entries.first(where: { _, entry in
+            guard case .active(let active) = entry else { return false }
+            return active.handle.id == tunnelID
+        }), case .active(let active) = match.value else {
+            throw TunnelOpenFailure(code: .targetProbeIndeterminate)
+        }
+
+        guard active.request.serviceID == nil,
+              active.handle.subject.isCandidate,
+              evidence == active.verificationEvidence else {
+            throw TunnelOpenFailure(code: .targetProbeIndeterminate)
+        }
+
+        let savedRequest = active.request.withServiceID(serviceID)
+        let savedEvidence: TargetVerificationEvidence
         do {
-            _ = try request.adopting(evidence, at: date)
+            savedEvidence = try evidence.adopting(
+                savedSubject: savedRequest.subject,
+                at: date
+            )
         } catch {
             throw TunnelOpenFailure(code: .targetProbeIndeterminate)
         }
-        return try await openTunnel(request)
+
+        let savedKey = registryKey(for: savedRequest)
+        guard entries[savedKey] == nil else {
+            throw TunnelOpenFailure(code: .localPortUnavailable)
+        }
+
+        active.terminationMonitor?.cancel()
+        var adopted = active
+        adopted.request = savedRequest
+        adopted.handle = TunnelHandle(
+            id: active.handle.id,
+            serviceID: serviceID,
+            hostID: active.handle.hostID,
+            local: active.handle.local,
+            reused: true,
+            subject: savedRequest.subject,
+            verificationEvidence: savedEvidence
+        )
+        adopted.verificationEvidence = savedEvidence
+        adopted.terminationMonitor = nil
+        entries.removeValue(forKey: match.key)
+        entries[savedKey] = .active(adopted)
+        startTerminationMonitor(for: adopted, key: savedKey)
+        return adopted.handle
+    }
+
+    func adopt(
+        _ tunnelID: UUID,
+        _ serviceID: UUID,
+        _ evidence: TargetVerificationEvidence,
+        at date: Date = Date()
+    ) async throws -> TunnelHandle {
+        try await adopt(
+            tunnelID: tunnelID,
+            serviceID: serviceID,
+            evidence: evidence,
+            at: date
+        )
     }
 
     private func openTunnel(_ request: TunnelRequest) async throws -> TunnelHandle {
@@ -218,12 +274,7 @@ actor TunnelRegistry {
             throw TunnelOpenFailure(code: .closedForNetworkChange)
         }
 
-        let key = RegistryKey(
-            serviceID: request.serviceID,
-            sshIdentityID: request.sshIdentityID,
-            sshAddressID: request.sshAddressID,
-            remote: request.remote
-        )
+        let key = registryKey(for: request)
         if let entry = entries[key] {
             switch entry {
             case .active(let active):
@@ -613,6 +664,15 @@ actor TunnelRegistry {
         let failure = TunnelOpenFailure(code: .localPortUnavailable, cleanup: .completed)
         record(tunnelID, .failed(failure.code, cleanup: failure.cleanup))
         throw failure
+    }
+
+    private func registryKey(for request: TunnelRequest) -> RegistryKey {
+        RegistryKey(
+            subject: request.subject,
+            sshIdentityID: request.sshIdentityID,
+            sshAddressID: request.sshAddressID,
+            remote: request.remote
+        )
     }
 
     private func requireBroker(_ broker: (any TunnelBrokerSession)?) throws -> any TunnelBrokerSession {

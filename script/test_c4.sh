@@ -11,7 +11,7 @@ fi
 
 SSH_VERSION="$(/usr/bin/ssh -V 2>&1 || true)"
 case "$SSH_VERSION" in
-    OpenSSH_9.7*|OpenSSH_10.2*) ;;
+    "OpenSSH_9.7p1, LibreSSL 3.3.6"|"OpenSSH_10.2p1, LibreSSL 3.3.6") ;;
     *)
         echo "C4 fixture skipped: unsupported OpenSSH version (${SSH_VERSION%%,*})"
         exit 0
@@ -26,6 +26,7 @@ BROKER="$BUILD_DIR/KeyPortTunnelBroker"
 FIXTURE_DIR="$(mktemp -d /tmp/keyport-c4.XXXXXX)"
 SSHD_PID=""
 BROKER_PID=""
+APP_PID=""
 declare -a TARGET_PIDS=()
 declare -a CLEANUP_PORTS=()
 
@@ -33,6 +34,9 @@ cleanup() {
     set +e
     if [[ -n "$BROKER_PID" ]] && kill -0 "$BROKER_PID" 2>/dev/null; then
         kill "$BROKER_PID" 2>/dev/null
+    fi
+    if [[ -n "$APP_PID" ]] && kill -0 "$APP_PID" 2>/dev/null; then
+        kill -KILL "$APP_PID" 2>/dev/null
     fi
     for pid in "${TARGET_PIDS[@]}"; do
         kill "$pid" 2>/dev/null
@@ -135,8 +139,15 @@ start_target_server() {
     CLEANUP_PORTS+=("$port")
 }
 
-stop_broker_writer() {
-    exec 9>&- || true
+start_app_process() {
+    local input_path="$1"
+    (
+        # Keep the broker's stdin owned by a process that can be SIGKILLed.
+        exec 9>"$input_path"
+        exec 8<"$input_path"
+        read -r -t 30 -u 8 _ || true
+    ) &
+    APP_PID="$!"
 }
 
 run_success_case() {
@@ -154,6 +165,7 @@ run_success_case() {
     local error_path
     local response
     local status
+    local app_pid
 
     target_port="$(choose_port)"
     local_port="$(choose_port)"
@@ -183,7 +195,7 @@ run_success_case() {
         --lease-path "$lease_path" \
         <"$input_path" >"$output_path" 2>"$error_path" &
     BROKER_PID="$!"
-    exec 9>"$input_path"
+    start_app_process "$input_path"
 
     if ! wait_for_output "$output_path" "FORWARD_ESTABLISHED" "$BROKER_PID"; then
         echo "C4 $name broker output:" >&2
@@ -197,7 +209,11 @@ run_success_case() {
         return 1
     fi
 
-    stop_broker_writer
+    app_pid="$APP_PID"
+    kill -KILL "$app_pid"
+    wait "$app_pid" 2>/dev/null || true
+    APP_PID=""
+    wait_for_port_closed "$local_port"
     if wait "$BROKER_PID"; then
         status=0
     else
@@ -208,10 +224,9 @@ run_success_case() {
         echo "C4 $name broker exited with status $status" >&2
         return 1
     fi
-    wait_for_port_closed "$local_port"
     wait_for_absent "$control_path"
     wait_for_absent "$lease_path"
-    echo "C4 $name: open-confirm, target response, stdin EOF, and port cleanup passed"
+    echo "C4 $name: open-confirm, target response, main-app SIGKILL stdin EOF, and port cleanup passed"
 }
 
 run_refused_case() {
@@ -225,6 +240,7 @@ run_refused_case() {
     local output_path
     local error_path
     local status
+    local app_pid
 
     target_port="$(choose_port)"
     local_port="$(choose_port)"
@@ -252,14 +268,13 @@ run_refused_case() {
         --lease-path "$lease_path" \
         <"$input_path" >"$output_path" 2>"$error_path" &
     BROKER_PID="$!"
-    exec 9>"$input_path"
+    start_app_process "$input_path"
 
     if ! wait_for_output "$output_path" "FORWARD_FAILED target_refused" "$BROKER_PID"; then
         echo "C4 refused broker output:" >&2
         sed -n '1,80p' "$output_path" "$error_path" >&2 || true
         return 1
     fi
-    stop_broker_writer
     if wait "$BROKER_PID"; then
         status=0
     else
@@ -273,6 +288,12 @@ run_refused_case() {
     wait_for_port_closed "$local_port"
     wait_for_absent "$control_path"
     wait_for_absent "$lease_path"
+    app_pid="$APP_PID"
+    if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
+        kill -KILL "$app_pid" 2>/dev/null || true
+        wait "$app_pid" 2>/dev/null || true
+    fi
+    APP_PID=""
     echo "C4 refused: open-failed and cleanup passed"
 }
 

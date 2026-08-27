@@ -327,7 +327,7 @@ public enum TunnelState: Equatable, Sendable {
 
 public struct TunnelHandle: Identifiable, Hashable, Sendable {
     public let id: UUID
-    public let serviceID: UUID
+    public let serviceID: UUID?
     public let hostID: UUID
     public let local: LocalEndpoint
     public let reused: Bool
@@ -336,7 +336,7 @@ public struct TunnelHandle: Identifiable, Hashable, Sendable {
 
     public init(
         id: UUID,
-        serviceID: UUID,
+        serviceID: UUID?,
         hostID: UUID,
         local: LocalEndpoint,
         reused: Bool = false,
@@ -351,7 +351,7 @@ public struct TunnelHandle: Identifiable, Hashable, Sendable {
         self.subject = subject ?? TunnelSubject(
             operationID: id,
             sessionID: id,
-            candidateID: serviceID,
+            candidateID: serviceID ?? hostID,
             sshIdentityID: hostID,
             sshAddressID: hostID,
             remoteDigest: "legacy-handle",
@@ -367,7 +367,7 @@ public struct TunnelRequest: Hashable, Sendable {
     public let operationID: UUID
     public let sessionID: UUID
     public let candidateID: UUID
-    public let serviceID: UUID
+    public let serviceID: UUID?
     public let hostID: UUID
     public let sshIdentityID: UUID
     public let sshAddressID: UUID
@@ -383,7 +383,7 @@ public struct TunnelRequest: Hashable, Sendable {
 
     public init(
         operationID: UUID,
-        serviceID: UUID,
+        serviceID: UUID? = nil,
         hostID: UUID,
         sshIdentityID: UUID,
         sshAddressID: UUID,
@@ -418,7 +418,16 @@ public struct TunnelRequest: Hashable, Sendable {
     }
 
     public var subject: TunnelSubject {
-        TunnelSubject(
+        if let serviceID {
+            return TunnelSubject(
+                serviceID: serviceID,
+                sshIdentityID: sshIdentityID,
+                sshAddressID: sshAddressID,
+                remote: remote,
+                networkEpoch: networkEpoch
+            )
+        }
+        return TunnelSubject(
             operationID: operationID,
             sessionID: sessionID,
             candidateID: candidateID,
@@ -429,12 +438,25 @@ public struct TunnelRequest: Hashable, Sendable {
         )
     }
 
-    public func adopting(
-        _ evidence: TargetVerificationEvidence,
-        at date: Date
-    ) throws -> TunnelRequest {
-        try evidence.validate(for: subject, at: date)
-        return self
+    public func withServiceID(_ serviceID: UUID) -> TunnelRequest {
+        TunnelRequest(
+            operationID: operationID,
+            serviceID: serviceID,
+            hostID: hostID,
+            sshIdentityID: sshIdentityID,
+            sshAddressID: sshAddressID,
+            serviceProtocol: serviceProtocol,
+            sshHost: sshHost,
+            sshPort: sshPort,
+            username: username,
+            identityPath: identityPath,
+            knownHostsPath: knownHostsPath,
+            remote: remote,
+            networkEpoch: networkEpoch,
+            originSensitive: originSensitive,
+            sessionID: sessionID,
+            candidateID: candidateID
+        )
     }
 }
 
@@ -576,6 +598,7 @@ public enum TunnelBrokerCommandBuilder {
 
 public enum TunnelBrokerOutputEvent: Equatable, Sendable {
     case forwardEstablished
+    case forwardRejected
     case targetRefused
     case targetTimedOut
     case targetProbeIndeterminate
@@ -632,6 +655,9 @@ public struct TunnelBrokerOutputRecognizer: Sendable {
             of: #"channel [0-9]+: open failed"#,
             options: .regularExpression
         ) != nil {
+            if lower == "forward_failed forward_rejected" {
+                return [.forwardRejected]
+            }
             if lower.contains("refused") {
                 return [.targetRefused]
             }
