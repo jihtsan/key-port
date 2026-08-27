@@ -250,6 +250,11 @@ private struct SharedServerFields {
 @MainActor
 @Observable
 final class AppModel {
+    private struct ActiveDiscoveryOperation {
+        let operationID: UUID
+        let hostID: UUID
+    }
+
     var snapshot = AppSnapshot()
     var destination: SidebarDestination = .servers
     var selectedServerID: UUID?
@@ -272,6 +277,8 @@ final class AppModel {
     var passwordSaveError: String?
     var isSavingPassword = false
     var discoveredSSHConnections: [DiscoveredSSHConnection] = []
+    var listenerDiscoveryResults: [UUID: DiscoveryResult] = [:]
+    private(set) var discoveryEnabled: Bool
     var retainedSSHCheckLog: SSHCheckLog?
     var machineConfigurationSyncingServerID: UUID?
     var machineConfigurationSyncError: String?
@@ -292,6 +299,9 @@ final class AppModel {
     private let cloudSync: any CloudSyncing
     private let hostV6Runtime: HostV6Runtime?
     private let defaults: UserDefaults
+    private let discoveryExecutor: any ProcessExecuting
+    private let discoveryAdapter: any ListenerDiscoveryAdapter
+    private let discoveryCoordinator: DiscoveryCoordinator
     private let archiveService = MetadataArchiveService()
     private let audit = AuditLogService()
     private let clipboard = ClipboardService()
@@ -300,14 +310,21 @@ final class AppModel {
     private var isSynchronizingCloud = false
     private var isInitialLoadInProgress = false
     private var automaticCloudRetryAttempt = 0
+    private var activeDiscoveryOperations: [UUID: ActiveDiscoveryOperation] = [:]
+    private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
+    private var discoveryGeneration = 0
 
     init(
         hostV6Runtime: HostV6Runtime? = nil,
         cloudSync: any CloudSyncing = CloudKitSyncService(),
         paths: KeyPortPaths = KeyPortPaths(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        discoveryExecutor: (any ProcessExecuting)? = nil,
+        discoveryAdapter: (any ListenerDiscoveryAdapter)? = nil,
+        discoveryCoordinator: DiscoveryCoordinator = DiscoveryCoordinator()
     ) {
         let storedCloudSyncAt = defaults.object(forKey: "KeyPort.lastCloudSyncAt") as? Date
+        self.discoveryEnabled = DiscoveryFeatureFlags.isEnabled(defaults: defaults)
         self.lastCloudSyncAt = storedCloudSyncAt
         self.cloudState = defaults.bool(forKey: "KeyPort.cloudSyncEnabled") ? .checking : .disabled
         let runner = ProcessRunner()
@@ -327,6 +344,9 @@ final class AppModel {
         self.cloudSync = cloudSync
         self.hostV6Runtime = hostV6Runtime
         self.defaults = defaults
+        self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
+        self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
+        self.discoveryCoordinator = discoveryCoordinator
     }
 
     var activeServers: [ServerConnection] {
@@ -759,6 +779,116 @@ final class AppModel {
             isLoaded = true
             isInitialLoadInProgress = false
             present(error)
+        }
+    }
+
+    /// 用户明确触发的一次性监听发现。结果只进入内存，不调用 `persist()`，
+    /// 也不创建、更新或删除任何 v5 Server/Service 对象。
+    func discoverListeners(
+        for serverID: UUID,
+        limits: DiscoveryLimits = .default
+    ) async throws -> DiscoveryResult {
+        guard discoveryEnabled else { throw ListenerDiscoveryTriggerError.featureDisabled }
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
+            throw ListenerDiscoveryTriggerError.hostNotFound
+        }
+        guard server.status == .authorized else {
+            throw ListenerDiscoveryTriggerError.hostNotAuthorized
+        }
+        guard let route = sshOperationServer(for: server) else {
+            throw StableOperationFailure(
+                stage: .sshTrust,
+                objectID: serverID.uuidString.lowercased(),
+                code: .identityUnavailable,
+                recoveryAction: .edit
+            )
+        }
+        guard let identity = key(for: route) else {
+            throw StableOperationFailure(
+                stage: .sshTrust,
+                objectID: serverID.uuidString.lowercased(),
+                code: .identityUnavailable,
+                recoveryAction: .prepareLocalKey
+            )
+        }
+
+        let operationID = UUID()
+        let generation = discoveryGeneration
+        let hostID = HostV6.StableID.host(
+            legacyHost: route.host,
+            port: UInt16(clamping: route.port)
+        )
+        activeDiscoveryOperations[serverID] = ActiveDiscoveryOperation(
+            operationID: operationID,
+            hostID: hostID
+        )
+        activeDiscoveryOperationsByHost[hostID] = operationID
+        let executor = discoveryExecutor
+        let adapter = discoveryAdapter
+        defer {
+            if activeDiscoveryOperations[serverID]?.operationID == operationID {
+                activeDiscoveryOperations.removeValue(forKey: serverID)
+            }
+            if activeDiscoveryOperationsByHost[hostID] == operationID {
+                activeDiscoveryOperationsByHost.removeValue(forKey: hostID)
+            }
+        }
+
+        let result = try await discoveryCoordinator.discover(
+            hostID: hostID,
+            operationID: operationID
+        ) {
+            let session = try await TrustedSSHSession.establish(
+                route: route,
+                observedHostKeys: route.confirmedHostKeys,
+                identity: identity,
+                executor: executor
+            )
+            return try await adapter.discover(using: session, limits: limits)
+        }
+
+        try Task.checkCancellation()
+        guard discoveryEnabled,
+              discoveryGeneration == generation,
+              activeDiscoveryOperations[serverID]?.operationID == operationID,
+              activeDiscoveryOperationsByHost[hostID] == operationID else {
+            throw DiscoveryCoordinatorError.cancelled
+        }
+        listenerDiscoveryResults[serverID] = result
+        return result
+    }
+
+    /// 页面关闭或用户取消时立即丢弃本机内存中的候选，并取消远端进程。
+    func clearListenerDiscovery(for serverID: UUID) async {
+        await cancelListenerDiscovery(for: serverID)
+        listenerDiscoveryResults.removeValue(forKey: serverID)
+    }
+
+    func cancelListenerDiscovery(for serverID: UUID) async {
+        guard let active = activeDiscoveryOperations[serverID] else { return }
+        activeDiscoveryOperations.removeValue(forKey: serverID)
+        if activeDiscoveryOperationsByHost[active.hostID] == active.operationID {
+            activeDiscoveryOperationsByHost.removeValue(forKey: active.hostID)
+        }
+        await discoveryCoordinator.cancel(operationID: active.operationID)
+    }
+
+    /// 关闭 flag 即可回滚该切片；同时清除候选并请求取消所有在途发现。
+    func setDiscoveryEnabled(_ enabled: Bool) {
+        let stateChanged = discoveryEnabled != enabled
+        discoveryEnabled = enabled
+        defaults.set(enabled, forKey: DiscoveryFeatureFlags.discoveryEnabledKey)
+        if stateChanged || !enabled {
+            discoveryGeneration &+= 1
+        }
+        guard !enabled else { return }
+
+        let operationIDs = Set(activeDiscoveryOperations.values.map(\.operationID))
+        activeDiscoveryOperations.removeAll()
+        activeDiscoveryOperationsByHost.removeAll()
+        listenerDiscoveryResults.removeAll()
+        for operationID in operationIDs {
+            Task { await discoveryCoordinator.cancel(operationID: operationID) }
         }
     }
 
@@ -2104,7 +2234,7 @@ final class AppModel {
     /// （blocking 冲突或无可用地址）时 fail closed 返回 nil。审计只记稳定码，
     /// 不含地址、用户名或秘密。关闭 flag 即整体回退 legacy adapter。
     private func sshOperationServer(for server: ServerConnection) -> ServerConnection? {
-        let provider = SSHCompatFeatureFlags.routeProvider(servers: snapshot.servers)
+        let provider = SSHCompatFeatureFlags.routeProvider(servers: snapshot.servers, defaults: defaults)
         if let routed = provider.sshRoute(for: server.id) { return routed }
         if let failure = provider.blockingFailure(for: server.id) {
             appendAudit(category: "ssh-auth", action: "route", targetID: server.id.uuidString, result: failure.code.rawValue, level: .error)
