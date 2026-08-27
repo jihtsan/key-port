@@ -135,9 +135,18 @@ private final class OpenSSHTunnelBrokerSession: TunnelBrokerTerminationObserving
         }
     }
 
-    func verifyTarget(subject: TunnelSubject) async throws -> TargetVerificationEvidence {
+    func verifyTarget(
+        tunnelID: UUID,
+        operationID: UUID,
+        subject: TunnelSubject
+    ) async throws -> TargetVerificationEvidence {
         try await verifyTarget()
-        return TargetVerificationEvidence(subject: subject, verifiedAt: evidenceClock())
+        return TargetVerificationEvidence(
+            tunnelID: tunnelID,
+            operationID: operationID,
+            subject: subject,
+            verifiedAt: evidenceClock()
+        )
     }
 
     var processIdentifier: Int32? {

@@ -14,16 +14,29 @@ protocol LoopbackPortReserving: Sendable {
 protocol TunnelBrokerSession: Sendable {
     var processIdentifier: Int32? { get }
     func verifyTarget() async throws
-    func verifyTarget(subject: TunnelSubject) async throws -> TargetVerificationEvidence
+    func verifyTarget(
+        tunnelID: UUID,
+        operationID: UUID,
+        subject: TunnelSubject
+    ) async throws -> TargetVerificationEvidence
     func close() async -> CleanupStatus
 }
 
 extension TunnelBrokerSession {
     var processIdentifier: Int32? { nil }
 
-    func verifyTarget(subject: TunnelSubject) async throws -> TargetVerificationEvidence {
+    func verifyTarget(
+        tunnelID: UUID,
+        operationID: UUID,
+        subject: TunnelSubject
+    ) async throws -> TargetVerificationEvidence {
         try await verifyTarget()
-        return TargetVerificationEvidence(subject: subject, verifiedAt: Date())
+        return TargetVerificationEvidence(
+            tunnelID: tunnelID,
+            operationID: operationID,
+            subject: subject,
+            verifiedAt: Date()
+        )
     }
 }
 
@@ -610,8 +623,17 @@ actor TunnelRegistry {
                 record(tunnelID, .forwardEstablished)
                 record(tunnelID, .verifyingTarget)
                 let verificationEvidence = try await requireBroker(broker)
-                    .verifyTarget(subject: request.subject)
-                guard verificationEvidence.subject == request.subject,
+                    .verifyTarget(
+                        tunnelID: tunnelID,
+                        operationID: request.operationID,
+                        subject: request.subject
+                    )
+                guard verificationEvidence.tunnelID == tunnelID,
+                      verificationEvidence.operationID == request.operationID,
+                      verificationEvidence.subject == request.subject,
+                      verificationEvidence.sshIdentityID == request.sshIdentityID,
+                      verificationEvidence.sshAddressID == request.sshAddressID,
+                      verificationEvidence.remoteDigest == request.remote.remoteDigest,
                       verificationEvidence.isValid(
                           at: verificationEvidence.verifiedAt,
                           networkEpoch: request.networkEpoch

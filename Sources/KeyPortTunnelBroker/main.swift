@@ -142,19 +142,35 @@ private struct TunnelBrokerRuntime {
         case .reachable:
             targetResult = collector.waitForTargetResult(timeout: 5.0)
         case .refused, .timedOut, .indeterminate:
-            probe.connection?.cancel()
+            guard probe.cancelAndWait(timeout: probe.cancellationTimeout) else {
+                throw TunnelBrokerRuntimeError.targetProbeIndeterminate
+            }
             throw runtimeError(for: probe.result)
         }
-        probe.connection?.cancel()
 
         switch targetResult {
         case .confirmed:
-            writeBrokerStatus("FORWARD_ESTABLISHED")
+            try publishForwardEstablished(
+                after: probe,
+                cancellationTimeout: probe.cancellationTimeout
+            )
         case .refused:
+            guard probe.cancelAndWait(timeout: probe.cancellationTimeout) else {
+                terminateSSHIfRunning(ssh)
+                throw TunnelBrokerRuntimeError.targetProbeIndeterminate
+            }
             throw TunnelBrokerRuntimeError.targetRefused
         case .timedOut:
+            guard probe.cancelAndWait(timeout: probe.cancellationTimeout) else {
+                terminateSSHIfRunning(ssh)
+                throw TunnelBrokerRuntimeError.targetProbeIndeterminate
+            }
             throw TunnelBrokerRuntimeError.targetTimeout
         case .indeterminate, .none:
+            guard probe.cancelAndWait(timeout: probe.cancellationTimeout) else {
+                terminateSSHIfRunning(ssh)
+                throw TunnelBrokerRuntimeError.targetProbeIndeterminate
+            }
             terminateSSHIfRunning(ssh)
             throw TunnelBrokerRuntimeError.targetProbeIndeterminate
         }
@@ -467,19 +483,36 @@ private enum OpenSSHTargetResult {
     case none
 }
 
-private enum LocalTargetProbeResult: Equatable {
+enum LocalTargetProbeResult: Equatable {
     case reachable
     case refused
     case timedOut
     case indeterminate
 }
 
-private struct LocalTargetProbe {
+struct LocalTargetProbe {
     let port: UInt16
+    let callbackQueue: DispatchQueue
+    let cancellationTimeout: TimeInterval
+
+    init(
+        port: UInt16,
+        callbackQueue: DispatchQueue = DispatchQueue(label: "com.jihtsan.KeyPort.tunnel-probe"),
+        cancellationTimeout: TimeInterval = 0.5
+    ) {
+        self.port = port
+        self.callbackQueue = callbackQueue
+        self.cancellationTimeout = cancellationTimeout
+    }
 
     func run() -> LocalTargetProbeOutcome {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
-            return LocalTargetProbeOutcome(result: .indeterminate, connection: nil)
+            return LocalTargetProbeOutcome(
+                result: .indeterminate,
+                connection: nil,
+                cancellation: nil,
+                cancellationTimeout: cancellationTimeout
+            )
         }
         let connection = NWConnection(
             host: NWEndpoint.Host("127.0.0.1"),
@@ -488,6 +521,7 @@ private struct LocalTargetProbe {
         )
         let semaphore = DispatchSemaphore(value: 0)
         let result = ProbeResultBox()
+        let cancellation = ProbeCancellationSignal()
         connection.stateUpdateHandler = { state in
             switch state {
             case .ready:
@@ -497,15 +531,20 @@ private struct LocalTargetProbe {
                 result.set(Self.map(error))
                 semaphore.signal()
             case .cancelled:
+                cancellation.markCancelled()
                 semaphore.signal()
             default:
                 break
             }
         }
-        connection.start(queue: DispatchQueue(label: "com.jihtsan.KeyPort.tunnel-probe"))
+        connection.start(queue: callbackQueue)
         if semaphore.wait(timeout: .now() + 5.0) == .timedOut {
-            connection.cancel()
-            return LocalTargetProbeOutcome(result: .timedOut, connection: nil)
+            return LocalTargetProbeOutcome(
+                result: .timedOut,
+                connection: connection,
+                cancellation: cancellation,
+                cancellationTimeout: cancellationTimeout
+            )
         }
         let probeResult = result.value ?? .indeterminate
         if probeResult == .reachable {
@@ -516,10 +555,19 @@ private struct LocalTargetProbe {
                 isComplete: true,
                 completion: .contentProcessed { _ in }
             )
-            return LocalTargetProbeOutcome(result: probeResult, connection: connection)
+            return LocalTargetProbeOutcome(
+                result: probeResult,
+                connection: connection,
+                cancellation: cancellation,
+                cancellationTimeout: cancellationTimeout
+            )
         }
-        connection.cancel()
-        return LocalTargetProbeOutcome(result: probeResult, connection: nil)
+        return LocalTargetProbeOutcome(
+            result: probeResult,
+            connection: connection,
+            cancellation: cancellation,
+            cancellationTimeout: cancellationTimeout
+        )
     }
 
     private static func map(_ error: NWError) -> LocalTargetProbeResult {
@@ -533,9 +581,67 @@ private struct LocalTargetProbe {
     }
 }
 
-private struct LocalTargetProbeOutcome {
+struct LocalTargetProbeOutcome {
     let result: LocalTargetProbeResult
     let connection: NWConnection?
+    let cancellationTimeout: TimeInterval
+    private let cancellation: ProbeCancellationSignal?
+
+    fileprivate init(
+        result: LocalTargetProbeResult,
+        connection: NWConnection?,
+        cancellation: ProbeCancellationSignal?,
+        cancellationTimeout: TimeInterval
+    ) {
+        self.result = result
+        self.connection = connection
+        self.cancellation = cancellation
+        self.cancellationTimeout = cancellationTimeout
+    }
+
+    func cancelAndWait(timeout: TimeInterval = 0.5) -> Bool {
+        guard let connection, let cancellation else { return true }
+        connection.cancel()
+        return cancellation.wait(timeout: timeout)
+    }
+}
+
+fileprivate final class ProbeCancellationSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var isCancelled = false
+
+    func markCancelled() {
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    func wait(timeout: TimeInterval) -> Bool {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            return true
+        }
+        lock.unlock()
+        return semaphore.wait(timeout: .now() + timeout) == .success
+    }
+}
+
+func publishForwardEstablished(
+    after probe: LocalTargetProbeOutcome,
+    cancellationTimeout: TimeInterval = 0.5,
+    writeStatus: (String) -> Void = writeBrokerStatus
+) throws {
+    guard probe.cancelAndWait(timeout: cancellationTimeout) else {
+        throw TunnelBrokerRuntimeError.targetProbeIndeterminate
+    }
+    writeStatus("FORWARD_ESTABLISHED")
 }
 
 private final class ProbeResultBox: @unchecked Sendable {

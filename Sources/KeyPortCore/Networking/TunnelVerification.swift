@@ -121,25 +121,34 @@ public enum TargetVerificationEvidenceError: Error, Equatable, Sendable {
 public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
     public static let validityDuration: TimeInterval = 30
 
+    public let tunnelID: UUID
+    public let operationID: UUID
     public let subject: TunnelSubject
+    public let sshIdentityID: UUID
+    public let sshAddressID: UUID
+    public let remoteDigest: String
+    public let networkEpoch: UInt64
     public let verifiedAt: Date
     public let expiresAt: Date
 
-    public var operationID: UUID? { subject.operationID }
     public var sessionID: UUID? { subject.sessionID }
     public var candidateID: UUID? { subject.candidateID }
     public var serviceID: UUID? { subject.serviceID }
-    public var sshIdentityID: UUID { subject.sshIdentityID }
-    public var sshAddressID: UUID { subject.sshAddressID }
-    public var remoteDigest: String { subject.remoteDigest }
-    public var networkEpoch: UInt64 { subject.networkEpoch }
 
     public init(
+        tunnelID: UUID,
+        operationID: UUID,
         subject: TunnelSubject,
         verifiedAt: Date,
         expiresAt: Date? = nil
     ) {
+        self.tunnelID = tunnelID
+        self.operationID = operationID
         self.subject = subject
+        self.sshIdentityID = subject.sshIdentityID
+        self.sshAddressID = subject.sshAddressID
+        self.remoteDigest = subject.remoteDigest
+        self.networkEpoch = subject.networkEpoch
         self.verifiedAt = verifiedAt
         self.expiresAt = min(
             expiresAt ?? verifiedAt.addingTimeInterval(Self.validityDuration),
@@ -148,16 +157,20 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
     }
 
     public func isValid(at date: Date, networkEpoch: UInt64) -> Bool {
-        subject.networkEpoch == networkEpoch
+        self.networkEpoch == networkEpoch
             && date >= verifiedAt
             && date < expiresAt
     }
 
     public func adopt(candidate: TunnelSubject, at date: Date) throws -> TunnelSubject {
-        guard subject == candidate else {
+        guard subject == candidate,
+              candidate.operationID == operationID,
+              candidate.sshIdentityID == sshIdentityID,
+              candidate.sshAddressID == sshAddressID,
+              candidate.remoteDigest == remoteDigest else {
             throw TargetVerificationEvidenceError.subjectMismatch
         }
-        guard subject.networkEpoch == candidate.networkEpoch else {
+        guard networkEpoch == candidate.networkEpoch else {
             throw TargetVerificationEvidenceError.networkEpochMismatch
         }
         guard date >= verifiedAt, date < expiresAt else {
@@ -171,19 +184,22 @@ public struct TargetVerificationEvidence: Codable, Hashable, Sendable {
         at date: Date
     ) throws -> TargetVerificationEvidence {
         guard subject.isCandidate,
+              subject.operationID == operationID,
               savedSubject.isSaved,
-              subject.sshIdentityID == savedSubject.sshIdentityID,
-              subject.sshAddressID == savedSubject.sshAddressID,
-              subject.remoteDigest == savedSubject.remoteDigest else {
+              sshIdentityID == savedSubject.sshIdentityID,
+              sshAddressID == savedSubject.sshAddressID,
+              remoteDigest == savedSubject.remoteDigest else {
             throw TargetVerificationEvidenceError.subjectMismatch
         }
-        guard subject.networkEpoch == savedSubject.networkEpoch else {
+        guard networkEpoch == savedSubject.networkEpoch else {
             throw TargetVerificationEvidenceError.networkEpochMismatch
         }
         guard date >= verifiedAt, date < expiresAt else {
             throw TargetVerificationEvidenceError.expired
         }
         return TargetVerificationEvidence(
+            tunnelID: tunnelID,
+            operationID: operationID,
             subject: savedSubject,
             verifiedAt: verifiedAt,
             expiresAt: expiresAt

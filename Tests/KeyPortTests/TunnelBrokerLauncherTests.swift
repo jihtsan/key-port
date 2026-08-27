@@ -47,6 +47,46 @@ final class TunnelBrokerLauncherTests: XCTestCase {
         }
     }
 
+    func testBrokerSessionSignsEvidenceWithTunnelAndOperationIdentity() async throws {
+        let executable = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("KeyPortTunnelBroker-evidence-(UUID().uuidString)")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: executable)
+        }
+        try Data("#!/bin/sh\nprintf 'FORWARD_ESTABLISHED\\n'\nsleep 30\n".utf8)
+            .write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+
+        let launcher = OpenSSHTunnelBrokerLauncher(executablePath: executable.path)
+        let session = try await launcher.launch(makeConfiguration())
+        let tunnelID = UUID()
+        let operationID = UUID()
+        let remote = RemoteServiceEndpoint(bind: .loopbackV4, port: 8080)
+        let subject = TunnelSubject(
+            operationID: operationID,
+            sessionID: UUID(),
+            candidateID: UUID(),
+            sshIdentityID: UUID(),
+            sshAddressID: UUID(),
+            remote: remote,
+            networkEpoch: 4
+        )
+
+        let evidence = try await session.verifyTarget(
+            tunnelID: tunnelID,
+            operationID: operationID,
+            subject: subject
+        )
+
+        XCTAssertEqual(evidence.tunnelID, tunnelID)
+        XCTAssertEqual(evidence.operationID, operationID)
+        XCTAssertEqual(evidence.sshIdentityID, subject.sshIdentityID)
+        XCTAssertEqual(evidence.sshAddressID, subject.sshAddressID)
+        XCTAssertEqual(evidence.remoteDigest, remote.remoteDigest)
+        XCTAssertEqual(evidence.networkEpoch, subject.networkEpoch)
+        _ = await session.close()
+    }
+
     func testForwardRejectionPreservesTheBrokerLaunchFailureCode() async throws {
         let executable = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("KeyPortTunnelBroker-forward-rejected-(UUID().uuidString)")

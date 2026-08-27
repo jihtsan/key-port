@@ -295,6 +295,7 @@ final class ServiceAccessTests: XCTestCase {
         let identityID = UUID()
         let addressID = UUID()
         let remote = RemoteServiceEndpoint(bind: .specific(.v4("192.0.2.20")), port: 8080)
+        let tunnelID = UUID()
         let subject = TunnelSubject(
             operationID: operationID,
             sessionID: sessionID,
@@ -305,8 +306,19 @@ final class ServiceAccessTests: XCTestCase {
             networkEpoch: 7
         )
         let verifiedAt = Date(timeIntervalSince1970: 100)
-        let evidence = TargetVerificationEvidence(subject: subject, verifiedAt: verifiedAt)
+        let evidence = TargetVerificationEvidence(
+            tunnelID: tunnelID,
+            operationID: operationID,
+            subject: subject,
+            verifiedAt: verifiedAt
+        )
 
+        XCTAssertEqual(evidence.tunnelID, tunnelID)
+        XCTAssertEqual(evidence.operationID, operationID)
+        XCTAssertEqual(evidence.sshIdentityID, identityID)
+        XCTAssertEqual(evidence.sshAddressID, addressID)
+        XCTAssertEqual(evidence.remoteDigest, remote.remoteDigest)
+        XCTAssertEqual(evidence.networkEpoch, 7)
         XCTAssertEqual(subject.remoteDigest, remote.remoteDigest)
         XCTAssertTrue(evidence.isValid(at: verifiedAt.addingTimeInterval(29), networkEpoch: 7))
         XCTAssertFalse(evidence.isValid(at: verifiedAt.addingTimeInterval(30), networkEpoch: 7))
@@ -326,6 +338,42 @@ final class ServiceAccessTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? TargetVerificationEvidenceError, .subjectMismatch)
         }
+    }
+
+    func testTargetEvidenceRetainsInitiatingOperationWhenSubjectIsAdopted() throws {
+        let operationID = UUID()
+        let identityID = UUID()
+        let addressID = UUID()
+        let remote = RemoteServiceEndpoint(bind: .loopbackV4, port: 8080)
+        let candidate = TunnelSubject(
+            operationID: operationID,
+            sessionID: UUID(),
+            candidateID: UUID(),
+            sshIdentityID: identityID,
+            sshAddressID: addressID,
+            remote: remote,
+            networkEpoch: 0
+        )
+        let saved = TunnelSubject(
+            serviceID: UUID(),
+            sshIdentityID: identityID,
+            sshAddressID: addressID,
+            remote: remote,
+            networkEpoch: 0
+        )
+        let evidence = TargetVerificationEvidence(
+            tunnelID: UUID(),
+            operationID: operationID,
+            subject: candidate,
+            verifiedAt: Date(timeIntervalSince1970: 100)
+        )
+
+        let adopted = try evidence.adopting(
+            savedSubject: saved,
+            at: Date(timeIntervalSince1970: 101)
+        )
+
+        XCTAssertEqual(adopted.operationID, operationID)
     }
 
     func testRejectsAnInvalidRemoteForwardHost() {
