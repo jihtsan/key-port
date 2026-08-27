@@ -36,6 +36,9 @@ struct KeyPortPaths: Sendable {
     var authorityC3EvidenceDirectory: URL {
         applicationSupport.appendingPathComponent("authority-c3", isDirectory: true)
     }
+    var authorityActivationJournal: URL {
+        applicationSupport.appendingPathComponent("authority-activation-journal.json")
+    }
     var v6CommitJournal: URL { applicationSupport.appendingPathComponent("migration-journal.json") }
     var v6MutationJournal: URL { applicationSupport.appendingPathComponent("mutation-journal-v6.json") }
     var v6CommandLedger: URL { applicationSupport.appendingPathComponent("command-ledger-v6.json") }

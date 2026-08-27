@@ -66,7 +66,7 @@ final class CloudV2SyncServiceTests: XCTestCase {
         XCTAssertEqual(result.cloudChangeTag, "tag-1")
     }
 
-    func testAuthorityRoundTripRejectsStaleRemoteTagBeforeCAS() async throws {
+    func testAuthorityPreconditionRejectsStaleRemoteTagWithoutWriting() async throws {
         let envelope = makeEnvelope()
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
         let transport = ScriptedCloudV2Transport(remoteV2: .init(
@@ -88,7 +88,7 @@ final class CloudV2SyncServiceTests: XCTestCase {
         )
 
         do {
-            _ = try await coordinator.validateAuthorityRoundTrip(envelope, evidence: evidence)
+            try await coordinator.validateAuthorityPrecondition(envelope, evidence: evidence)
             XCTFail("Expected stale C3 Cloud tag to fail closed")
         } catch {
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
@@ -98,8 +98,8 @@ final class CloudV2SyncServiceTests: XCTestCase {
         XCTAssertEqual(metrics.saveAttempts, 0)
     }
 
-    func testAuthorityRoundTripCASWritesAndReadBackBindsCommittedTag() async throws {
-        let envelope = makeEnvelope()
+    func testAuthorityPublicationCASWritesManifestAndAnotherCoordinatorReadsIt() async throws {
+        let envelope = activationCandidate()
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
         let transport = ScriptedCloudV2Transport(remoteV2: .init(
             payload: payload,
@@ -114,21 +114,29 @@ final class CloudV2SyncServiceTests: XCTestCase {
             cloudChangeTag: "tag-c3"
         )
 
-        let receipt = try await coordinator.validateAuthorityRoundTrip(
-            envelope,
-            evidence: evidence
+        try await coordinator.validateAuthorityPrecondition(envelope, evidence: evidence)
+        let pending = try preparedActivation(envelope: envelope, evidence: evidence)
+        let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+        let published = try XCTUnwrap(publishedResult)
+        let secondCoordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-b"
         )
+        let adoptedResult = try await secondCoordinator.fetchPublishedAuthority(
+            restoringLocalStateFrom: envelope
+        )
+        let adopted = try XCTUnwrap(adoptedResult)
         let metrics = await transport.metrics()
 
-        XCTAssertEqual(receipt.evidenceChangeTag, "tag-c3")
-        XCTAssertEqual(receipt.committedChangeTag, "tag-1")
-        XCTAssertEqual(receipt.payloadHash, HostV6.CanonicalJSON.sha256(payload))
+        XCTAssertEqual(published.manifest, pending.plan.manifest)
+        XCTAssertEqual(adopted.manifest, pending.plan.manifest)
+        XCTAssertEqual(adopted.envelope.migrationProvenance.authorityManifest, pending.plan.manifest)
         XCTAssertEqual(metrics.saveAttempts, 1)
-        XCTAssertGreaterThanOrEqual(metrics.v2Fetches, 2)
+        XCTAssertGreaterThanOrEqual(metrics.v2Fetches, 4)
     }
 
-    func testAuthorityRoundTripRejectsConcurrentReadBackChange() async throws {
-        let envelope = makeEnvelope()
+    func testAuthorityPublicationAcceptsAnIdempotentConcurrentReadBack() async throws {
+        let envelope = activationCandidate()
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
         let transport = ScriptedCloudV2Transport(
             remoteV2: .init(payload: payload, changeTag: "tag-c3"),
@@ -139,15 +147,14 @@ final class CloudV2SyncServiceTests: XCTestCase {
             currentDeviceID: "device-a"
         )
 
-        do {
-            _ = try await coordinator.validateAuthorityRoundTrip(
-                envelope,
-                evidence: activationEvidence(payload: payload, cloudChangeTag: "tag-c3")
-            )
-            XCTFail("Expected concurrent read-back change to fail closed")
-        } catch {
-            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.concurrentConflict))
-        }
+        let evidence = activationEvidence(payload: payload, cloudChangeTag: "tag-c3")
+        try await coordinator.validateAuthorityPrecondition(envelope, evidence: evidence)
+        let publishedResult = try await coordinator.publishPreparedAuthority(
+            preparedActivation(envelope: envelope, evidence: evidence)
+        )
+        let published = try XCTUnwrap(publishedResult)
+
+        XCTAssertNotNil(published.manifest.cloudChangeTag)
         let metrics = await transport.metrics()
         XCTAssertEqual(metrics.saveAttempts, 1)
     }
@@ -346,6 +353,52 @@ final class CloudV2SyncServiceTests: XCTestCase {
                 level: .info
             )]),
             migrationProvenance: .empty
+        )
+    }
+
+    private func activationCandidate() -> HostV6.MetadataEnvelope {
+        var envelope = makeEnvelope()
+        let stamp = envelope.synced.hosts[0].stamp
+        envelope.synced.devices = [
+            .init(
+                id: "device-a",
+                name: "Mac A",
+                registeredAt: now,
+                lastActiveAt: now,
+                tailscaleIdentity: nil,
+                stamp: stamp
+            ),
+            .init(
+                id: "device-b",
+                name: "Mac B",
+                registeredAt: now,
+                lastActiveAt: now,
+                tailscaleIdentity: nil,
+                stamp: stamp
+            ),
+        ]
+        return envelope
+    }
+
+    private func preparedActivation(
+        envelope: HostV6.MetadataEnvelope,
+        evidence: HostV6.AuthorityActivationEvidence
+    ) throws -> HostV6PreparedAuthorityActivation {
+        let legacyData = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: true
+        ).data
+        let plan = try HostV6.AuthorityController.prepareActivation(
+            envelope: envelope,
+            legacyData: legacyData,
+            evidence: evidence
+        )
+        let authorityPayload = try HostV6.CloudPayloadCodec.encode(plan.envelope)
+        return HostV6PreparedAuthorityActivation(
+            plan: plan,
+            evidenceChangeTag: evidence.cloudChangeTag,
+            evidencePayloadHash: evidence.verifiedCloudPayloadHash,
+            authorityPayloadHash: HostV6.CanonicalJSON.sha256(authorityPayload)
         )
     }
 

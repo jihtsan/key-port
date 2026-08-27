@@ -40,6 +40,106 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
         }
     }
 
+    func testPreparedActivationSurvivesRestartBeforeCloudCAS() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let fixture = try authorityFixture()
+        let transport = RecoverableAuthorityCloudTransport(remote: .init(
+            payload: fixture.preAuthorityPayload,
+            changeTag: fixture.evidence.cloudChangeTag
+        ))
+        let coordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-a"
+        )
+        try await coordinator.validateAuthorityPrecondition(
+            fixture.preAuthorityEnvelope,
+            evidence: fixture.evidence
+        )
+        try await HostV6AuthorityFileStore(paths: paths).prepareActivation(
+            fixture.plan,
+            evidence: fixture.evidence
+        )
+
+        let restartedStore = HostV6AuthorityFileStore(paths: paths)
+        let pendingResult = try await restartedStore.pendingActivation()
+        let pending = try XCTUnwrap(pendingResult)
+        let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+        let published = try XCTUnwrap(publishedResult)
+        try await restartedStore.completePreparedActivation(using: published)
+
+        let recovered = try await restartedStore.recover()
+        let remoteRecord = await transport.remoteRecord()
+        let remote = try XCTUnwrap(remoteRecord)
+        let remotePayload = try HostV6.CloudPayloadCodec.decodeStrict(remote.payload)
+        XCTAssertEqual(recovered.migrationProvenance.authorityManifest, fixture.plan.manifest)
+        XCTAssertEqual(remotePayload.migrationProvenance.authorityManifest, fixture.plan.manifest)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path))
+    }
+
+    func testPublishedActivationRecoversEveryInterruptedLocalCommitPhase() async throws {
+        for failurePoint in HostV6AuthorityFileStore.FailurePoint.allCases {
+            let home = try temporaryHome()
+            defer { try? FileManager.default.removeItem(at: home) }
+            let paths = KeyPortPaths(home: home)
+            let fixture = try authorityFixture()
+            let transport = RecoverableAuthorityCloudTransport(remote: .init(
+                payload: fixture.preAuthorityPayload,
+                changeTag: fixture.evidence.cloudChangeTag
+            ))
+            let coordinator = HostV6CloudSyncCoordinator(
+                transport: transport,
+                currentDeviceID: "device-a"
+            )
+            let interruptedStore = HostV6AuthorityFileStore(
+                paths: paths,
+                failureInjector: { point in
+                    if point == failurePoint { throw InjectedFailure() }
+                }
+            )
+            try await coordinator.validateAuthorityPrecondition(
+                fixture.preAuthorityEnvelope,
+                evidence: fixture.evidence
+            )
+            try await interruptedStore.prepareActivation(fixture.plan, evidence: fixture.evidence)
+            let pendingResult = try await interruptedStore.pendingActivation()
+            let pending = try XCTUnwrap(pendingResult)
+            let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+            let published = try XCTUnwrap(publishedResult)
+
+            do {
+                try await interruptedStore.completePreparedActivation(using: published)
+                XCTFail("Expected injected interruption at \(failurePoint)")
+            } catch is InjectedFailure {
+            }
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path),
+                "Activation intent missing at \(failurePoint)"
+            )
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: paths.v6CommitJournal.path),
+                "Local commit journal missing at \(failurePoint)"
+            )
+
+            let restartedStore = HostV6AuthorityFileStore(paths: paths)
+            let restartedPendingResult = try await restartedStore.pendingActivation()
+            let restartedPending = try XCTUnwrap(restartedPendingResult)
+            let confirmedResult = try await coordinator.publishPreparedAuthority(restartedPending)
+            let confirmed = try XCTUnwrap(confirmedResult)
+            try await restartedStore.completePreparedActivation(using: confirmed)
+            let recovered = try await restartedStore.recover()
+
+            XCTAssertEqual(
+                recovered.migrationProvenance.authorityManifest,
+                fixture.plan.manifest,
+                "Recovery mismatch at \(failurePoint)"
+            )
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6CommitJournal.path))
+        }
+    }
+
     func testCorruptCurrentStateRecoversFromCommittedCheckpoint() async throws {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -230,6 +330,15 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
     }
 
     private func authorityPlan() throws -> HostV6.AuthorityCommitPlan {
+        try authorityFixture().plan
+    }
+
+    private func authorityFixture() throws -> (
+        plan: HostV6.AuthorityCommitPlan,
+        evidence: HostV6.AuthorityActivationEvidence,
+        preAuthorityEnvelope: HostV6.MetadataEnvelope,
+        preAuthorityPayload: Data
+    ) {
         let hostID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
         let addressID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
         let identityID = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
@@ -315,7 +424,7 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
             codeVersion: "6-test",
             signerTeamIdentifier: "TEAMID1234"
         )
-        return try HostV6.AuthorityController.activate(
+        let plan = try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
             evidence: evidence,
@@ -325,6 +434,7 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
                 payloadHash: evidence.verifiedCloudPayloadHash
             )
         )
+        return (plan, evidence, envelope, payload)
     }
 
     private func temporaryHome() throws -> URL {
@@ -341,3 +451,27 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
 }
 
 private struct InjectedFailure: Error {}
+
+private actor RecoverableAuthorityCloudTransport: HostV6CloudV2Transport {
+    private var remote: HostV6CloudRecord?
+    private var saveCount = 0
+
+    init(remote: HostV6CloudRecord?) {
+        self.remote = remote
+    }
+
+    func fetchV2() async throws -> HostV6CloudRecord? { remote }
+    func fetchLegacyV1() async throws -> Data? { nil }
+
+    func saveV2(_ payload: Data, replacing changeTag: String?) async throws -> HostV6CloudRecord {
+        guard remote?.changeTag == changeTag else {
+            throw HostV6CloudTransportError.conflict
+        }
+        saveCount += 1
+        let saved = HostV6CloudRecord(payload: payload, changeTag: "tag-published-\(saveCount)")
+        remote = saved
+        return saved
+    }
+
+    func remoteRecord() -> HostV6CloudRecord? { remote }
+}

@@ -2,6 +2,13 @@ import Darwin
 import Foundation
 import KeyPortCore
 
+struct HostV6PreparedAuthorityActivation: Sendable {
+    let plan: HostV6.AuthorityCommitPlan
+    let evidenceChangeTag: String
+    let evidencePayloadHash: String
+    let authorityPayloadHash: String
+}
+
 actor HostV6AuthorityFileStore {
     enum FailurePoint: CaseIterable, Equatable, Sendable {
         case beforeStateReplace
@@ -28,6 +35,67 @@ actor HostV6AuthorityFileStore {
         let checkpointHash: String
     }
 
+    private struct ActivationJournal: Codable, Equatable, Sendable {
+        static let currentSchemaVersion = 1
+
+        let schemaVersion: Int
+        let evidenceChangeTag: String
+        let evidencePayloadHash: String
+        let authorityPayloadHash: String
+        let stateData: Data
+        let checkpointData: Data
+        let compatibilityData: Data
+        var integrityHash: String
+
+        init(
+            evidenceChangeTag: String,
+            evidencePayloadHash: String,
+            authorityPayloadHash: String,
+            stateData: Data,
+            checkpointData: Data,
+            compatibilityData: Data
+        ) throws {
+            schemaVersion = Self.currentSchemaVersion
+            self.evidenceChangeTag = evidenceChangeTag
+            self.evidencePayloadHash = evidencePayloadHash
+            self.authorityPayloadHash = authorityPayloadHash
+            self.stateData = stateData
+            self.checkpointData = checkpointData
+            self.compatibilityData = compatibilityData
+            integrityHash = ""
+            integrityHash = try calculatedIntegrityHash()
+        }
+
+        func validateIntegrity() throws {
+            guard schemaVersion == Self.currentSchemaVersion,
+                  integrityHash == (try calculatedIntegrityHash()) else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+        }
+
+        private func calculatedIntegrityHash() throws -> String {
+            try HostV6.CanonicalJSON.sha256(HostV6.CanonicalJSON.encode(IntegrityPayload(
+                schemaVersion: schemaVersion,
+                evidenceChangeTag: evidenceChangeTag,
+                evidencePayloadHash: evidencePayloadHash,
+                authorityPayloadHash: authorityPayloadHash,
+                stateDataHash: HostV6.CanonicalJSON.sha256(stateData),
+                checkpointDataHash: HostV6.CanonicalJSON.sha256(checkpointData),
+                compatibilityDataHash: HostV6.CanonicalJSON.sha256(compatibilityData)
+            )))
+        }
+
+        private struct IntegrityPayload: Codable {
+            let schemaVersion: Int
+            let evidenceChangeTag: String
+            let evidencePayloadHash: String
+            let authorityPayloadHash: String
+            let stateDataHash: String
+            let checkpointDataHash: String
+            let compatibilityDataHash: String
+        }
+    }
+
     private let paths: KeyPortPaths
     private let fileManager: FileManager
     private let failureInjector: @Sendable (FailurePoint) throws -> Void
@@ -40,6 +108,108 @@ actor HostV6AuthorityFileStore {
         self.paths = paths
         self.fileManager = fileManager
         self.failureInjector = failureInjector
+    }
+
+    func prepareActivation(
+        _ plan: HostV6.AuthorityCommitPlan,
+        evidence: HostV6.AuthorityActivationEvidence
+    ) throws {
+        try paths.prepareV6AuthorityDirectories()
+        try validate(plan)
+        guard plan.manifest.mode == .v6Authoritative,
+              plan.manifest.cloudChangeTag == evidence.cloudChangeTag else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+
+        var preAuthority = plan.envelope
+        preAuthority.migrationProvenance.authorityManifest = nil
+        let preAuthorityPayload = try HostV6.CloudPayloadCodec.encode(preAuthority)
+        let authorityPayload = try HostV6.CloudPayloadCodec.encode(plan.envelope)
+        let evidencePayloadHash = HostV6.CanonicalJSON.sha256(preAuthorityPayload)
+        guard evidencePayloadHash == evidence.verifiedCloudPayloadHash else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+
+        let journal = try ActivationJournal(
+            evidenceChangeTag: evidence.cloudChangeTag,
+            evidencePayloadHash: evidencePayloadHash,
+            authorityPayloadHash: HostV6.CanonicalJSON.sha256(authorityPayload),
+            stateData: plan.stateData,
+            checkpointData: plan.checkpointData,
+            compatibilityData: plan.compatibilityData
+        )
+        if fileManager.fileExists(atPath: paths.authorityActivationJournal.path) {
+            let existing = try decodeActivationJournal()
+            guard existing == journal else {
+                throw HostV6.CloudV2Error.failure(.concurrentConflict)
+            }
+            return
+        }
+        try atomicReplace(
+            HostV6.CanonicalJSON.encode(journal),
+            at: paths.authorityActivationJournal
+        )
+        try syncDirectory(paths.applicationSupport)
+    }
+
+    func pendingActivation() throws -> HostV6PreparedAuthorityActivation? {
+        guard fileManager.fileExists(atPath: paths.authorityActivationJournal.path) else {
+            return nil
+        }
+        let journal = try decodeActivationJournal()
+        try journal.validateIntegrity()
+        let envelope = try HostV6.CanonicalJSON.decode(
+            HostV6.MetadataEnvelope.self,
+            from: journal.stateData
+        )
+        guard let manifest = envelope.migrationProvenance.authorityManifest else {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+        let compatibilitySnapshot = try HostV6.CanonicalJSON.decode(
+            AppSnapshot.self,
+            from: journal.compatibilityData
+        )
+        let plan = HostV6.AuthorityCommitPlan(
+            envelope: envelope,
+            manifest: manifest,
+            stateData: journal.stateData,
+            checkpointData: journal.checkpointData,
+            compatibilitySnapshot: compatibilitySnapshot,
+            compatibilityData: journal.compatibilityData
+        )
+        try validate(plan)
+
+        var preAuthority = envelope
+        preAuthority.migrationProvenance.authorityManifest = nil
+        guard manifest.cloudChangeTag == journal.evidenceChangeTag,
+              HostV6.CanonicalJSON.sha256(try HostV6.CloudPayloadCodec.encode(preAuthority))
+                == journal.evidencePayloadHash,
+              HostV6.CanonicalJSON.sha256(try HostV6.CloudPayloadCodec.encode(envelope))
+                == journal.authorityPayloadHash else {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+        return HostV6PreparedAuthorityActivation(
+            plan: plan,
+            evidenceChangeTag: journal.evidenceChangeTag,
+            evidencePayloadHash: journal.evidencePayloadHash,
+            authorityPayloadHash: journal.authorityPayloadHash
+        )
+    }
+
+    func completePreparedActivation(using plan: HostV6.AuthorityCommitPlan) throws {
+        guard try pendingActivation() != nil else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+        try validate(plan)
+        try commit(plan)
+        try fileManager.removeItem(at: paths.authorityActivationJournal)
+        try syncDirectory(paths.applicationSupport)
+    }
+
+    func discardPreparedActivation() throws {
+        guard fileManager.fileExists(atPath: paths.authorityActivationJournal.path) else { return }
+        try fileManager.removeItem(at: paths.authorityActivationJournal)
+        try syncDirectory(paths.applicationSupport)
     }
 
     func commit(_ plan: HostV6.AuthorityCommitPlan) throws {
@@ -265,6 +435,19 @@ actor HostV6AuthorityFileStore {
             HostV6.AuthorityManifest.self,
             from: Data(contentsOf: url)
         )
+    }
+
+    private func decodeActivationJournal() throws -> ActivationJournal {
+        do {
+            return try HostV6.CanonicalJSON.decode(
+                ActivationJournal.self,
+                from: Data(contentsOf: paths.authorityActivationJournal)
+            )
+        } catch let error as HostV6.CloudV2Error {
+            throw error
+        } catch {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
     }
 
     private func atomicReplace(_ data: Data, at destination: URL) throws {

@@ -34,7 +34,7 @@ struct HostV6Presentation: Sendable {
 
 actor HostV6Runtime {
     private let metadataRepository: any HostV6MetadataRepositoryPort
-    private let authorityStore: any HostV6AuthorityStoring
+    private let authorityStore: HostV6AuthorityFileStore
     private let evidenceVerifier: HostV6C3EvidenceVerifier
     private let cloudCoordinator: HostV6CloudSyncCoordinator
     private let currentDeviceID: String
@@ -44,7 +44,7 @@ actor HostV6Runtime {
 
     init(
         metadataRepository: any HostV6MetadataRepositoryPort,
-        authorityStore: any HostV6AuthorityStoring,
+        authorityStore: HostV6AuthorityFileStore,
         evidenceVerifier: HostV6C3EvidenceVerifier,
         cloudCoordinator: HostV6CloudSyncCoordinator,
         currentDeviceID: String,
@@ -63,6 +63,9 @@ actor HostV6Runtime {
     }
 
     func loadPresentationSnapshot(from legacyStore: SnapshotStore) async throws -> HostV6Presentation {
+        if let resumed = try await resumePendingAuthorityActivation() {
+            return try await presentation(from: resumed, legacyStore: legacyStore)
+        }
         guard authorityStateExists() else {
             let legacySnapshot = try await legacyStore.load()
             let configBaselineMatches = (try? await configService.adoptExistingManagedConfigBaseline(
@@ -70,16 +73,42 @@ actor HostV6Runtime {
                 keys: legacySnapshot.keys,
                 authorizations: legacySnapshot.authorizations
             )) == true
-            if configBaselineMatches,
-               let activated = try await activateAuthorityIfC3EvidenceIsReady(legacyStore: legacyStore) {
-                return HostV6Presentation(
-                    snapshot: try compatibilitySnapshot(from: activated),
-                    mode: .authoritative
+            let bundle: HostV6.ShadowMigrationBundle?
+            if FileManager.default.fileExists(atPath: paths.snapshot.path) {
+                bundle = try await legacyStore.stageV6Shadow(
+                    currentDeviceID: currentDeviceID,
+                    credentialInspector: credentialInspector
                 )
+            } else {
+                bundle = nil
+            }
+            let localAuthorityCandidate = bundle?.envelope ?? HostV6.MetadataEnvelope(
+                synced: .init(),
+                local: .init(),
+                migrationProvenance: .empty
+            )
+            if let published = try await cloudCoordinator.fetchPublishedAuthority(
+                restoringLocalStateFrom: localAuthorityCandidate
+            ) {
+                try await authorityStore.commit(published)
+                return try await presentation(from: published.envelope, legacyStore: legacyStore)
+            }
+            if configBaselineMatches, let bundle,
+               let activated = try await activateAuthorityIfC3EvidenceIsReady(
+                   bundle: bundle
+               ) {
+                return try await presentation(from: activated, legacyStore: legacyStore)
             }
             return HostV6Presentation(snapshot: legacySnapshot, mode: .canary)
         }
         let envelope = try await metadataRepository.snapshot()
+        return try await presentation(from: envelope, legacyStore: legacyStore)
+    }
+
+    private func presentation(
+        from envelope: HostV6.MetadataEnvelope,
+        legacyStore: SnapshotStore
+    ) async throws -> HostV6Presentation {
         guard let manifest = envelope.migrationProvenance.authorityManifest else {
             throw HostV6.CloudV2Error.failure(.authorityGateFailed)
         }
@@ -125,36 +154,46 @@ actor HostV6Runtime {
     }
 
     private func activateAuthorityIfC3EvidenceIsReady(
-        legacyStore: SnapshotStore
+        bundle: HostV6.ShadowMigrationBundle
     ) async throws -> HostV6.MetadataEnvelope? {
         let artifactURLs = c3ArtifactURLs()
         guard artifactURLs.count >= 2 else { return nil }
-        let plan: HostV6.AuthorityCommitPlan
         do {
             let legacyData = try Data(contentsOf: paths.snapshot)
-            let bundle = try await legacyStore.stageV6Shadow(
-                currentDeviceID: currentDeviceID,
-                credentialInspector: credentialInspector
-            )
             let artifacts = try artifactURLs.map { try Data(contentsOf: $0) }
             let evidence = try evidenceVerifier.verify(artifacts)
-            let cloudRoundTrip = try await cloudCoordinator.validateAuthorityRoundTrip(
+            try await cloudCoordinator.validateAuthorityPrecondition(
                 bundle.envelope,
                 evidence: evidence
             )
-            plan = try HostV6.AuthorityController.activate(
+            let plan = try HostV6.AuthorityController.prepareActivation(
                 envelope: bundle.envelope,
                 legacyData: legacyData,
-                evidence: evidence,
-                cloudRoundTrip: cloudRoundTrip
+                evidence: evidence
             )
+            try await authorityStore.prepareActivation(plan, evidence: evidence)
+            guard let published = try await resumePendingAuthorityActivation() else {
+                return nil
+            }
+            return published
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            if (try? await authorityStore.pendingActivation()) != nil {
+                throw error
+            }
             return nil
         }
-        try await authorityStore.commit(plan)
-        return try await metadataRepository.snapshot()
+    }
+
+    private func resumePendingAuthorityActivation() async throws -> HostV6.MetadataEnvelope? {
+        guard let pending = try await authorityStore.pendingActivation() else { return nil }
+        guard let published = try await cloudCoordinator.publishPreparedAuthority(pending) else {
+            try await authorityStore.discardPreparedActivation()
+            return nil
+        }
+        try await authorityStore.completePreparedActivation(using: published)
+        return published.envelope
     }
 
     private func c3ArtifactURLs() -> [URL] {
@@ -182,7 +221,12 @@ enum HostV6RuntimeAssembly {
         paths: KeyPortPaths,
         fileManager: FileManager = .default
     ) -> Bool {
-        if [paths.stateV6, paths.authorityManifest, paths.v6CommitJournal].contains(where: {
+        if [
+            paths.stateV6,
+            paths.authorityManifest,
+            paths.authorityActivationJournal,
+            paths.v6CommitJournal,
+        ].contains(where: {
             fileManager.fileExists(atPath: $0.path)
         }) {
             return true

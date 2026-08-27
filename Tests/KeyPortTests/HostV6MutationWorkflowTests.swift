@@ -561,6 +561,36 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: paths.managedConfig), Data(managedConfig.utf8))
     }
 
+    @MainActor
+    func testCloudAuthorityLookupFailureKeepsLegacyModelReadOnly() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-cloud-authority-unknown")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try await SnapshotStore(paths: paths).save(AppSnapshot())
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            cloudTransport: UnavailableCloudV2Transport()
+        ))
+        let model = AppModel(
+            hostV6Runtime: runtime,
+            cloudSync: RecordingLegacyCloudSync(),
+            paths: paths,
+            defaults: defaults
+        )
+
+        await model.load()
+
+        XCTAssertTrue(model.isMetadataReadOnly)
+        XCTAssertNotNil(model.errorMessage)
+    }
+
     func testRuntimeActivatesAuthorityOnlyFromCompleteVerifiedC3Artifacts() async throws {
         let home = try temporaryHome(prefix: "keyport-runtime-c3")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -645,13 +675,145 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             HostV6.AuthorityManifest.self,
             from: Data(contentsOf: paths.authorityManifest)
         )
-        XCTAssertEqual(committedManifest.cloudChangeTag, "cloud-tag-committed")
+        XCTAssertEqual(committedManifest.cloudChangeTag, "cloud-tag-c3")
+        let remoteRecord = await cloudTransport.remoteRecord()
+        let publishedRecord = try XCTUnwrap(remoteRecord)
+        let publishedPayload = try HostV6.CloudPayloadCodec.decodeStrict(publishedRecord.payload)
+        XCTAssertEqual(publishedPayload.migrationProvenance.authorityManifest, committedManifest)
         do {
             try await runtime.authorizeLegacyWrite()
             XCTFail("Expected v1 write authority to be revoked")
         } catch {
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
         }
+
+        let secondHome = try temporaryHome(prefix: "keyport-runtime-c3-second-device")
+        defer { try? FileManager.default.removeItem(at: secondHome) }
+        let secondPaths = KeyPortPaths(home: secondHome)
+        let secondLegacyStore = SnapshotStore(paths: secondPaths)
+        try await secondLegacyStore.save(legacy)
+        let (secondDefaults, secondSuiteName) = try runtimeDefaults()
+        defer { secondDefaults.removePersistentDomain(forName: secondSuiteName) }
+        secondDefaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        secondDefaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        secondDefaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let secondRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-b",
+            defaults: secondDefaults,
+            paths: secondPaths,
+            cloudTransport: cloudTransport
+        ))
+
+        let secondPresentation = try await secondRuntime.loadPresentationSnapshot(from: secondLegacyStore)
+
+        XCTAssertEqual(secondPresentation.mode, .authoritative)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: secondPaths.authorityManifest.path))
+        XCTAssertEqual(
+            try HostV6.CanonicalJSON.decode(
+                HostV6.AuthorityManifest.self,
+                from: Data(contentsOf: secondPaths.authorityManifest)
+            ),
+            committedManifest
+        )
+    }
+
+    func testRuntimeRecoversWhenManifestPublishSucceededBeforeReadBackCrashed() async throws {
+        let home = try temporaryHome(prefix: "keyport-runtime-c3-publish-crash")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let (defaults, suiteName) = try runtimeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyStore = SnapshotStore(paths: paths)
+        var legacy = AppSnapshot()
+        legacy.devices = [
+            Device(id: "device-a", name: "Mac A", isCurrent: true, registeredAt: now, lastActiveAt: now),
+            Device(id: "device-b", name: "Mac B", isCurrent: false, registeredAt: now, lastActiveAt: now),
+        ]
+        try await legacyStore.save(legacy)
+        let bundle = try await legacyStore.stageV6Shadow(
+            currentDeviceID: "device-a",
+            credentialInspector: KeychainService(itemAPI: MissingKeychainItemAPI())
+        )
+        let payload = try HostV6.CloudPayloadCodec.encode(bundle.envelope)
+        let reportA = HostV6.AuthorityC3Report(
+            deviceID: "device-a",
+            teamIdentifier: "TEAMID1234",
+            signerCertificateSHA256: "certificate-a",
+            completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
+            acknowledgedDeviceIDs: ["device-a", "device-b"],
+            verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
+            cloudChangeTag: "cloud-tag-c3",
+            codeVersion: "6-c3"
+        )
+        var reportB = reportA
+        reportB.deviceID = "device-b"
+        reportB.signerCertificateSHA256 = "certificate-b"
+        let artifactA = Data("signed-crash-a".utf8)
+        let artifactB = Data("signed-crash-b".utf8)
+        try FileManager.default.createDirectory(
+            at: paths.authorityC3EvidenceDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try artifactA.write(to: paths.authorityC3EvidenceDirectory.appendingPathComponent("device-a.cms"))
+        try artifactB.write(to: paths.authorityC3EvidenceDirectory.appendingPathComponent("device-b.cms"))
+        let verifier = HostV6C3EvidenceVerifier(
+            cmsVerifier: StubCMSArtifactVerifier(contents: [
+                artifactA: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportA),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-a"
+                ),
+                artifactB: .init(
+                    content: try HostV6.CanonicalJSON.encode(reportB),
+                    signerTeamIdentifier: "TEAMID1234",
+                    signerCertificateSHA256: "certificate-b"
+                ),
+            ]),
+            currentTeamIdentifier: { "TEAMID1234" },
+            currentBuildIdentifier: { "6-c3" }
+        )
+        let cloudTransport = AuthorityRoundTripCloudV2Transport(
+            remote: .init(payload: payload, changeTag: "cloud-tag-c3"),
+            failFirstReadBackAfterSave: true
+        )
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.canaryKey)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.cloudV2Key)
+        defaults.set(true, forKey: HostV6RuntimeFeatureFlags.mutationWorkflowKey)
+        let interruptedRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: verifier,
+            cloudTransport: cloudTransport
+        ))
+
+        do {
+            _ = try await interruptedRuntime.loadPresentationSnapshot(from: legacyStore)
+            XCTFail("Expected an ambiguous Cloud publish to fail closed")
+        } catch {
+            XCTAssertEqual(error as? CloudSyncError, .operationFailed)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path))
+        let remoteRecord = await cloudTransport.remoteRecord()
+        let publishedRecord = try XCTUnwrap(remoteRecord)
+        XCTAssertNotNil(
+            try HostV6.CloudPayloadCodec.decodeStrict(publishedRecord.payload)
+                .migrationProvenance.authorityManifest
+        )
+
+        let recoveredRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: verifier,
+            cloudTransport: cloudTransport
+        ))
+        let recoveredPresentation = try await recoveredRuntime.loadPresentationSnapshot(from: legacyStore)
+
+        XCTAssertEqual(recoveredPresentation.mode, .authoritative)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
     }
 
     func testRuntimeKeepsLegacyAuthorityWhenC3ArtifactsFailVerification() async throws {
@@ -682,7 +844,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
                 cmsVerifier: StubCMSArtifactVerifier(contents: [:]),
                 currentTeamIdentifier: { "TEAMID1234" },
                 currentBuildIdentifier: { "unused-invalid-artifact" }
-            )
+            ),
+            cloudTransport: EmptyCloudV2Transport()
         ))
 
         let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
@@ -759,7 +922,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             currentDeviceID: "device-a",
             defaults: defaults,
             paths: paths,
-            evidenceVerifier: verifier
+            evidenceVerifier: verifier,
+            cloudTransport: EmptyCloudV2Transport()
         ))
 
         let presentation = try await runtime.loadPresentationSnapshot(from: legacyStore)
@@ -1388,7 +1552,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         return try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
             currentDeviceID: "device-a",
             defaults: defaults,
-            paths: paths
+            paths: paths,
+            cloudTransport: EmptyCloudV2Transport()
         ))
     }
 
@@ -1599,14 +1764,35 @@ private actor EmptyCloudV2Transport: HostV6CloudV2Transport {
     }
 }
 
-private actor AuthorityRoundTripCloudV2Transport: HostV6CloudV2Transport {
-    private var remote: HostV6CloudRecord?
-
-    init(remote: HostV6CloudRecord?) {
-        self.remote = remote
+private actor UnavailableCloudV2Transport: HostV6CloudV2Transport {
+    func fetchV2() async throws -> HostV6CloudRecord? {
+        throw HostV6CloudTransportError.operationFailed
     }
 
-    func fetchV2() async throws -> HostV6CloudRecord? { remote }
+    func fetchLegacyV1() async throws -> Data? { nil }
+
+    func saveV2(_ payload: Data, replacing changeTag: String?) async throws -> HostV6CloudRecord {
+        throw HostV6CloudTransportError.operationFailed
+    }
+}
+
+private actor AuthorityRoundTripCloudV2Transport: HostV6CloudV2Transport {
+    private var remote: HostV6CloudRecord?
+    private var failFirstReadBackAfterSave: Bool
+    private var hasSaved = false
+
+    init(remote: HostV6CloudRecord?, failFirstReadBackAfterSave: Bool = false) {
+        self.remote = remote
+        self.failFirstReadBackAfterSave = failFirstReadBackAfterSave
+    }
+
+    func fetchV2() async throws -> HostV6CloudRecord? {
+        if hasSaved, failFirstReadBackAfterSave {
+            failFirstReadBackAfterSave = false
+            throw HostV6CloudTransportError.operationFailed
+        }
+        return remote
+    }
     func fetchLegacyV1() async throws -> Data? { nil }
 
     func saveV2(_ payload: Data, replacing changeTag: String?) async throws -> HostV6CloudRecord {
@@ -1615,8 +1801,11 @@ private actor AuthorityRoundTripCloudV2Transport: HostV6CloudV2Transport {
         }
         let saved = HostV6CloudRecord(payload: payload, changeTag: "cloud-tag-committed")
         remote = saved
+        hasSaved = true
         return saved
     }
+
+    func remoteRecord() -> HostV6CloudRecord? { remote }
 }
 
 private actor RecordingLegacyCloudSync: CloudSyncing {

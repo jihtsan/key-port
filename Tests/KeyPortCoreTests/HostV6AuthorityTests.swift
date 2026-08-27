@@ -54,7 +54,7 @@ final class HostV6AuthorityTests: XCTestCase {
 
         XCTAssertEqual(plan.manifest.mode, .v6Authoritative)
         XCTAssertNil(plan.manifest.firstV6MutationID)
-        XCTAssertEqual(plan.manifest.cloudChangeTag, "change-tag-committed")
+        XCTAssertEqual(plan.manifest.cloudChangeTag, "change-tag-1")
         XCTAssertEqual(plan.manifest.v1Hash, HostV6.CanonicalJSON.sha256(legacy))
         XCTAssertEqual(plan.manifest.acknowledgedDeviceIDs, ["device-a", "device-b"])
         XCTAssertTrue(plan.manifest.notRepresentable.contains(.service(serviceID)))
