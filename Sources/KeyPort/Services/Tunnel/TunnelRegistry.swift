@@ -212,6 +212,16 @@ actor TunnelRegistry {
         let task: Task<TunnelHandle, Error>
     }
 
+    private struct CleanupOperation: Sendable {
+        let token: UUID
+        let task: Task<CleanupStatus, Never>
+    }
+
+    private enum CleanupFinalization: Sendable {
+        case closed(TunnelCloseReason)
+        case brokerExited
+    }
+
     private enum RegistryEntry: Sendable {
         case starting(StartingTunnel)
         case active(ActiveTunnel)
@@ -226,7 +236,8 @@ actor TunnelRegistry {
     private let cleanupTimeoutNanoseconds: UInt64
     private var entries: [RegistryKey: RegistryEntry] = [:]
     private var stateHistory: [UUID: [TunnelState]] = [:]
-    private var cleanupInProgress: Set<UUID> = []
+    // A caller timeout does not release ownership of cleanup that is still running.
+    private var cleanupInProgress: [UUID: CleanupOperation] = [:]
     private var networkEpoch: UInt64 = 0
 
     static func production(paths: KeyPortPaths = KeyPortPaths()) -> TunnelRegistry {
@@ -524,7 +535,7 @@ actor TunnelRegistry {
             stateHistory[id, default: []].append(.stopping(reason))
             entries[match.key] = .closing(value)
         case .closing(let value):
-            guard !cleanupInProgress.contains(id) else {
+            guard cleanupInProgress[id] == nil else {
                 return TunnelCloseResult(closedCount: 0, cleanup: .pending)
             }
             active = value
@@ -532,19 +543,27 @@ actor TunnelRegistry {
             return TunnelCloseResult(closedCount: 0, cleanup: .notNeeded)
         }
 
-        cleanupInProgress.insert(id)
-        let cleanup = await cleanup(active)
-        cleanupInProgress.remove(id)
-        guard let current = entries[match.key], tunnelID(in: current) == id else {
-            return TunnelCloseResult(closedCount: 1, cleanup: .completed)
-        }
-        if cleanup == .pending {
-            entries[match.key] = .closing(active)
+        let operation = beginCleanup(
+            active,
+            key: match.key,
+            finalization: .closed(reason)
+        )
+        switch await waitForCleanup(operation.task) {
+        case .timedOut:
             return TunnelCloseResult(closedCount: 0, cleanup: .pending)
+        case .finished(let cleanup):
+            finishCleanup(
+                key: match.key,
+                tunnelID: id,
+                token: operation.token,
+                finalization: .closed(reason),
+                cleanup: cleanup
+            )
+            if cleanup == .pending {
+                return TunnelCloseResult(closedCount: 0, cleanup: .pending)
+            }
+            return TunnelCloseResult(closedCount: 1, cleanup: cleanup)
         }
-        stateHistory[id, default: []].append(.closed(reason))
-        entries.removeValue(forKey: match.key)
-        return TunnelCloseResult(closedCount: 1, cleanup: cleanup)
     }
 
     func closeHostTunnels(_ hostID: UUID) async -> TunnelCloseResult {
@@ -675,9 +694,17 @@ actor TunnelRegistry {
         }
 
         entries[key] = .closing(active)
-        let cleanup = await cleanup(active)
-        record(tunnelID, .failed(.brokerExited, cleanup: cleanup))
-        entries.removeValue(forKey: key)
+        let operation = beginCleanup(active, key: key, finalization: .brokerExited)
+        guard case .finished(let cleanup) = await waitForCleanup(operation.task) else {
+            return
+        }
+        finishCleanup(
+            key: key,
+            tunnelID: tunnelID,
+            token: operation.token,
+            finalization: .brokerExited,
+            cleanup: cleanup
+        )
     }
 
     private func establish(
@@ -887,14 +914,75 @@ actor TunnelRegistry {
         entries[key] = .active(current)
     }
 
-    private func cleanup(_ active: ActiveTunnel) async -> CleanupStatus {
+    private func beginCleanup(
+        _ active: ActiveTunnel,
+        key: RegistryKey,
+        finalization: CleanupFinalization
+    ) -> CleanupOperation {
         active.terminationMonitor?.cancel()
-        return await cleanup(
-            broker: active.broker,
-            reservation: nil,
-            lease: active.lease,
-            leaseSaved: active.leaseSaved
-        )
+        let tunnelID = active.handle.id
+        let broker = active.broker
+        let lease = active.lease
+        let leaseSaved = active.leaseSaved
+        let leaseStore = self.leaseStore
+        let task = Task.detached(priority: .utility) {
+            let brokerCleanup = await broker.close()
+            guard brokerCleanup != .pending else { return CleanupStatus.pending }
+            guard leaseSaved else {
+                return brokerCleanup == .notNeeded ? .completed : brokerCleanup
+            }
+            do {
+                try await leaseStore.remove(lease)
+                return .completed
+            } catch {
+                return .pending
+            }
+        }
+        let operation = CleanupOperation(token: UUID(), task: task)
+        cleanupInProgress[tunnelID] = operation
+        Task { [weak self] in
+            let cleanup = await task.value
+            await self?.finishCleanup(
+                key: key,
+                tunnelID: tunnelID,
+                token: operation.token,
+                finalization: finalization,
+                cleanup: cleanup
+            )
+        }
+        return operation
+    }
+
+    private func finishCleanup(
+        key: RegistryKey,
+        tunnelID: UUID,
+        token: UUID,
+        finalization: CleanupFinalization,
+        cleanup: CleanupStatus
+    ) {
+        guard cleanupInProgress[tunnelID]?.token == token else { return }
+        cleanupInProgress.removeValue(forKey: tunnelID)
+        guard let current = entries[key], self.tunnelID(in: current) == tunnelID else {
+            return
+        }
+
+        switch finalization {
+        case .closed(let reason):
+            guard cleanup != .pending else { return }
+            record(tunnelID, .closed(reason))
+            entries.removeValue(forKey: key)
+        case .brokerExited:
+            record(tunnelID, .failed(.brokerExited, cleanup: cleanup))
+            entries.removeValue(forKey: key)
+        }
+    }
+
+    private func waitForCleanup(
+        _ operation: Task<CleanupStatus, Never>
+    ) async -> CleanupOperationWaitResult {
+        await runOperationWithTimeout {
+            await operation.value
+        }
     }
 
     private func tunnelID(in entry: RegistryEntry) -> UUID {
@@ -943,14 +1031,22 @@ actor TunnelRegistry {
     private func runCleanupWithTimeout(
         _ operation: @escaping @Sendable () async -> CleanupStatus
     ) async -> CleanupStatus {
+        switch await runOperationWithTimeout(operation) {
+        case .finished(let cleanup): cleanup
+        case .timedOut: .pending
+        }
+    }
+
+    private func runOperationWithTimeout(
+        _ operation: @escaping @Sendable () async -> CleanupStatus
+    ) async -> CleanupOperationWaitResult {
         let race = CleanupTimeoutRace()
         let timeoutNanoseconds = cleanupTimeoutNanoseconds
         return await withCheckedContinuation { continuation in
             race.setContinuation(continuation)
             let operationTask = Task.detached(priority: .utility) {
                 let result = await operation()
-                race.resolve(result)
-                return result
+                race.resolve(.finished(result))
             }
             race.setOperationTask(operationTask)
             let timeoutTask = Task.detached(priority: .utility) {
@@ -959,7 +1055,7 @@ actor TunnelRegistry {
                 } catch {
                     return
                 }
-                race.resolve(.pending)
+                race.resolve(.timedOut)
             }
             race.setTimeoutTask(timeoutTask)
         }
@@ -990,27 +1086,34 @@ actor TunnelRegistry {
     }
 }
 
+private enum CleanupOperationWaitResult: Sendable {
+    case finished(CleanupStatus)
+    case timedOut
+}
+
 private final class CleanupTimeoutRace: @unchecked Sendable {
     private let lock = NSLock()
-    private var resolved = false
-    private var continuation: CheckedContinuation<CleanupStatus, Never>?
-    private var operationTask: Task<CleanupStatus, Never>?
+    private var result: CleanupOperationWaitResult?
+    private var continuation: CheckedContinuation<CleanupOperationWaitResult, Never>?
+    private var operationTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
 
-    func setContinuation(_ continuation: CheckedContinuation<CleanupStatus, Never>) {
+    func setContinuation(
+        _ continuation: CheckedContinuation<CleanupOperationWaitResult, Never>
+    ) {
         lock.lock()
-        if resolved {
+        if let result {
             lock.unlock()
-            continuation.resume(returning: .pending)
+            continuation.resume(returning: result)
             return
         }
         self.continuation = continuation
         lock.unlock()
     }
 
-    func setOperationTask(_ task: Task<CleanupStatus, Never>) {
+    func setOperationTask(_ task: Task<Void, Never>) {
         lock.lock()
-        let shouldCancel = resolved
+        let shouldCancel = result != nil
         if !shouldCancel {
             operationTask = task
         }
@@ -1020,7 +1123,7 @@ private final class CleanupTimeoutRace: @unchecked Sendable {
 
     func setTimeoutTask(_ task: Task<Void, Never>) {
         lock.lock()
-        let shouldCancel = resolved
+        let shouldCancel = result != nil
         if !shouldCancel {
             timeoutTask = task
         }
@@ -1028,13 +1131,13 @@ private final class CleanupTimeoutRace: @unchecked Sendable {
         if shouldCancel { task.cancel() }
     }
 
-    func resolve(_ result: CleanupStatus) {
+    func resolve(_ result: CleanupOperationWaitResult) {
         lock.lock()
-        guard !resolved else {
+        guard self.result == nil else {
             lock.unlock()
             return
         }
-        resolved = true
+        self.result = result
         let continuation = self.continuation
         self.continuation = nil
         let losingOperationTask = operationTask
@@ -1043,10 +1146,11 @@ private final class CleanupTimeoutRace: @unchecked Sendable {
         timeoutTask = nil
         lock.unlock()
 
-        if result == .pending {
-            losingOperationTask?.cancel()
-        } else {
+        switch result {
+        case .finished:
             losingTimeoutTask?.cancel()
+        case .timedOut:
+            losingOperationTask?.cancel()
         }
         continuation?.resume(returning: result)
     }
