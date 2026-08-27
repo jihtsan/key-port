@@ -688,6 +688,49 @@ final class TunnelRegistryTests: XCTestCase {
         XCTAssertEqual(closeCount, 1)
     }
 
+    func testTimedOutScopedCloseKeepsCleanupExclusiveAndFinalizesWhenItCompletes() async throws {
+        let hostID = UUID()
+        let cleanupGate = TestGate()
+        let broker = BlockingCleanupBroker(cleanupGate: cleanupGate)
+        let leaseStore = TestLeaseStore()
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41041]),
+            brokerLauncher: broker,
+            leaseStore: leaseStore,
+            cleanupTimeoutNanoseconds: 1_000_000
+        )
+        let handle = try await registry.open(makeRequest(hostID: hostID))
+
+        let timedOut = await registry.closeHostTunnels(hostID)
+        let journalRetry = await registry.closeHostTunnels(hostID)
+
+        XCTAssertEqual(timedOut, TunnelCloseResult(closedCount: 0, cleanup: .pending))
+        XCTAssertEqual(journalRetry, TunnelCloseResult(closedCount: 0, cleanup: .pending))
+        let closeCallCount = await broker.closeCallCount
+        let maximumConcurrentCalls = await broker.maximumConcurrentCalls
+        XCTAssertEqual(closeCallCount, 1)
+        XCTAssertEqual(maximumConcurrentCalls, 1)
+
+        await cleanupGate.open()
+        for _ in 0..<100 {
+            let state = await registry.state(for: handle.id)
+            let removedLeases = await leaseStore.removedLeases
+            if state == .closed(.authoritativeDeletion),
+               removedLeases.contains(where: { $0.tunnelID == handle.id }) {
+                break
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+
+        let finalState = await registry.state(for: handle.id)
+        let removedLeases = await leaseStore.removedLeases
+        let finalMaximumConcurrentCalls = await broker.maximumConcurrentCalls
+        XCTAssertEqual(finalState, .closed(.authoritativeDeletion))
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [handle.id])
+        XCTAssertEqual(finalMaximumConcurrentCalls, 1)
+    }
+
     func testDisabledFeatureFailsBeforeReservingAPort() async throws {
         let allocator = TestPortAllocator(ports: [41016])
         let registry = TunnelRegistry(
@@ -924,6 +967,60 @@ private actor TestBrokerSession: TunnelBrokerTerminationObserving {
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
+    }
+}
+
+private actor BlockingCleanupBroker: TunnelBrokerLaunching {
+    private let cleanupGate: TestGate
+    private var activeCalls = 0
+    private(set) var closeCallCount = 0
+    private(set) var maximumConcurrentCalls = 0
+
+    init(cleanupGate: TestGate) {
+        self.cleanupGate = cleanupGate
+    }
+
+    func launch(_ configuration: TunnelBrokerConfiguration) async throws -> any TunnelBrokerSession {
+        BlockingCleanupBrokerSession(
+            cleanupGate: cleanupGate,
+            onCloseStarted: { [weak self] in await self?.closeStarted() },
+            onCloseFinished: { [weak self] in await self?.closeFinished() }
+        )
+    }
+
+    private func closeStarted() {
+        closeCallCount += 1
+        activeCalls += 1
+        maximumConcurrentCalls = max(maximumConcurrentCalls, activeCalls)
+    }
+
+    private func closeFinished() {
+        activeCalls -= 1
+    }
+}
+
+private actor BlockingCleanupBrokerSession: TunnelBrokerSession {
+    private let cleanupGate: TestGate
+    private let onCloseStarted: @Sendable () async -> Void
+    private let onCloseFinished: @Sendable () async -> Void
+
+    init(
+        cleanupGate: TestGate,
+        onCloseStarted: @escaping @Sendable () async -> Void,
+        onCloseFinished: @escaping @Sendable () async -> Void
+    ) {
+        self.cleanupGate = cleanupGate
+        self.onCloseStarted = onCloseStarted
+        self.onCloseFinished = onCloseFinished
+    }
+
+    func verifyTarget() async throws {}
+
+    func close() async -> CleanupStatus {
+        await onCloseStarted()
+        await cleanupGate.wait()
+        await onCloseFinished()
+        return .completed
     }
 }
 
