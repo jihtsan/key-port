@@ -47,7 +47,20 @@ public struct DiscoveryCapabilities: Sendable, Equatable {
     }
 
     public var canDiscover: Bool {
-        isSupported && !tools.isEmpty
+        preferredTool != nil
+    }
+
+    public var preferredTool: DiscoveryTool? {
+        switch platform {
+        case .linux:
+            if tools.contains(.ss) { return .ss }
+            if tools.contains(.lsof) { return .lsof }
+        case .macOS:
+            if tools.contains(.lsof) { return .lsof }
+        case .unsupported:
+            break
+        }
+        return nil
     }
 
     public static func parse(_ output: Data) -> Self {
@@ -151,11 +164,43 @@ public enum ListenerDiscoveryParser {
 
         switch platform {
         case .linux:
-            return try parseLinux(output, limits: limits)
+            return try parse(output, tool: .ss, limits: limits)
         case .macOS:
-            return try parseMacOS(output, limits: limits)
+            return try parse(output, tool: .lsof, limits: limits)
         case .unsupported:
             throw ListenerDiscoveryParseError.unsupportedPlatform
+        }
+    }
+
+    public static func parse(
+        _ output: Data,
+        platform: DiscoveryPlatform,
+        tool: DiscoveryTool,
+        limits: DiscoveryLimits = .default
+    ) throws -> DiscoveryResult {
+        guard platform != .unsupported else {
+            throw ListenerDiscoveryParseError.unsupportedPlatform
+        }
+        guard platform == .linux || tool == .lsof else {
+            throw ListenerDiscoveryParseError.unsupportedPlatform
+        }
+        return try parse(output, tool: tool, limits: limits)
+    }
+
+    public static func parse(
+        _ output: Data,
+        tool: DiscoveryTool,
+        limits: DiscoveryLimits = .default
+    ) throws -> DiscoveryResult {
+        guard output.count <= limits.maximumOutputBytes else {
+            throw ListenerDiscoveryParseError.outputLimitExceeded
+        }
+
+        switch tool {
+        case .ss:
+            return try parseLinux(output, limits: limits)
+        case .lsof:
+            return try parseLsof(output, limits: limits)
         }
     }
 
@@ -237,6 +282,13 @@ public enum ListenerDiscoveryParser {
         _ output: Data,
         limits: DiscoveryLimits = .default
     ) throws -> DiscoveryResult {
+        try parseLsof(output, limits: limits)
+    }
+
+    public static func parseLsof(
+        _ output: Data,
+        limits: DiscoveryLimits = .default
+    ) throws -> DiscoveryResult {
         guard output.count <= limits.maximumOutputBytes else {
             throw ListenerDiscoveryParseError.outputLimitExceeded
         }
@@ -250,7 +302,11 @@ public enum ListenerDiscoveryParser {
         var fields: [String] = []
 
         for fieldBytes in output.split(separator: 0x00, omittingEmptySubsequences: true) {
-            guard let field = String(bytes: fieldBytes, encoding: .utf8), !field.isEmpty else {
+            let normalizedFieldBytes = fieldBytes.drop(while: { $0 == 0x0A || $0 == 0x0D })
+            guard !normalizedFieldBytes.isEmpty else {
+                continue
+            }
+            guard let field = String(bytes: normalizedFieldBytes, encoding: .utf8), !field.isEmpty else {
                 partialParseCount += 1
                 sawMeaningfulRecord = true
                 continue

@@ -34,6 +34,24 @@ final class ListenerDiscoveryAdapterTests: XCTestCase {
         XCTAssertEqual(executor.requests[2].limits.maximumCombinedOutputBytes, 512 * 1024)
     }
 
+    func testAdapterDispatchesLinuxOnlyLsofOutputToTheLsofParser() async throws {
+        let executor = DiscoveryFakeProcessExecutor(responses: [
+            .exited(0),
+            .exited(0, stdout: "platform=linux\ntool=lsof\n"),
+            .exited(
+                0,
+                stdout: "p101\0cnginx\0\nf1\0n127.0.0.1:8080\0TST=LISTEN\0"
+            )
+        ])
+        let session = try await makeSession(executor: executor)
+
+        let result = try await SSHListenerDiscoveryAdapter().discover(using: session)
+
+        XCTAssertEqual(result.candidates.count, 1)
+        XCTAssertEqual(result.candidates[0].port, 8080)
+        XCTAssertEqual(result.candidates[0].processHint, "nginx")
+    }
+
     func testMissingToolMapsToStableDiscoveryFailure() async throws {
         let executor = DiscoveryFakeProcessExecutor(responses: [
             .exited(0),

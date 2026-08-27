@@ -60,7 +60,7 @@ struct SSHListenerDiscoveryAdapter: ListenerDiscoveryAdapter {
         guard capabilities.isSupported else {
             throw failure(for: session, code: .unsupportedOS, recoveryAction: .retry)
         }
-        guard capabilities.canDiscover else {
+        guard let tool = capabilities.preferredTool else {
             throw failure(for: session, code: .toolUnavailable, recoveryAction: .installSystemTool)
         }
 
@@ -95,6 +95,7 @@ struct SSHListenerDiscoveryAdapter: ListenerDiscoveryAdapter {
             parsed = try ListenerDiscoveryParser.parse(
                 result.stdout,
                 platform: capabilities.platform,
+                tool: tool,
                 limits: limits
             )
         } catch let error as ListenerDiscoveryParseError {
