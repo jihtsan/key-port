@@ -285,16 +285,22 @@ final class CloudV2SyncServiceTests: XCTestCase {
             ),
         ]
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let legacyData = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: true
+        ).data
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
-            legacyData: HostV6.CanonicalJSON.encode(AppSnapshot()),
+            legacyData: legacyData,
             evidence: .init(
                 completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
                 signedMacDeviceIDs: ["device-a", "device-b"],
                 acknowledgedDeviceIDs: ["device-a", "device-b"],
                 verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
                 cloudChangeTag: "tag-activation",
-                codeVersion: "6-test"
+                codeVersion: "6-test",
+                signerTeamIdentifier: "TEAMID1234",
+                signedArtifactDigests: ["artifact-a", "artifact-b"]
             )
         ).envelope
     }

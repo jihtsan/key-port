@@ -19,19 +19,184 @@ enum HostV6RuntimeFeatureFlags {
     }
 }
 
-struct HostV6Runtime {
-    let metadataRepository: HostV6MutationWorkflow
+enum HostV6PresentationMode: Equatable, Sendable {
+    case canary
+    case authoritative
+    case compatibilityRollback
+
+    var allowsLegacyWrites: Bool { self == .canary }
+}
+
+struct HostV6Presentation: Sendable {
+    let snapshot: AppSnapshot
+    let mode: HostV6PresentationMode
+}
+
+actor HostV6Runtime {
+    private let metadataRepository: any HostV6MetadataRepositoryPort
+    private let authorityStore: any HostV6AuthorityStoring
+    private let evidenceVerifier: HostV6C3EvidenceVerifier
+    private let currentDeviceID: String
+    private let credentialInspector: any HostV6ShadowCredentialInspecting
+    private let configService: SSHConfigService
+    private let paths: KeyPortPaths
+
+    init(
+        metadataRepository: any HostV6MetadataRepositoryPort,
+        authorityStore: any HostV6AuthorityStoring,
+        evidenceVerifier: HostV6C3EvidenceVerifier,
+        currentDeviceID: String,
+        credentialInspector: any HostV6ShadowCredentialInspecting,
+        configService: SSHConfigService,
+        paths: KeyPortPaths
+    ) {
+        self.metadataRepository = metadataRepository
+        self.authorityStore = authorityStore
+        self.evidenceVerifier = evidenceVerifier
+        self.currentDeviceID = currentDeviceID
+        self.credentialInspector = credentialInspector
+        self.configService = configService
+        self.paths = paths
+    }
+
+    func loadPresentationSnapshot(from legacyStore: SnapshotStore) async throws -> HostV6Presentation {
+        guard authorityStateExists() else {
+            let legacySnapshot = try await legacyStore.load()
+            let configBaselineMatches = (try? await configService.adoptExistingManagedConfigBaseline(
+                servers: legacySnapshot.servers.filter { !$0.isDeleted },
+                keys: legacySnapshot.keys,
+                authorizations: legacySnapshot.authorizations
+            )) == true
+            if configBaselineMatches,
+               let activated = try await activateAuthorityIfC3EvidenceIsReady(legacyStore: legacyStore) {
+                return HostV6Presentation(
+                    snapshot: try compatibilitySnapshot(from: activated),
+                    mode: .authoritative
+                )
+            }
+            return HostV6Presentation(snapshot: legacySnapshot, mode: .canary)
+        }
+        let envelope = try await metadataRepository.snapshot()
+        guard let manifest = envelope.migrationProvenance.authorityManifest else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+        switch manifest.mode {
+        case .legacyAuthoritative, .v6Canary:
+            return HostV6Presentation(snapshot: try await legacyStore.load(), mode: .canary)
+        case .v6Authoritative:
+            return HostV6Presentation(
+                snapshot: try compatibilitySnapshot(from: envelope),
+                mode: .authoritative
+            )
+        case .compatibilityRollback:
+            return HostV6Presentation(
+                snapshot: try compatibilitySnapshot(from: envelope),
+                mode: .compatibilityRollback
+            )
+        }
+    }
+
+    func authorizeLegacyWrite() async throws {
+        guard authorityStateExists() else { return }
+        let envelope = try await metadataRepository.snapshot()
+        guard let mode = envelope.migrationProvenance.authorityManifest?.mode,
+              mode == .legacyAuthoritative || mode == .v6Canary else {
+            throw HostV6.CloudV2Error.failure(.authorityGateFailed)
+        }
+    }
+
+    func saveLegacySnapshot(_ snapshot: AppSnapshot, to legacyStore: SnapshotStore) async throws {
+        try await authorizeLegacyWrite()
+        try await legacyStore.save(snapshot)
+        _ = try await legacyStore.stageV6Shadow(
+            currentDeviceID: currentDeviceID,
+            credentialInspector: credentialInspector
+        )
+    }
+
+    private func compatibilitySnapshot(from envelope: HostV6.MetadataEnvelope) throws -> AppSnapshot {
+        try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: false
+        ).snapshot
+    }
+
+    private func activateAuthorityIfC3EvidenceIsReady(
+        legacyStore: SnapshotStore
+    ) async throws -> HostV6.MetadataEnvelope? {
+        let artifactURLs = c3ArtifactURLs()
+        guard artifactURLs.count >= 2 else { return nil }
+        let plan: HostV6.AuthorityCommitPlan
+        do {
+            let legacyData = try Data(contentsOf: paths.snapshot)
+            let bundle = try await legacyStore.stageV6Shadow(
+                currentDeviceID: currentDeviceID,
+                credentialInspector: credentialInspector
+            )
+            let artifacts = try artifactURLs.map { try Data(contentsOf: $0) }
+            let evidence = try evidenceVerifier.verify(artifacts)
+            plan = try HostV6.AuthorityController.activate(
+                envelope: bundle.envelope,
+                legacyData: legacyData,
+                evidence: evidence
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+        try await authorityStore.commit(plan)
+        return try await metadataRepository.snapshot()
+    }
+
+    private func c3ArtifactURLs() -> [URL] {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: paths.authorityC3EvidenceDirectory.path) else {
+            return []
+        }
+        return ((try? fileManager.contentsOfDirectory(
+            at: paths.authorityC3EvidenceDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []).filter { url in
+            url.pathExtension.lowercased() == "cms"
+                && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func authorityStateExists() -> Bool {
+        HostV6RuntimeAssembly.hasDurableAuthorityState(paths: paths)
+    }
 }
 
 enum HostV6RuntimeAssembly {
+    static func hasDurableAuthorityState(
+        paths: KeyPortPaths,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        if [paths.stateV6, paths.authorityManifest, paths.v6CommitJournal].contains(where: {
+            fileManager.fileExists(atPath: $0.path)
+        }) {
+            return true
+        }
+        let checkpoints = try? fileManager.contentsOfDirectory(
+            at: paths.v6CheckpointsDirectory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )
+        return checkpoints?.contains(where: { $0.pathExtension == "json" }) == true
+    }
+
     static func makeIfEnabled(
         currentDeviceID: String,
         defaults: UserDefaults = .standard,
-        paths: KeyPortPaths = KeyPortPaths()
+        paths: KeyPortPaths = KeyPortPaths(),
+        evidenceVerifier: HostV6C3EvidenceVerifier = HostV6C3EvidenceVerifier()
     ) -> HostV6Runtime? {
-        guard HostV6RuntimeFeatureFlags.isCanaryEnabled(defaults: defaults),
-              HostV6RuntimeFeatureFlags.isCloudV2Enabled(defaults: defaults),
-              HostV6RuntimeFeatureFlags.isMutationWorkflowEnabled(defaults: defaults) else {
+        let rolloutEnabled = HostV6RuntimeFeatureFlags.isCanaryEnabled(defaults: defaults)
+            && HostV6RuntimeFeatureFlags.isCloudV2Enabled(defaults: defaults)
+            && HostV6RuntimeFeatureFlags.isMutationWorkflowEnabled(defaults: defaults)
+        guard rolloutEnabled || hasDurableAuthorityState(paths: paths) else {
             return nil
         }
 
@@ -41,10 +206,12 @@ enum HostV6RuntimeAssembly {
             transport: CloudKitV2RecordTransport(),
             currentDeviceID: currentDeviceID
         )
+        let keychain = KeychainService()
+        let configService = SSHConfigService(runner: runner, paths: paths)
         let effects = ProductionHostV6MutationEffects(
-            configService: SSHConfigService(runner: runner, paths: paths),
+            configService: configService,
             hostKeyService: HostKeyService(runner: runner, paths: paths),
-            keychainService: KeychainService(),
+            keychainService: keychain,
             cloudCoordinator: cloudCoordinator,
             authorityStore: authorityStore,
             paths: paths
@@ -59,6 +226,14 @@ enum HostV6RuntimeAssembly {
                 return SSHConfigGenerator.aliases(in: config)
             }
         )
-        return HostV6Runtime(metadataRepository: repository)
+        return HostV6Runtime(
+            metadataRepository: repository,
+            authorityStore: authorityStore,
+            evidenceVerifier: evidenceVerifier,
+            currentDeviceID: currentDeviceID,
+            credentialInspector: keychain,
+            configService: configService,
+            paths: paths
+        )
     }
 }

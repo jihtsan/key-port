@@ -11,6 +11,9 @@ struct KeyPortPaths: Sendable {
     var keyPortDirectory: URL { sshDirectory.appendingPathComponent("keyport", isDirectory: true) }
     var identitiesDirectory: URL { keyPortDirectory.appendingPathComponent("identities", isDirectory: true) }
     var managedConfig: URL { keyPortDirectory.appendingPathComponent("config") }
+    var managedConfigDerivationState: URL {
+        keyPortDirectory.appendingPathComponent("config.derivation.json")
+    }
     var knownHosts: URL { keyPortDirectory.appendingPathComponent("known_hosts") }
     var userConfig: URL { sshDirectory.appendingPathComponent("config") }
     var applicationSupport: URL {
@@ -30,6 +33,9 @@ struct KeyPortPaths: Sendable {
     var stateV6: URL { applicationSupport.appendingPathComponent("state-v6.json") }
     var stateV1Compatibility: URL { applicationSupport.appendingPathComponent("state-v1-compat.json") }
     var authorityManifest: URL { applicationSupport.appendingPathComponent("authority-manifest.json") }
+    var authorityC3EvidenceDirectory: URL {
+        applicationSupport.appendingPathComponent("authority-c3", isDirectory: true)
+    }
     var v6CommitJournal: URL { applicationSupport.appendingPathComponent("migration-journal.json") }
     var v6MutationJournal: URL { applicationSupport.appendingPathComponent("mutation-journal-v6.json") }
     var v6CommandLedger: URL { applicationSupport.appendingPathComponent("command-ledger-v6.json") }

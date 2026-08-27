@@ -91,18 +91,21 @@ final class ConnectionHistoryPrivacyTests: XCTestCase {
             "the Cloud payload must encode exactly the synced allow-list"
         )
 
-        // A remote payload that smuggles an SSID is fail-closed: flagged with
-        // the stable code and dropped, never decoded into local state.
+        // A remote payload that smuggles an SSID is rejected by every public
+        // decoder entry point and never becomes a partially sanitized value.
         var smuggled = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         var synced = try XCTUnwrap(smuggled["synced"] as? [String: Any])
         synced["ssid"] = "FIXTURE_SSID_MARKER"
         synced["connectionRecords"] = [["ssid": "FIXTURE_SSID_MARKER"]]
         smuggled["synced"] = synced
-        let decoded = try HostV6.CloudPayloadCodec.decode(JSONSerialization.data(withJSONObject: smuggled))
-        XCTAssertTrue(decoded.diagnosticCodes.contains(.unexpectedCloudField))
-        XCTAssertTrue(decoded.unexpectedFieldPaths.contains("synced.ssid"))
-        let reencoded = try encoder.encode(decoded.payload)
-        XCTAssertFalse(String(decoding: reencoded, as: UTF8.self).contains("FIXTURE_SSID_MARKER"))
+        XCTAssertThrowsError(try HostV6.CloudPayloadCodec.decode(
+            JSONSerialization.data(withJSONObject: smuggled)
+        )) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .unexpectedFields([
+                "synced.connectionRecords",
+                "synced.ssid",
+            ]))
+        }
     }
 
     // MARK: static source scans

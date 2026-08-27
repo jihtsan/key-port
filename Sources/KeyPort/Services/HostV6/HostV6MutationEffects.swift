@@ -1,6 +1,24 @@
 import Foundation
 import KeyPortCore
 
+protocol HostV6TunnelClosing: Sendable {
+    func closeHostTunnels(_ hostID: UUID) async throws
+    func closeIdentityTunnels(_ identityID: UUID) async throws
+    func closeAddressTunnels(_ addressID: UUID) async throws
+    func closeServiceTunnel(_ serviceID: UUID) async throws
+}
+
+struct UnavailableHostV6TunnelCloser: HostV6TunnelClosing {
+    func closeHostTunnels(_ hostID: UUID) async throws { throw unavailable() }
+    func closeIdentityTunnels(_ identityID: UUID) async throws { throw unavailable() }
+    func closeAddressTunnels(_ addressID: UUID) async throws { throw unavailable() }
+    func closeServiceTunnel(_ serviceID: UUID) async throws { throw unavailable() }
+
+    private func unavailable() -> HostV6.CloudV2Error {
+        .failure(.artifactMismatch)
+    }
+}
+
 actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
     private let configService: SSHConfigService
     private let hostKeyService: HostKeyService
@@ -9,6 +27,7 @@ actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
     private let authorityStore: any HostV6AuthorityStoring
     private let paths: KeyPortPaths
     private let fileManager: FileManager
+    private let tunnelCloser: any HostV6TunnelClosing
 
     init(
         configService: SSHConfigService,
@@ -17,7 +36,8 @@ actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
         cloudCoordinator: HostV6CloudSyncCoordinator,
         authorityStore: any HostV6AuthorityStoring,
         paths: KeyPortPaths,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        tunnelCloser: any HostV6TunnelClosing = UnavailableHostV6TunnelCloser()
     ) {
         self.configService = configService
         self.hostKeyService = hostKeyService
@@ -26,6 +46,24 @@ actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
         self.authorityStore = authorityStore
         self.paths = paths
         self.fileManager = fileManager
+        self.tunnelCloser = tunnelCloser
+    }
+
+    func closeTunnels(_ effects: [HostV6.PendingExternalEffect]) async throws {
+        for effect in effects {
+            switch effect {
+            case .closeHostTunnels(let hostID):
+                try await tunnelCloser.closeHostTunnels(hostID)
+            case .closeIdentityTunnels(let identityID):
+                try await tunnelCloser.closeIdentityTunnels(identityID)
+            case .closeAddressTunnels(let addressID):
+                try await tunnelCloser.closeAddressTunnels(addressID)
+            case .closeServiceTunnel(let serviceID):
+                try await tunnelCloser.closeServiceTunnel(serviceID)
+            default:
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+        }
     }
 
     func rebuildSSHConfig(from envelope: HostV6.MetadataEnvelope) async throws {

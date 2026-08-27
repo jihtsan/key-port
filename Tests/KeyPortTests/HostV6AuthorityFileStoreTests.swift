@@ -72,6 +72,23 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: paths.stateV1Compatibility), plan.compatibilityData)
     }
 
+    func testCommitRejectsCompatibilityBytesThatDoNotEncodePlanSnapshot() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        var plan = try authorityPlan()
+        plan.compatibilityData = Data("not-a-compatibility-snapshot".utf8)
+
+        do {
+            try await HostV6AuthorityFileStore(paths: paths).commit(plan)
+            XCTFail("Expected compatibility bytes to be bound to the validated snapshot")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.rollbackProjectionInvalid))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.stateV1Compatibility.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6CommitJournal.path))
+    }
+
     func testCorruptCurrentStateAndCheckpointFailClosed() async throws {
         let home = try temporaryHome()
         defer { try? FileManager.default.removeItem(at: home) }
@@ -274,16 +291,22 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
             migrationProvenance: .empty
         )
         let payload = try HostV6.CloudPayloadCodec.encode(envelope)
+        let legacyData = try HostV6.AuthorityController.compatibilityProjection(
+            from: envelope,
+            requiresCompleteRoutes: true
+        ).data
         return try HostV6.AuthorityController.activate(
             envelope: envelope,
-            legacyData: HostV6.CanonicalJSON.encode(AppSnapshot()),
+            legacyData: legacyData,
             evidence: .init(
                 completedRequirements: Set(HostV6.AuthorityRequirement.allCases),
                 signedMacDeviceIDs: ["device-a", "device-b"],
                 acknowledgedDeviceIDs: ["device-a", "device-b"],
                 verifiedCloudPayloadHash: HostV6.CanonicalJSON.sha256(payload),
                 cloudChangeTag: "tag-1",
-                codeVersion: "6-test"
+                codeVersion: "6-test",
+                signerTeamIdentifier: "TEAMID1234",
+                signedArtifactDigests: ["artifact-a", "artifact-b"]
             )
         )
     }
