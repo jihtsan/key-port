@@ -52,7 +52,11 @@ actor SSHConfigService {
                   let identity = keyByID[authorization.keyID] else { return nil }
             return SSHConfigEntry(server: server, identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~"))
         }
-        try atomicWrite(SSHConfigGenerator.managedConfig(entries: entries), to: paths.managedConfig, permissions: 0o600, backup: true)
+        let managedConfig = SSHConfigGenerator.managedConfig(entries: entries)
+        let existingManagedConfig = try? String(contentsOf: paths.managedConfig, encoding: .utf8)
+        if existingManagedConfig != managedConfig {
+            try atomicWrite(managedConfig, to: paths.managedConfig, permissions: 0o600, backup: true)
+        }
         if !entries.isEmpty {
             let updatedUserConfig = SSHConfigGenerator.addingManagedInclude(to: existing)
             if updatedUserConfig != existing {

@@ -1,6 +1,11 @@
 import Foundation
 
 public extension HostV6 {
+    enum CloudV2Error: Error, Equatable, Sendable {
+        case failure(OperationFailureCode)
+        case unexpectedFields([String])
+    }
+
     struct CloudPayloadDecodeResult: Hashable, Sendable {
         public var payload: CloudPayload
         public var diagnosticCodes: [OperationFailureCode]
@@ -18,18 +23,40 @@ public extension HostV6 {
     }
 
     enum CloudPayloadCodec {
+        public static let maximumPayloadByteCount = 800 * 1_024
+
+        public static func encode(
+            _ envelope: MetadataEnvelope,
+            maximumByteCount: Int = maximumPayloadByteCount
+        ) throws -> Data {
+            let data = try CanonicalJSON.encode(CloudPayload(envelope: envelope))
+            guard data.count < maximumByteCount else {
+                throw CloudV2Error.failure(.payloadTooLarge)
+            }
+            return data
+        }
+
         public static func decode(_ data: Data) throws -> CloudPayloadDecodeResult {
             let rawObject = try JSONSerialization.jsonObject(with: data)
             let unexpectedFields = scanUnexpectedFields(in: rawObject)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            var payload = try decoder.decode(CloudPayload.self, from: data)
+            var payload = try CanonicalJSON.decode(CloudPayload.self, from: data)
             payload.synced.removeUnexpectedMergeCandidateFields()
             return CloudPayloadDecodeResult(
                 payload: payload,
                 diagnosticCodes: unexpectedFields.isEmpty ? [] : [.unexpectedCloudField],
                 unexpectedFieldPaths: unexpectedFields
             )
+        }
+
+        public static func decodeStrict(_ data: Data) throws -> CloudPayload {
+            let result = try decode(data)
+            guard result.unexpectedFieldPaths.isEmpty else {
+                throw CloudV2Error.unexpectedFields(result.unexpectedFieldPaths)
+            }
+            guard result.payload.schemaVersion == 6 else {
+                throw CloudV2Error.failure(.decodeFailed)
+            }
+            return result.payload
         }
 
         private static func scanUnexpectedFields(in object: Any) -> [String] {

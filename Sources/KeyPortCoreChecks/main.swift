@@ -860,6 +860,39 @@ do {
     )
     try expect(migrationShadow.stateData == migrationReplay.stateData, "shadow migration replay changed state bytes")
     try expect(migrationShadow.reportData == migrationReplay.reportData, "shadow migration replay changed report bytes")
+    var v6PrivacyEnvelope = migrationShadow.envelope
+    v6PrivacyEnvelope.local.keyStates = [.init(
+        keyID: "key_core_checks",
+        privateKeyPath: "/V6_PRIVATE_KEY_PATH_MARKER",
+        isInAgent: true,
+        isLocallyAvailable: true
+    )]
+    v6PrivacyEnvelope.local.auditEvents = [.init(
+        id: UUID(uuidString: "00000000-0000-4000-8000-000000000901")!,
+        timestamp: migrationDate,
+        category: "fixture",
+        action: "privacy",
+        targetID: nil,
+        result: "V6_AUDIT_RESULT_MARKER",
+        level: .info
+    )]
+    let v6CloudPayload = try HostV6.CloudPayloadCodec.encode(v6PrivacyEnvelope)
+    let v6CloudText = String(decoding: v6CloudPayload, as: UTF8.self)
+    try expect(
+        v6CloudPayload.count < HostV6.CloudPayloadCodec.maximumPayloadByteCount,
+        "v6 Cloud payload exceeded the strict capacity gate"
+    )
+    try expect(!v6CloudText.contains("V6_PRIVATE_KEY_PATH_MARKER"), "v6 Cloud payload included a private key path")
+    try expect(!v6CloudText.contains("V6_AUDIT_RESULT_MARKER"), "v6 Cloud payload included a local audit event")
+    var unexpectedV6Object = try JSONSerialization.jsonObject(with: v6CloudPayload) as! [String: Any]
+    unexpectedV6Object["privateKeyPath"] = "/UNEXPECTED_V6_FIELD"
+    let unexpectedV6Data = try JSONSerialization.data(withJSONObject: unexpectedV6Object, options: [.sortedKeys])
+    do {
+        _ = try HostV6.CloudPayloadCodec.decodeStrict(unexpectedV6Data)
+        throw CheckFailure.failed("v6 Cloud decoder accepted an unexpected field")
+    } catch HostV6.CloudV2Error.unexpectedFields(let paths) {
+        try expect(paths == ["privateKeyPath"], "v6 Cloud decoder reported unstable unexpected-field paths")
+    }
     // Address-selection pure seams (slice D, architecture 9.1).
     let ipv6DirectURL = try ServiceEndpointFormatter.directURL(scheme: .https, host: "fd00::10", port: 443)
     try expect(ipv6DirectURL.absoluteString == "https://[fd00::10]:443", "IPv6 direct URL was not bracketed")
