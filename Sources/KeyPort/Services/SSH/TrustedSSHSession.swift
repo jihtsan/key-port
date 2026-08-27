@@ -80,17 +80,11 @@ struct TrustedSSHSession: Sendable {
         _ command: SSHRemoteCommand,
         limits: ProcessExecutionLimits = .sshDefault
     ) async throws -> TrustedSSHCommandResult {
-        let result = try await executor.execute(Self.request(
-            route: route,
-            identityPath: identityPath,
-            knownHostsPath: knownHostsPath,
-            command: command,
-            limits: limits
-        ))
+        let result = try await executeRaw(command, limits: limits)
         let objectID = route.id.uuidString.lowercased()
         switch result.ending {
         case .exited(0):
-            return TrustedSSHCommandResult(stdout: result.stdout, stderr: result.stderr, ending: result.ending)
+            return result
         case .exited:
             let stderrText = String(decoding: result.stderr, as: UTF8.self)
             if stderrText.localizedCaseInsensitiveContains("permission denied") {
@@ -125,6 +119,22 @@ struct TrustedSSHSession: Sendable {
                 code: .probeCancelled, recoveryAction: .retry
             )
         }
+    }
+
+    /// 返回闭集命令的有界原始结果，供平台适配器将退出状态转换为各自的稳定码。
+    /// 调用方必须在内存中消费 stdout/stderr，禁止将其写入记录、日志或归档。
+    func executeRaw(
+        _ command: SSHRemoteCommand,
+        limits: ProcessExecutionLimits = .sshDefault
+    ) async throws -> TrustedSSHCommandResult {
+        let result = try await executor.execute(Self.request(
+            route: route,
+            identityPath: identityPath,
+            knownHostsPath: knownHostsPath,
+            command: command,
+            limits: limits
+        ))
+        return TrustedSSHCommandResult(stdout: result.stdout, stderr: result.stderr, ending: result.ending)
     }
 
     /// 组装一次可信执行的完整请求。参数与 legacy `commonArguments` 语义一致；
