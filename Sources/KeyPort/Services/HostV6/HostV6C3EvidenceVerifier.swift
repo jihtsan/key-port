@@ -50,6 +50,10 @@ struct HostV6C3EvidenceVerifier: Sendable {
         self.currentBuildIdentifier = currentBuildIdentifier
     }
 
+    func runningBuildIdentifier() -> String? {
+        currentBuildIdentifier()
+    }
+
     func verify(_ artifacts: [Data]) throws -> HostV6.AuthorityActivationEvidence {
         guard let expectedTeamIdentifier = currentTeamIdentifier(),
               !expectedTeamIdentifier.isEmpty,

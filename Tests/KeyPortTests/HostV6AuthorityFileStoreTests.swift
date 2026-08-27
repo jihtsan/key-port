@@ -65,7 +65,10 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
         let restartedStore = HostV6AuthorityFileStore(paths: paths)
         let pendingResult = try await restartedStore.pendingActivation()
         let pending = try XCTUnwrap(pendingResult)
-        let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+        let publishedResult = try await coordinator.publishPreparedAuthority(
+            pending,
+            currentBuildIdentifier: fixture.evidence.codeVersion
+        )
         let published = try XCTUnwrap(publishedResult)
         try await restartedStore.completePreparedActivation(using: published)
 
@@ -76,6 +79,57 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
         XCTAssertEqual(recovered.migrationProvenance.authorityManifest, fixture.plan.manifest)
         XCTAssertEqual(remotePayload.migrationProvenance.authorityManifest, fixture.plan.manifest)
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path))
+    }
+
+    func testPreparedActivationRejectsDifferentBuildBeforeCloudCAS() async throws {
+        let home = try temporaryHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let fixture = try authorityFixture()
+        let originalRecord = HostV6CloudRecord(
+            payload: fixture.preAuthorityPayload,
+            changeTag: fixture.evidence.cloudChangeTag
+        )
+        let transport = RecoverableAuthorityCloudTransport(remote: originalRecord)
+        let coordinator = HostV6CloudSyncCoordinator(
+            transport: transport,
+            currentDeviceID: "device-a"
+        )
+        try await coordinator.validateAuthorityPrecondition(
+            fixture.preAuthorityEnvelope,
+            evidence: fixture.evidence
+        )
+        try await HostV6AuthorityFileStore(paths: paths).prepareActivation(
+            fixture.plan,
+            evidence: fixture.evidence
+        )
+        let suiteName = "HostV6AuthorityFileStoreTests.runtime.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let upgradedRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            defaults: defaults,
+            paths: paths,
+            evidenceVerifier: HostV6C3EvidenceVerifier(
+                currentTeamIdentifier: { "TEAMID1234" },
+                currentBuildIdentifier: { "6-next-build" }
+            ),
+            cloudTransport: transport
+        ))
+
+        do {
+            _ = try await upgradedRuntime.loadPresentationSnapshot(
+                from: SnapshotStore(paths: paths)
+            )
+            XCTFail("Expected a build A activation intent to be rejected by build B")
+        } catch {
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.authorityGateFailed))
+        }
+
+        let remoteRecord = await transport.remoteRecord()
+        XCTAssertEqual(remoteRecord, originalRecord)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.authorityActivationJournal.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.authorityManifest.path))
     }
 
     func testPublishedActivationRecoversEveryInterruptedLocalCommitPhase() async throws {
@@ -105,7 +159,10 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
             try await interruptedStore.prepareActivation(fixture.plan, evidence: fixture.evidence)
             let pendingResult = try await interruptedStore.pendingActivation()
             let pending = try XCTUnwrap(pendingResult)
-            let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+            let publishedResult = try await coordinator.publishPreparedAuthority(
+                pending,
+                currentBuildIdentifier: fixture.evidence.codeVersion
+            )
             let published = try XCTUnwrap(publishedResult)
 
             do {
@@ -125,7 +182,10 @@ final class HostV6AuthorityFileStoreTests: XCTestCase {
             let restartedStore = HostV6AuthorityFileStore(paths: paths)
             let restartedPendingResult = try await restartedStore.pendingActivation()
             let restartedPending = try XCTUnwrap(restartedPendingResult)
-            let confirmedResult = try await coordinator.publishPreparedAuthority(restartedPending)
+            let confirmedResult = try await coordinator.publishPreparedAuthority(
+                restartedPending,
+                currentBuildIdentifier: fixture.evidence.codeVersion
+            )
             let confirmed = try XCTUnwrap(confirmedResult)
             try await restartedStore.completePreparedActivation(using: confirmed)
             let recovered = try await restartedStore.recover()

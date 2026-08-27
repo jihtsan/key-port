@@ -116,7 +116,10 @@ final class CloudV2SyncServiceTests: XCTestCase {
 
         try await coordinator.validateAuthorityPrecondition(envelope, evidence: evidence)
         let pending = try preparedActivation(envelope: envelope, evidence: evidence)
-        let publishedResult = try await coordinator.publishPreparedAuthority(pending)
+        let publishedResult = try await coordinator.publishPreparedAuthority(
+            pending,
+            currentBuildIdentifier: evidence.codeVersion
+        )
         let published = try XCTUnwrap(publishedResult)
         let secondCoordinator = HostV6CloudSyncCoordinator(
             transport: transport,
@@ -150,7 +153,8 @@ final class CloudV2SyncServiceTests: XCTestCase {
         let evidence = activationEvidence(payload: payload, cloudChangeTag: "tag-c3")
         try await coordinator.validateAuthorityPrecondition(envelope, evidence: evidence)
         let publishedResult = try await coordinator.publishPreparedAuthority(
-            preparedActivation(envelope: envelope, evidence: evidence)
+            preparedActivation(envelope: envelope, evidence: evidence),
+            currentBuildIdentifier: evidence.codeVersion
         )
         let published = try XCTUnwrap(publishedResult)
 
