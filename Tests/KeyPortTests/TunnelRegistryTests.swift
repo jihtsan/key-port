@@ -64,11 +64,12 @@ final class TunnelRegistryTests: XCTestCase {
     func testAdoptRekeysAnActiveCandidateAndReusesItAfterSavingTheService() async throws {
         let request = makeRequest(serviceID: nil)
         let broker = TestBroker(outcomes: [.success])
+        let leaseStore = TestLeaseStore()
         let registry = TunnelRegistry(
             serviceAccessEnabled: true,
             portReserver: TestPortAllocator(ports: [41026]),
             brokerLauncher: broker,
-            leaseStore: TestLeaseStore()
+            leaseStore: leaseStore
         )
 
         let candidate = try await registry.open(request)
@@ -91,6 +92,8 @@ final class TunnelRegistryTests: XCTestCase {
         XCTAssertEqual(adopted.verificationEvidence?.tunnelID, candidate.id)
         XCTAssertEqual(adopted.verificationEvidence?.operationID, request.operationID)
         XCTAssertEqual(adopted.verificationEvidence?.subject, adopted.subject)
+        let adoptedLeases = await leaseStore.savedLeases
+        XCTAssertEqual(adoptedLeases.last?.ownership?.serviceID, serviceID)
 
         let savedRequest = TunnelRequest(
             operationID: UUID(),
@@ -522,6 +525,169 @@ final class TunnelRegistryTests: XCTestCase {
         XCTAssertEqual(launchCount, 1)
     }
 
+    func testCloseHostTunnelsClosesOnlyTheRequestedHost() async throws {
+        let selectedHostID = UUID()
+        let unrelatedHostID = UUID()
+        let leaseStore = TestLeaseStore()
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41031, 41032]),
+            brokerLauncher: TestBroker(outcomes: [.success, .success]),
+            leaseStore: leaseStore
+        )
+        let selected = try await registry.open(makeRequest(hostID: selectedHostID))
+        let unrelated = try await registry.open(makeRequest(hostID: unrelatedHostID))
+
+        let result = await registry.closeHostTunnels(selectedHostID)
+        let selectedState = await registry.state(for: selected.id)
+        let unrelatedState = await registry.state(for: unrelated.id)
+
+        XCTAssertEqual(result, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(selectedState, .closed(.authoritativeDeletion))
+        guard case .active = unrelatedState else {
+            XCTFail("A tunnel for another Host was closed")
+            return
+        }
+        let removedLeases = await leaseStore.removedLeases
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [selected.id])
+    }
+
+    func testCloseIdentityTunnelsClosesOnlyTheRequestedIdentity() async throws {
+        let selectedIdentityID = UUID()
+        let unrelatedIdentityID = UUID()
+        let leaseStore = TestLeaseStore()
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41033, 41034]),
+            brokerLauncher: TestBroker(outcomes: [.success, .success]),
+            leaseStore: leaseStore
+        )
+        let selected = try await registry.open(makeRequest(sshIdentityID: selectedIdentityID))
+        let unrelated = try await registry.open(makeRequest(sshIdentityID: unrelatedIdentityID))
+
+        let result = await registry.closeIdentityTunnels(selectedIdentityID)
+        let selectedState = await registry.state(for: selected.id)
+        let unrelatedState = await registry.state(for: unrelated.id)
+
+        XCTAssertEqual(result, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(selectedState, .closed(.authoritativeDeletion))
+        guard case .active = unrelatedState else {
+            XCTFail("A tunnel for another Identity was closed")
+            return
+        }
+        let removedLeases = await leaseStore.removedLeases
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [selected.id])
+    }
+
+    func testCloseAddressTunnelsClosesOnlyTheRequestedAddress() async throws {
+        let selectedAddressID = UUID()
+        let unrelatedAddressID = UUID()
+        let leaseStore = TestLeaseStore()
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41035, 41036]),
+            brokerLauncher: TestBroker(outcomes: [.success, .success]),
+            leaseStore: leaseStore
+        )
+        let selected = try await registry.open(makeRequest(sshAddressID: selectedAddressID))
+        let unrelated = try await registry.open(makeRequest(sshAddressID: unrelatedAddressID))
+
+        let result = await registry.closeAddressTunnels(selectedAddressID)
+        let selectedState = await registry.state(for: selected.id)
+        let unrelatedState = await registry.state(for: unrelated.id)
+
+        XCTAssertEqual(result, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(selectedState, .closed(.authoritativeDeletion))
+        guard case .active = unrelatedState else {
+            XCTFail("A tunnel for another Address was closed")
+            return
+        }
+        let removedLeases = await leaseStore.removedLeases
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [selected.id])
+    }
+
+    func testCloseServiceTunnelClosesOnlyTheRequestedService() async throws {
+        let selectedServiceID = UUID()
+        let unrelatedServiceID = UUID()
+        let leaseStore = TestLeaseStore()
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41037, 41038]),
+            brokerLauncher: TestBroker(outcomes: [.success, .success]),
+            leaseStore: leaseStore
+        )
+        let selected = try await registry.open(makeRequest(serviceID: selectedServiceID))
+        let unrelated = try await registry.open(makeRequest(serviceID: unrelatedServiceID))
+
+        let result = await registry.closeServiceTunnel(selectedServiceID)
+        let selectedState = await registry.state(for: selected.id)
+        let unrelatedState = await registry.state(for: unrelated.id)
+
+        XCTAssertEqual(result, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(selectedState, .closed(.authoritativeDeletion))
+        guard case .active = unrelatedState else {
+            XCTFail("A tunnel for another Service was closed")
+            return
+        }
+        let removedLeases = await leaseStore.removedLeases
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [selected.id])
+    }
+
+    func testScopedCloseRetriesPendingCleanupWithoutLosingTheTunnel() async throws {
+        let hostID = UUID()
+        let leaseStore = TestLeaseStore()
+        let broker = TestBroker(
+            outcomes: [.success],
+            cleanupOutcomes: [.pending, .completed]
+        )
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41039]),
+            brokerLauncher: broker,
+            leaseStore: leaseStore
+        )
+        let handle = try await registry.open(makeRequest(hostID: hostID))
+
+        let interrupted = await registry.closeHostTunnels(hostID)
+        let recovered = await registry.closeHostTunnels(hostID)
+        let state = await registry.state(for: handle.id)
+        let closeCount = await broker.closeCount
+        let reapedScopes = await leaseStore.reapedScopes
+
+        XCTAssertEqual(interrupted, TunnelCloseResult(closedCount: 0, cleanup: .pending))
+        XCTAssertEqual(recovered, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(state, .closed(.authoritativeDeletion))
+        XCTAssertEqual(closeCount, 2)
+        XCTAssertEqual(reapedScopes, [.host(hostID)])
+        let removedLeases = await leaseStore.removedLeases
+        XCTAssertEqual(removedLeases.map(\.tunnelID), [handle.id])
+    }
+
+    func testConcurrentScopedCloseDoesNotReenterBrokerCleanup() async throws {
+        let hostID = UUID()
+        let broker = TestBroker(
+            outcomes: [.success],
+            closeDelayNanoseconds: 100_000_000
+        )
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: TestPortAllocator(ports: [41040]),
+            brokerLauncher: broker,
+            leaseStore: TestLeaseStore()
+        )
+        _ = try await registry.open(makeRequest(hostID: hostID))
+        let first = Task { await registry.closeHostTunnels(hostID) }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let overlapping = await registry.closeHostTunnels(hostID)
+        let completed = await first.value
+        let closeCount = await broker.closeCount
+
+        XCTAssertEqual(overlapping, TunnelCloseResult(closedCount: 0, cleanup: .pending))
+        XCTAssertEqual(completed, TunnelCloseResult(closedCount: 1, cleanup: .completed))
+        XCTAssertEqual(closeCount, 1)
+    }
+
     func testDisabledFeatureFailsBeforeReservingAPort() async throws {
         let allocator = TestPortAllocator(ports: [41016])
         let registry = TunnelRegistry(
@@ -543,14 +709,16 @@ final class TunnelRegistryTests: XCTestCase {
     private func makeRequest(
         hostID: UUID = UUID(),
         serviceID: UUID? = UUID(),
+        sshIdentityID: UUID = UUID(),
+        sshAddressID: UUID = UUID(),
         networkEpoch: UInt64 = 0
     ) -> TunnelRequest {
         TunnelRequest(
             operationID: UUID(),
             serviceID: serviceID,
             hostID: hostID,
-            sshIdentityID: UUID(),
-            sshAddressID: UUID(),
+            sshIdentityID: sshIdentityID,
+            sshAddressID: sshAddressID,
             serviceProtocol: .tcp,
             sshHost: "ssh.example.test",
             sshPort: 22,
@@ -642,6 +810,7 @@ private actor TestBroker: TunnelBrokerLaunching {
     private let processIdentifier: Int32?
     private let closeDelayNanoseconds: UInt64
     private let terminationGate: TestGate?
+    private var cleanupOutcomes: [CleanupStatus]
     private(set) var launchCount = 0
     private(set) var lastConfiguration: TunnelBrokerConfiguration?
     private(set) var verificationCount = 0
@@ -653,7 +822,8 @@ private actor TestBroker: TunnelBrokerLaunching {
         verificationGate: TestGate? = nil,
         processIdentifier: Int32? = nil,
         closeDelayNanoseconds: UInt64 = 0,
-        terminationGate: TestGate? = nil
+        terminationGate: TestGate? = nil,
+        cleanupOutcomes: [CleanupStatus] = []
     ) {
         self.outcomes = outcomes
         self.onLaunch = onLaunch
@@ -661,6 +831,7 @@ private actor TestBroker: TunnelBrokerLaunching {
         self.processIdentifier = processIdentifier
         self.closeDelayNanoseconds = closeDelayNanoseconds
         self.terminationGate = terminationGate
+        self.cleanupOutcomes = cleanupOutcomes
     }
 
     func launch(_ configuration: TunnelBrokerConfiguration) async throws -> any TunnelBrokerSession {
@@ -676,7 +847,7 @@ private actor TestBroker: TunnelBrokerLaunching {
                 closeDelayNanoseconds: closeDelayNanoseconds,
                 terminationGate: terminationGate,
                 onVerify: { [weak self] in await self?.recordVerification() },
-                onClose: { [weak self] in await self?.recordClose() }
+                onClose: { [weak self] in await self?.recordClose() ?? .completed }
             )
         case .portUnavailable:
             throw TunnelBrokerLaunchError.portUnavailable
@@ -688,7 +859,7 @@ private actor TestBroker: TunnelBrokerLaunching {
                 closeDelayNanoseconds: closeDelayNanoseconds,
                 terminationGate: terminationGate,
                 onVerify: { [weak self] in await self?.recordVerification() },
-                onClose: { [weak self] in await self?.recordClose() }
+                onClose: { [weak self] in await self?.recordClose() ?? .completed }
             )
         }
     }
@@ -697,8 +868,9 @@ private actor TestBroker: TunnelBrokerLaunching {
         verificationCount += 1
     }
 
-    private func recordClose() {
+    private func recordClose() -> CleanupStatus {
         closeCount += 1
+        return cleanupOutcomes.isEmpty ? .completed : cleanupOutcomes.removeFirst()
     }
 }
 
@@ -709,7 +881,7 @@ private actor TestBrokerSession: TunnelBrokerTerminationObserving {
     private let closeDelayNanoseconds: UInt64
     private let terminationGate: TestGate?
     private let onVerify: @Sendable () async -> Void
-    private let onClose: @Sendable () async -> Void
+    private let onClose: @Sendable () async -> CleanupStatus
 
     init(
         verificationFailure: OperationFailureCode? = nil,
@@ -718,7 +890,7 @@ private actor TestBrokerSession: TunnelBrokerTerminationObserving {
         closeDelayNanoseconds: UInt64 = 0,
         terminationGate: TestGate? = nil,
         onVerify: @escaping @Sendable () async -> Void,
-        onClose: @escaping @Sendable () async -> Void
+        onClose: @escaping @Sendable () async -> CleanupStatus
     ) {
         self.verificationFailure = verificationFailure
         self.verificationGate = verificationGate
@@ -741,8 +913,7 @@ private actor TestBrokerSession: TunnelBrokerTerminationObserving {
         if closeDelayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: closeDelayNanoseconds)
         }
-        await onClose()
-        return .completed
+        return await onClose()
     }
 
     func waitForTermination() async {
@@ -778,6 +949,7 @@ private actor TestGate {
 private actor TestLeaseStore: TunnelLeaseStore {
     private(set) var savedLeases: [TunnelLease] = []
     private(set) var removedLeases: [TunnelLease] = []
+    private(set) var reapedScopes: [TunnelCleanupScope] = []
 
     func save(_ lease: TunnelLease) async throws {
         savedLeases.append(lease)
@@ -786,4 +958,8 @@ private actor TestLeaseStore: TunnelLeaseStore {
         removedLeases.append(lease)
     }
     func reap() async -> CleanupStatus { .completed }
+    func reap(matching scope: TunnelCleanupScope) async -> CleanupStatus {
+        reapedScopes.append(scope)
+        return .notNeeded
+    }
 }

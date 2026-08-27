@@ -10,6 +10,7 @@ struct KeyPortApp: App {
     @State private var model: AppModel
 
     init() {
+        let dependencies = KeyPortRuntimeDependencies.production
         let defaults = UserDefaults.standard
         let currentDeviceID: String
         if let storedDeviceID = defaults.string(forKey: "KeyPort.deviceID") {
@@ -20,7 +21,8 @@ struct KeyPortApp: App {
         }
         let hostV6Runtime = HostV6RuntimeAssembly.makeIfEnabled(
             currentDeviceID: currentDeviceID,
-            defaults: defaults
+            defaults: defaults,
+            dependencies: dependencies
         )
         let appModel = AppModel(hostV6Runtime: hostV6Runtime, defaults: defaults)
         _model = State(initialValue: appModel)
@@ -85,11 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationRequested = false
 
     override init() {
-        self.tunnelRegistry = .production()
+        self.tunnelRegistry = KeyPortRuntimeDependencies.production.tunnelRegistry
         super.init()
     }
 
-    init(tunnelRegistry: TunnelRegistry = .production()) {
+    init(tunnelRegistry: TunnelRegistry) {
         self.tunnelRegistry = tunnelRegistry
         super.init()
     }
