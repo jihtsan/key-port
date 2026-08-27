@@ -29,6 +29,11 @@ public protocol HostV6PlatformCapabilityProviding: Sendable {
 public protocol HostV6MetadataRepositoryPort: Sendable {
     func snapshot() async throws -> HostV6.MetadataEnvelope
     func transact(_ command: HostV6.ModelCommand) async throws -> HostV6.ModelCommandResult
+    func revokeAuthorization(
+        authorizationID: String,
+        context: HostV6.CommandContext,
+        remoteAction: @Sendable () async -> HostV6.RemoteRevocationResult
+    ) async throws -> HostV6.ModelCommandResult
 }
 
 public protocol HostV6HostRepositoryPort: Sendable {

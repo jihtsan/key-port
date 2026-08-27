@@ -118,7 +118,7 @@ public enum ServiceEndpointFormattingError: Error, Equatable, Sendable {
     case unsupportedScheme
 }
 
-public enum ServiceEndpointFormatter {
+public enum ServiceAccessEndpointFormatter {
     public static func url(
         scheme: ServiceProtocol,
         host: String,
@@ -219,39 +219,6 @@ public enum TargetProbeResult: Equatable, Sendable {
     case refused
     case timedOut
     case indeterminate
-}
-
-public enum OperationFailureCode: String, Codable, Hashable, Sendable {
-    case invalidAddress
-    case dnsUnresolved
-    case tcpTimeout
-    case tcpRefused
-    case networkChanged
-    case probeCancelled
-    case fixedAddressUnavailable
-    case hostKeyPending
-    case hostKeyChanged
-    case identityUnavailable
-    case keyAuthenticationFailed
-    case strictHostKeyRejected
-    case protocolUnconfirmed
-    case directUnavailable
-    case originSensitiveTunnelUnsupported
-    case tlsHandledExternally
-    case localPortUnavailable
-    case forwardRejected
-    case brokerExited
-    case tunnelCapacityReached
-    case closedForSleep
-    case closedForNetworkChange
-    case cleanupPending
-    case reservationCancelled
-    case targetRefused
-    case targetTimeout
-    case targetProbeIndeterminate
-    case unknownBrokerOutput
-    case serviceAccessDisabled
-    case invalidTunnelRequest
 }
 
 public enum ServiceAccessDecision: Equatable, Sendable {
@@ -537,11 +504,11 @@ public enum TunnelBrokerCommandBuilder {
         }
 
         do {
-            _ = try ServiceEndpointFormatter.tcpHostPort(
+            _ = try ServiceAccessEndpointFormatter.tcpHostPort(
                 host: configuration.sshHost,
                 port: configuration.sshPort
             )
-            _ = try ServiceEndpointFormatter.tcpHostPort(
+            _ = try ServiceAccessEndpointFormatter.tcpHostPort(
                 host: configuration.remoteHost,
                 port: configuration.remotePort
             )

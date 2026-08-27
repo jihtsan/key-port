@@ -1,6 +1,11 @@
 import Foundation
 
 public extension HostV6 {
+    enum CloudV2Error: Error, Equatable, Sendable {
+        case failure(OperationFailureCode)
+        case unexpectedFields([String])
+    }
+
     struct CloudPayloadDecodeResult: Hashable, Sendable {
         public var payload: CloudPayload
         public var diagnosticCodes: [OperationFailureCode]
@@ -18,18 +23,39 @@ public extension HostV6 {
     }
 
     enum CloudPayloadCodec {
+        public static let maximumPayloadByteCount = 800 * 1_024
+
+        public static func encode(
+            _ envelope: MetadataEnvelope,
+            maximumByteCount: Int = maximumPayloadByteCount
+        ) throws -> Data {
+            let data = try CanonicalJSON.encode(CloudPayload(envelope: envelope))
+            guard data.count < maximumByteCount else {
+                throw CloudV2Error.failure(.payloadTooLarge)
+            }
+            return data
+        }
+
         public static func decode(_ data: Data) throws -> CloudPayloadDecodeResult {
             let rawObject = try JSONSerialization.jsonObject(with: data)
             let unexpectedFields = scanUnexpectedFields(in: rawObject)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            var payload = try decoder.decode(CloudPayload.self, from: data)
+            guard unexpectedFields.isEmpty else {
+                throw CloudV2Error.unexpectedFields(unexpectedFields)
+            }
+            var payload = try CanonicalJSON.decode(CloudPayload.self, from: data)
             payload.synced.removeUnexpectedMergeCandidateFields()
+            guard payload.schemaVersion == 6 else {
+                throw CloudV2Error.failure(.decodeFailed)
+            }
             return CloudPayloadDecodeResult(
                 payload: payload,
-                diagnosticCodes: unexpectedFields.isEmpty ? [] : [.unexpectedCloudField],
-                unexpectedFieldPaths: unexpectedFields
+                diagnosticCodes: [],
+                unexpectedFieldPaths: []
             )
+        }
+
+        public static func decodeStrict(_ data: Data) throws -> CloudPayload {
+            try decode(data).payload
         }
 
         private static func scanUnexpectedFields(in object: Any) -> [String] {

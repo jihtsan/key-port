@@ -147,6 +147,45 @@ public extension HostV6 {
             )
         }
 
+        public func importCloudV1(
+            _ legacyData: Data,
+            into current: MetadataEnvelope
+        ) throws -> MetadataEnvelope {
+            let decoded: AppSnapshot
+            do {
+                decoded = try CanonicalJSON.decode(AppSnapshot.self, from: legacyData)
+            } catch {
+                throw migrationError(.decodeFailed, objectID: "cloud-v1", detail: "legacySnapshotDecode")
+            }
+            guard (1...5).contains(decoded.schemaVersion) else {
+                throw migrationError(.decodeFailed, objectID: "cloud-v1", detail: "unsupportedLegacySchema")
+            }
+            try validate(current, existingSSHHostAliases: [])
+
+            let legacy = migratedToV5(decoded)
+            let projection = try LegacyProjection(snapshot: legacy, currentDeviceID: currentDeviceID).build()
+            let projected = MetadataEnvelope(
+                synced: projection.graph,
+                local: .init(),
+                migrationProvenance: MigrationProvenance(
+                    legacySources: projection.legacySources,
+                    authorityManifest: nil
+                )
+            )
+            try validate(projected, existingSSHHostAliases: [])
+            try validateLegacyTransition(from: current, to: projected)
+            let staleSourceIDs = staleSourceIDs(from: current, to: projected)
+            var imported = merge(
+                previous: current,
+                projected: projected,
+                staleSourceIDs: staleSourceIDs
+            )
+            imported.local = current.local
+            imported.migrationProvenance.authorityManifest = current.migrationProvenance.authorityManifest
+            try validate(imported, existingSSHHostAliases: [])
+            return imported
+        }
+
         private func validate(
             _ envelope: MetadataEnvelope,
             existingSSHHostAliases: Set<String>

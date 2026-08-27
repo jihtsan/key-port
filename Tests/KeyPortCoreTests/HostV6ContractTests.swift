@@ -253,8 +253,10 @@ final class HostV6ContractTests: XCTestCase {
             "remoteExecutionFailed", "protocolUnconfirmed", "directUnavailable", "targetVerificationRequired",
             "originSensitiveTunnelUnsupported", "tlsHandledExternally", "localPortUnavailable",
             "localPortReleaseTimeout", "forwardRejected", "targetConnectionRefused", "targetConnectionTimeout",
-            "targetProbeIndeterminate", "brokerExited", "capacityReached", "closedForSleep",
-            "closedForNetworkChange", "staleRevision", "addressStillReferenced",
+            "targetProbeIndeterminate", "brokerExited", "capacityReached", "tunnelCapacityReached",
+            "closedForSleep", "closedForNetworkChange", "cleanupPending", "reservationCancelled",
+            "targetRefused", "targetTimeout", "unknownBrokerOutput", "serviceAccessDisabled",
+            "invalidTunnelRequest", "staleRevision", "addressStillReferenced",
             "lastAddressForActiveIdentity", "keyStillAuthorized", "decodeFailed", "invariantFailed",
             "artifactMismatch", "legacyVersionReuse", "legacyImmutableKeyConflict", "concurrentConflict",
             "payloadTooLarge", "mixedVersionPending", "authorityGateFailed", "rollbackProjectionInvalid",
@@ -263,7 +265,7 @@ final class HostV6ContractTests: XCTestCase {
         ])
     }
 
-    func testCloudDecoderIgnoresUnknownFieldsAndReportsStableCode() throws {
+    func testCloudDecoderRejectsUnknownFieldsWithStablePaths() throws {
         let envelope = HostV6.MetadataEnvelope(
             synced: HostV6.SyncedGraph(
                 hosts: [host(stamp: stamp(1))],
@@ -287,17 +289,35 @@ final class HostV6ContractTests: XCTestCase {
         json["synced"] = synced
 
         let injected = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
-        let result = try HostV6.CloudPayloadCodec.decode(injected)
-        XCTAssertEqual(result.diagnosticCodes, [.unexpectedCloudField])
-        XCTAssertEqual(Set(result.unexpectedFieldPaths), ["ssid", "synced.hosts[].rawCommand"])
-
-        let reencoded = try encoder.encode(result.payload)
-        let text = String(decoding: reencoded, as: UTF8.self)
-        XCTAssertFalse(text.contains("SECRET_SSID_MARKER"))
-        XCTAssertFalse(text.contains("SECRET_COMMAND_MARKER"))
+        XCTAssertThrowsError(try HostV6.CloudPayloadCodec.decode(injected)) { error in
+            XCTAssertEqual(
+                error as? HostV6.CloudV2Error,
+                .unexpectedFields(["ssid", "synced.hosts[].rawCommand"])
+            )
+        }
     }
 
-    func testCloudDecoderReportsAndDropsNestedUnexpectedFields() throws {
+    func testPublicCloudDecoderFailsClosedForUnknownFields() throws {
+        let encoded = try HostV6.CloudPayloadCodec.encode(.init(
+            synced: .init(),
+            local: .init(),
+            migrationProvenance: .empty
+        ))
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object["privateKeyPath"] = "/must-not-be-accepted"
+        let injected = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        XCTAssertThrowsError(try HostV6.CloudPayloadCodec.decode(injected)) { error in
+            XCTAssertEqual(
+                error as? HostV6.CloudV2Error,
+                .unexpectedFields(["privateKeyPath"])
+            )
+        }
+    }
+
+    func testCloudDecoderRejectsNestedUnexpectedFields() throws {
         var conflictedHost = host(stamp: stamp(1))
         conflictedHost.machineConfiguration = RemoteMachineConfiguration(
             hostname: "db",
@@ -352,14 +372,12 @@ final class HostV6ContractTests: XCTestCase {
         json["synced"] = synced
 
         let injected = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
-        let result = try HostV6.CloudPayloadCodec.decode(injected)
-
-        XCTAssertEqual(result.diagnosticCodes, [.unexpectedCloudField])
-        XCTAssertEqual(Set(result.unexpectedFieldPaths), [
-            "synced.hosts[].machineConfiguration.rawCommand",
-            "synced.mergeReviews[].candidates[].summaryFields.privateKeyPath",
-        ])
-        XCTAssertNil(result.payload.synced.mergeReviews[0].candidates[0].summaryFields["privateKeyPath"])
+        XCTAssertThrowsError(try HostV6.CloudPayloadCodec.decode(injected)) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .unexpectedFields([
+                "synced.hosts[].machineConfiguration.rawCommand",
+                "synced.mergeReviews[].candidates[].summaryFields.privateKeyPath",
+            ]))
+        }
     }
 
     func testCloudDecoderDiagnosesUnexpectedFieldsThroughoutNestedDTOs() throws {
@@ -499,23 +517,17 @@ final class HostV6ContractTests: XCTestCase {
         json["migrationProvenance"] = provenance
 
         let injected = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
-        let result = try HostV6.CloudPayloadCodec.decode(injected)
-
-        XCTAssertEqual(Set(result.unexpectedFieldPaths), [
-            "migrationProvenance.authorityManifest.notRepresentable[].service.history",
-            "migrationProvenance.legacySources[].derivedEntityIDs[].host.rawPayload",
-            "synced.devices[].tailscaleIdentity.ssid",
-            "synced.knownHostsLines[].source.legacyIdentity.password",
-            "synced.nodeAssociations[].target.privateKeyPath",
-            "synced.services[].endpoint.bind.specific._0.ssid",
-            "synced.services[].endpoint.bind.specific.debugStream",
-            "synced.services[].endpoint.rawCommand",
-        ])
-        let reencoded = try encoder.encode(result.payload)
-        let text = String(decoding: reencoded, as: UTF8.self)
-        for marker in ["SECRET_SSID", "SECRET_COMMAND", "SECRET_PASSWORD", "SECRET_PRIVATE_PATH",
-                       "SECRET_RAW_PAYLOAD", "SECRET_HISTORY", "SECRET_DEBUG_STREAM", "SECRET_BIND_SSID"] {
-            XCTAssertFalse(text.contains(marker))
+        XCTAssertThrowsError(try HostV6.CloudPayloadCodec.decode(injected)) { error in
+            XCTAssertEqual(error as? HostV6.CloudV2Error, .unexpectedFields([
+                "migrationProvenance.authorityManifest.notRepresentable[].service.history",
+                "migrationProvenance.legacySources[].derivedEntityIDs[].host.rawPayload",
+                "synced.devices[].tailscaleIdentity.ssid",
+                "synced.knownHostsLines[].source.legacyIdentity.password",
+                "synced.nodeAssociations[].target.privateKeyPath",
+                "synced.services[].endpoint.bind.specific._0.ssid",
+                "synced.services[].endpoint.bind.specific.debugStream",
+                "synced.services[].endpoint.rawCommand",
+            ]))
         }
     }
 
