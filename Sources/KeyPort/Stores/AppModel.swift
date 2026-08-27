@@ -778,6 +778,9 @@ final class AppModel {
         } catch {
             isLoaded = true
             isInitialLoadInProgress = false
+            if hostV6Runtime != nil {
+                isMetadataReadOnly = true
+            }
             present(error)
         }
     }

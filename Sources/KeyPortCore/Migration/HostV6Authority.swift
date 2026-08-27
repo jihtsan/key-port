@@ -165,6 +165,24 @@ public extension HostV6 {
             evidence: AuthorityActivationEvidence,
             cloudRoundTrip: AuthorityCloudRoundTrip
         ) throws -> AuthorityCommitPlan {
+            guard cloudRoundTrip.evidenceChangeTag == evidence.cloudChangeTag,
+                  cloudRoundTrip.payloadHash == evidence.verifiedCloudPayloadHash,
+                  !cloudRoundTrip.committedChangeTag.isEmpty,
+                  cloudRoundTrip.committedChangeTag != cloudRoundTrip.evidenceChangeTag else {
+                throw CloudV2Error.failure(.authorityGateFailed)
+            }
+            return try prepareActivation(
+                envelope: envelope,
+                legacyData: legacyData,
+                evidence: evidence
+            )
+        }
+
+        public static func prepareActivation(
+            envelope: MetadataEnvelope,
+            legacyData: Data,
+            evidence: AuthorityActivationEvidence
+        ) throws -> AuthorityCommitPlan {
             let signedDeviceIDs = evidence.signedDevices.map(\.deviceID)
             let signerCertificateHashes = evidence.signedDevices.map(\.signerCertificateSHA256)
             let signedArtifactDigests = evidence.signedDevices.map(\.artifactDigest)
@@ -180,11 +198,7 @@ public extension HostV6 {
                   }),
                   !evidence.signerTeamIdentifier.isEmpty,
                   !evidence.cloudChangeTag.isEmpty,
-                  !evidence.codeVersion.isEmpty,
-                  cloudRoundTrip.evidenceChangeTag == evidence.cloudChangeTag,
-                  cloudRoundTrip.payloadHash == evidence.verifiedCloudPayloadHash,
-                  !cloudRoundTrip.committedChangeTag.isEmpty,
-                  cloudRoundTrip.committedChangeTag != cloudRoundTrip.evidenceChangeTag else {
+                  !evidence.codeVersion.isEmpty else {
                 throw CloudV2Error.failure(.authorityGateFailed)
             }
             let activeDeviceIDs = Set(
@@ -222,10 +236,30 @@ public extension HostV6 {
                 mode: .v6Authoritative,
                 v1Hash: CanonicalJSON.sha256(legacyData),
                 acknowledgedDeviceIDs: evidence.acknowledgedDeviceIDs,
-                cloudChangeTag: cloudRoundTrip.committedChangeTag,
+                cloudChangeTag: evidence.cloudChangeTag,
                 firstV6MutationID: nil,
                 codeVersion: evidence.codeVersion,
                 requiresCompleteCompatibilityProjection: true
+            )
+        }
+
+        public static func adoptPublishedAuthority(
+            in envelope: MetadataEnvelope
+        ) throws -> AuthorityCommitPlan {
+            guard let manifest = envelope.migrationProvenance.authorityManifest,
+                  manifest.mode == .v6Authoritative || manifest.mode == .compatibilityRollback else {
+                throw CloudV2Error.failure(.authorityGateFailed)
+            }
+            _ = try verifyCheckpoint(CanonicalJSON.encode(envelope))
+            return try makePlan(
+                envelope: envelope,
+                mode: manifest.mode,
+                v1Hash: manifest.v1Hash,
+                acknowledgedDeviceIDs: manifest.acknowledgedDeviceIDs,
+                cloudChangeTag: manifest.cloudChangeTag,
+                firstV6MutationID: manifest.firstV6MutationID,
+                codeVersion: manifest.codeVersion,
+                requiresCompleteCompatibilityProjection: false
             )
         }
 

@@ -36,44 +36,114 @@ actor HostV6CloudSyncCoordinator {
         self.importer = HostV6.ShadowMigrationEngine(currentDeviceID: currentDeviceID)
     }
 
-    func validateAuthorityRoundTrip(
+    func validateAuthorityPrecondition(
         _ local: HostV6.MetadataEnvelope,
         evidence: HostV6.AuthorityActivationEvidence
-    ) async throws -> HostV6.AuthorityCloudRoundTrip {
+    ) async throws {
         do {
             guard local.migrationProvenance.authorityManifest == nil else {
                 throw HostV6.CloudV2Error.failure(.authorityGateFailed)
             }
             let expectedPayload = try HostV6.CloudPayloadCodec.encode(local)
-            let payloadHash = HostV6.CanonicalJSON.sha256(expectedPayload)
-            guard payloadHash == evidence.verifiedCloudPayloadHash,
+            guard HostV6.CanonicalJSON.sha256(expectedPayload) == evidence.verifiedCloudPayloadHash,
                   let current = try await transport.fetchV2(),
                   current.changeTag == evidence.cloudChangeTag,
                   current.payload == expectedPayload else {
                 throw HostV6.CloudV2Error.failure(.authorityGateFailed)
             }
             _ = try strictPayload(current.payload)
-
-            let saved = try await transport.saveV2(
-                expectedPayload,
-                replacing: current.changeTag
-            )
-            guard !saved.changeTag.isEmpty,
-                  saved.changeTag != current.changeTag,
-                  saved.payload == expectedPayload,
-                  let readBack = try await transport.fetchV2(),
-                  readBack == saved,
-                  HostV6.CanonicalJSON.sha256(readBack.payload) == payloadHash else {
-                throw HostV6.CloudV2Error.failure(.concurrentConflict)
-            }
-            _ = try strictPayload(readBack.payload)
-            return HostV6.AuthorityCloudRoundTrip(
-                evidenceChangeTag: current.changeTag,
-                committedChangeTag: readBack.changeTag,
-                payloadHash: payloadHash
-            )
         } catch HostV6CloudTransportError.conflict {
             throw HostV6.CloudV2Error.failure(.concurrentConflict)
+        } catch HostV6CloudTransportError.cloud(let error) {
+            throw error
+        } catch HostV6CloudTransportError.malformedRecord {
+            throw CloudSyncError.malformedRecord
+        } catch HostV6CloudTransportError.operationFailed {
+            throw CloudSyncError.operationFailed
+        } catch is CancellationError {
+            throw CloudSyncError.cancelled
+        }
+    }
+
+    func publishPreparedAuthority(
+        _ pending: HostV6PreparedAuthorityActivation
+    ) async throws -> HostV6.AuthorityCommitPlan? {
+        do {
+            let authorityPayload = try HostV6.CloudPayloadCodec.encode(pending.plan.envelope)
+            guard HostV6.CanonicalJSON.sha256(authorityPayload) == pending.authorityPayloadHash else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+            var preAuthority = pending.plan.envelope
+            preAuthority.migrationProvenance.authorityManifest = nil
+            let evidencePayload = try HostV6.CloudPayloadCodec.encode(preAuthority)
+            guard HostV6.CanonicalJSON.sha256(evidencePayload) == pending.evidencePayloadHash else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+
+            guard let current = try await transport.fetchV2() else { return nil }
+            if let published = try publishedAuthorityPlan(
+                from: current,
+                restoringLocalStateFrom: pending.plan.envelope
+            ) {
+                return published
+            }
+            guard current.changeTag == pending.evidenceChangeTag,
+                  current.payload == evidencePayload else {
+                return nil
+            }
+
+            let saved: HostV6CloudRecord
+            do {
+                saved = try await transport.saveV2(
+                    authorityPayload,
+                    replacing: current.changeTag
+                )
+            } catch HostV6CloudTransportError.conflict {
+                guard let concurrent = try await transport.fetchV2() else { return nil }
+                return try publishedAuthorityPlan(
+                    from: concurrent,
+                    restoringLocalStateFrom: pending.plan.envelope
+                )
+            }
+            guard !saved.changeTag.isEmpty,
+                  saved.changeTag != current.changeTag,
+                  saved.payload == authorityPayload,
+                  let readBack = try await transport.fetchV2() else {
+                throw HostV6.CloudV2Error.failure(.concurrentConflict)
+            }
+            if readBack == saved,
+               let published = try publishedAuthorityPlan(
+                   from: readBack,
+                   restoringLocalStateFrom: pending.plan.envelope
+               ) {
+                return published
+            }
+            if let published = try publishedAuthorityPlan(
+                from: readBack,
+                restoringLocalStateFrom: pending.plan.envelope
+            ) {
+                return published
+            }
+            throw HostV6.CloudV2Error.failure(.concurrentConflict)
+        } catch HostV6CloudTransportError.conflict {
+            throw HostV6.CloudV2Error.failure(.concurrentConflict)
+        } catch HostV6CloudTransportError.cloud(let error) {
+            throw error
+        } catch HostV6CloudTransportError.malformedRecord {
+            throw CloudSyncError.malformedRecord
+        } catch HostV6CloudTransportError.operationFailed {
+            throw CloudSyncError.operationFailed
+        } catch is CancellationError {
+            throw CloudSyncError.cancelled
+        }
+    }
+
+    func fetchPublishedAuthority(
+        restoringLocalStateFrom local: HostV6.MetadataEnvelope
+    ) async throws -> HostV6.AuthorityCommitPlan? {
+        do {
+            guard let current = try await transport.fetchV2() else { return nil }
+            return try publishedAuthorityPlan(from: current, restoringLocalStateFrom: local)
         } catch HostV6CloudTransportError.cloud(let error) {
             throw error
         } catch HostV6CloudTransportError.malformedRecord {
@@ -162,6 +232,19 @@ actor HostV6CloudSyncCoordinator {
         } catch {
             throw HostV6.CloudV2Error.failure(.decodeFailed)
         }
+    }
+
+    private func publishedAuthorityPlan(
+        from record: HostV6CloudRecord,
+        restoringLocalStateFrom local: HostV6.MetadataEnvelope
+    ) throws -> HostV6.AuthorityCommitPlan? {
+        let payload = try strictPayload(record.payload)
+        guard let manifest = payload.migrationProvenance.authorityManifest,
+              manifest.mode == .v6Authoritative || manifest.mode == .compatibilityRollback else {
+            return nil
+        }
+        let envelope = payload.restoringLocalState(from: local)
+        return try HostV6.AuthorityController.adoptPublishedAuthority(in: envelope)
     }
 }
 
