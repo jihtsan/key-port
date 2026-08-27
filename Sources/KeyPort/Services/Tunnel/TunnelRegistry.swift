@@ -48,11 +48,70 @@ protocol TunnelBrokerLaunching: Sendable {
     func launch(_ configuration: TunnelBrokerConfiguration) async throws -> any TunnelBrokerSession
 }
 
+struct TunnelLeaseOwnership: Codable, Hashable, Sendable {
+    let hostID: UUID
+    let sshIdentityID: UUID
+    let sshAddressID: UUID
+    let serviceID: UUID?
+
+    init(
+        hostID: UUID,
+        sshIdentityID: UUID,
+        sshAddressID: UUID,
+        serviceID: UUID?
+    ) {
+        self.hostID = hostID
+        self.sshIdentityID = sshIdentityID
+        self.sshAddressID = sshAddressID
+        self.serviceID = serviceID
+    }
+
+    init(request: TunnelRequest) {
+        self.init(
+            hostID: request.hostID,
+            sshIdentityID: request.sshIdentityID,
+            sshAddressID: request.sshAddressID,
+            serviceID: request.serviceID
+        )
+    }
+}
+
+enum TunnelCleanupScope: Hashable, Sendable {
+    case host(UUID)
+    case identity(UUID)
+    case address(UUID)
+    case service(UUID)
+
+    func matches(_ ownership: TunnelLeaseOwnership) -> Bool {
+        switch self {
+        case .host(let hostID): ownership.hostID == hostID
+        case .identity(let identityID): ownership.sshIdentityID == identityID
+        case .address(let addressID): ownership.sshAddressID == addressID
+        case .service(let serviceID): ownership.serviceID == serviceID
+        }
+    }
+}
+
 struct TunnelLease: Codable, Hashable, Sendable {
     let tunnelID: UUID
     let controlPath: String
     let brokerPID: Int32?
     let createdAt: Date
+    let ownership: TunnelLeaseOwnership?
+
+    init(
+        tunnelID: UUID,
+        controlPath: String,
+        brokerPID: Int32?,
+        createdAt: Date,
+        ownership: TunnelLeaseOwnership? = nil
+    ) {
+        self.tunnelID = tunnelID
+        self.controlPath = controlPath
+        self.brokerPID = brokerPID
+        self.createdAt = createdAt
+        self.ownership = ownership
+    }
 }
 
 enum TunnelRuntimeNaming {
@@ -92,6 +151,7 @@ protocol TunnelLeaseStore: Sendable {
     func save(_ lease: TunnelLease) async throws
     func remove(_ lease: TunnelLease) async throws
     func reap() async -> CleanupStatus
+    func reap(matching scope: TunnelCleanupScope) async -> CleanupStatus
 }
 
 enum TunnelBrokerLaunchError: Error, Equatable, Sendable {
@@ -138,7 +198,7 @@ actor TunnelRegistry {
         var handle: TunnelHandle
         var verificationEvidence: TargetVerificationEvidence
         let broker: any TunnelBrokerSession
-        let lease: TunnelLease
+        var lease: TunnelLease
         let leaseSaved: Bool
         var terminationMonitor: Task<Void, Never>?
     }
@@ -147,6 +207,7 @@ actor TunnelRegistry {
         let key: RegistryKey
         let tunnelID: UUID
         let hostID: UUID
+        let ownership: TunnelLeaseOwnership
         var waiters: Set<UUID>
         let task: Task<TunnelHandle, Error>
     }
@@ -165,6 +226,7 @@ actor TunnelRegistry {
     private let cleanupTimeoutNanoseconds: UInt64
     private var entries: [RegistryKey: RegistryEntry] = [:]
     private var stateHistory: [UUID: [TunnelState]] = [:]
+    private var cleanupInProgress: Set<UUID> = []
     private var networkEpoch: UInt64 = 0
 
     static func production(paths: KeyPortPaths = KeyPortPaths()) -> TunnelRegistry {
@@ -235,9 +297,23 @@ actor TunnelRegistry {
             throw TunnelOpenFailure(code: .localPortUnavailable)
         }
 
+        let savedLease = TunnelLease(
+            tunnelID: active.lease.tunnelID,
+            controlPath: active.lease.controlPath,
+            brokerPID: active.lease.brokerPID,
+            createdAt: active.lease.createdAt,
+            ownership: TunnelLeaseOwnership(request: savedRequest)
+        )
+        do {
+            try await leaseStore.save(savedLease)
+        } catch {
+            throw TunnelOpenFailure(code: .targetProbeIndeterminate, cleanup: .pending)
+        }
+
         active.terminationMonitor?.cancel()
         var adopted = active
         adopted.request = savedRequest
+        adopted.lease = savedLease
         adopted.handle = TunnelHandle(
             id: active.handle.id,
             serviceID: serviceID,
@@ -345,6 +421,7 @@ actor TunnelRegistry {
                 key: key,
                 tunnelID: tunnelID,
                 hostID: request.hostID,
+                ownership: TunnelLeaseOwnership(request: request),
                 waiters: [waiterID],
                 task: task
             )
@@ -434,21 +511,105 @@ actor TunnelRegistry {
         guard let match = entries.first(where: { key, entry in
             switch entry {
             case .active(let active): return active.handle.id == id
-            case .starting, .closing: return false
+            case .closing(let active): return active.handle.id == id
+            case .starting: return false
             }
         }) else {
             return TunnelCloseResult(closedCount: 0, cleanup: .notNeeded)
         }
-        guard case .active(let active) = match.value else {
+        let active: ActiveTunnel
+        switch match.value {
+        case .active(let value):
+            active = value
+            stateHistory[id, default: []].append(.stopping(reason))
+            entries[match.key] = .closing(value)
+        case .closing(let value):
+            guard !cleanupInProgress.contains(id) else {
+                return TunnelCloseResult(closedCount: 0, cleanup: .pending)
+            }
+            active = value
+        case .starting:
             return TunnelCloseResult(closedCount: 0, cleanup: .notNeeded)
         }
 
-        stateHistory[id, default: []].append(.stopping(reason))
-        entries[match.key] = .closing(active)
+        cleanupInProgress.insert(id)
         let cleanup = await cleanup(active)
+        cleanupInProgress.remove(id)
+        guard let current = entries[match.key], tunnelID(in: current) == id else {
+            return TunnelCloseResult(closedCount: 1, cleanup: .completed)
+        }
+        if cleanup == .pending {
+            entries[match.key] = .closing(active)
+            return TunnelCloseResult(closedCount: 0, cleanup: .pending)
+        }
         stateHistory[id, default: []].append(.closed(reason))
         entries.removeValue(forKey: match.key)
         return TunnelCloseResult(closedCount: 1, cleanup: cleanup)
+    }
+
+    func closeHostTunnels(_ hostID: UUID) async -> TunnelCloseResult {
+        await closeTunnels(matching: .host(hostID), reason: .authoritativeDeletion)
+    }
+
+    func closeIdentityTunnels(_ identityID: UUID) async -> TunnelCloseResult {
+        await closeTunnels(matching: .identity(identityID), reason: .authoritativeDeletion)
+    }
+
+    func closeAddressTunnels(_ addressID: UUID) async -> TunnelCloseResult {
+        await closeTunnels(matching: .address(addressID), reason: .authoritativeDeletion)
+    }
+
+    func closeServiceTunnel(_ serviceID: UUID) async -> TunnelCloseResult {
+        await closeTunnels(matching: .service(serviceID), reason: .authoritativeDeletion)
+    }
+
+    private func closeTunnels(
+        matching scope: TunnelCleanupScope,
+        reason: TunnelCloseReason
+    ) async -> TunnelCloseResult {
+        let startingTunnels = entries.values.compactMap { entry -> StartingTunnel? in
+            guard case .starting(let starting) = entry,
+                  scope.matches(starting.ownership) else {
+                return nil
+            }
+            return starting
+        }
+        var cleanup: CleanupStatus = .notNeeded
+        for starting in startingTunnels {
+            starting.task.cancel()
+            do {
+                _ = try await starting.task.value
+            } catch let failure as TunnelOpenFailure {
+                cleanup = merge(cleanup, failure.cleanup)
+            } catch {
+                cleanup = merge(cleanup, .completed)
+            }
+            if case .starting = entries[starting.key] {
+                entries.removeValue(forKey: starting.key)
+            }
+        }
+
+        let matchingIDs = Set(entries.values.compactMap { entry -> UUID? in
+            switch entry {
+            case .active(let active), .closing(let active):
+                return scope.matches(TunnelLeaseOwnership(request: active.request))
+                    ? active.handle.id
+                    : nil
+            case .starting:
+                return nil
+            }
+        })
+        var closedCount = 0
+        for id in matchingIDs {
+            let result = await close(id: id, reason: reason)
+            closedCount += result.closedCount
+            cleanup = merge(cleanup, result.cleanup)
+        }
+
+        if cleanup != .pending {
+            cleanup = merge(cleanup, await leaseStore.reap(matching: scope))
+        }
+        return TunnelCloseResult(closedCount: closedCount, cleanup: cleanup)
     }
 
     func closeAll(reason: TunnelCloseReason) async -> TunnelCloseResult {
@@ -472,8 +633,10 @@ actor TunnelRegistry {
         }
 
         let activeIDs = entries.values.compactMap { entry -> UUID? in
-            guard case .active(let active) = entry else { return nil }
-            return active.handle.id
+            switch entry {
+            case .active(let active), .closing(let active): active.handle.id
+            case .starting: nil
+            }
         }
         var closedCount = 0
         for id in activeIDs {
@@ -592,7 +755,8 @@ actor TunnelRegistry {
                 tunnelID: tunnelID,
                 controlPath: controlPath,
                 brokerPID: nil,
-                createdAt: Date()
+                createdAt: Date(),
+                ownership: TunnelLeaseOwnership(request: request)
             )
             var broker: (any TunnelBrokerSession)?
             var leaseSaved = false
@@ -617,7 +781,8 @@ actor TunnelRegistry {
                     tunnelID: tunnelID,
                     controlPath: controlPath,
                     brokerPID: broker?.processIdentifier,
-                    createdAt: lease.createdAt
+                    createdAt: lease.createdAt,
+                    ownership: lease.ownership
                 )
                 try await leaseStore.save(lease)
                 record(tunnelID, .forwardEstablished)
@@ -730,6 +895,13 @@ actor TunnelRegistry {
             lease: active.lease,
             leaseSaved: active.leaseSaved
         )
+    }
+
+    private func tunnelID(in entry: RegistryEntry) -> UUID {
+        switch entry {
+        case .starting(let starting): starting.tunnelID
+        case .active(let active), .closing(let active): active.handle.id
+        }
     }
 
     private func cleanup(

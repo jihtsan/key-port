@@ -1,4 +1,6 @@
+import Darwin
 import Foundation
+import Network
 import Security
 import XCTest
 @testable import KeyPort
@@ -1330,7 +1332,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
                 currentDeviceID: "device-a"
             ),
             authorityStore: authority,
-            paths: paths
+            paths: paths,
+            tunnelCloser: UnavailableHostV6TunnelCloser()
         )
         let local = HostV6.LocalState(keyStates: [.init(
             keyID: "key_safe",
@@ -1398,7 +1401,8 @@ final class HostV6MutationWorkflowTests: XCTestCase {
                 currentDeviceID: "device-a"
             ),
             authorityStore: authority,
-            paths: paths
+            paths: paths,
+            tunnelCloser: UnavailableHostV6TunnelCloser()
         )
 
         do {
@@ -1407,6 +1411,186 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? HostV6.CloudV2Error, .failure(.artifactMismatch))
         }
+    }
+
+    func testProductionRuntimeClosesTheSameTunnelPortAndLeaseAfterAuthoritativeServiceDeletion() async throws {
+        let serviceID = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
+        let home = try temporaryHome(prefix: "keyport-authoritative-service-tunnel-delete")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let envelope = try authoritativeEnvelope(serviceID: serviceID)
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let transport = AuthorityRoundTripCloudV2Transport(remote: .init(
+            payload: try HostV6.CloudPayloadCodec.encode(envelope),
+            changeTag: "service-delete-initial"
+        ))
+        let leaseStore = MutationTunnelLeaseStore()
+        let broker = MutationListeningTunnelBroker(cleanupOutcomes: [.completed])
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: NetworkLoopbackPortReserver(),
+            brokerLauncher: broker,
+            leaseStore: leaseStore,
+            runtimeDirectory: paths.tunnelRuntimeDirectory
+        )
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            paths: paths,
+            cloudTransport: transport,
+            dependencies: KeyPortRuntimeDependencies(tunnelRegistry: registry)
+        ))
+        let request = try tunnelRequest(serviceID: serviceID, envelope: envelope)
+        let handle = try await registry.open(request)
+        XCTAssertTrue(canConnect(to: handle.local.port))
+        let command = try deleteServiceCommand(serviceID: serviceID, envelope: envelope)
+
+        let result = try await runtime.transact(command)
+
+        let finalState = await registry.state(for: handle.id)
+        let removedTunnelIDs = await leaseStore.removedTunnelIDs
+        XCTAssertEqual(result.status, .committed)
+        XCTAssertEqual(finalState, .closed(.authoritativeDeletion))
+        XCTAssertEqual(removedTunnelIDs, [handle.id])
+        XCTAssertFalse(canConnect(to: handle.local.port))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6MutationJournal.path))
+    }
+
+    func testProductionRuntimeRecoversPendingTunnelCleanupIdempotentlyFromTheMutationJournal() async throws {
+        let serviceID = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
+        let home = try temporaryHome(prefix: "keyport-authoritative-tunnel-delete-recovery")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let envelope = try authoritativeEnvelope(serviceID: serviceID)
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let transport = AuthorityRoundTripCloudV2Transport(remote: .init(
+            payload: try HostV6.CloudPayloadCodec.encode(envelope),
+            changeTag: "service-delete-recovery-initial"
+        ))
+        let leaseStore = MutationTunnelLeaseStore()
+        let broker = MutationListeningTunnelBroker(cleanupOutcomes: [.pending, .completed])
+        let registry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: NetworkLoopbackPortReserver(),
+            brokerLauncher: broker,
+            leaseStore: leaseStore,
+            runtimeDirectory: paths.tunnelRuntimeDirectory
+        )
+        let runtime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            paths: paths,
+            cloudTransport: transport,
+            dependencies: KeyPortRuntimeDependencies(tunnelRegistry: registry)
+        ))
+        let handle = try await registry.open(try tunnelRequest(serviceID: serviceID, envelope: envelope))
+        let command = try deleteServiceCommand(serviceID: serviceID, envelope: envelope)
+
+        let interrupted = try await runtime.transact(command)
+        XCTAssertEqual(interrupted.status, .committedWithWarnings)
+        XCTAssertEqual(interrupted.warnings, [.cleanupPending])
+        XCTAssertTrue(canConnect(to: handle.local.port))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.v6MutationJournal.path))
+
+        let recovered = try await runtime.transact(command)
+
+        let finalState = await registry.state(for: handle.id)
+        let removedTunnelIDs = await leaseStore.removedTunnelIDs
+        let closeCount = await broker.closeCount
+        XCTAssertEqual(recovered.status, .committed)
+        XCTAssertEqual(recovered.warnings, [])
+        XCTAssertEqual(finalState, .closed(.authoritativeDeletion))
+        XCTAssertEqual(closeCount, 2)
+        XCTAssertEqual(removedTunnelIDs, [handle.id])
+        XCTAssertFalse(canConnect(to: handle.local.port))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6MutationJournal.path))
+    }
+
+    func testProductionRuntimeRecoversPendingTunnelCleanupFromPersistedLeaseWithFreshRegistry() async throws {
+        let serviceID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
+        let home = try temporaryHome(prefix: "keyport-authoritative-tunnel-delete-restart")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        let envelope = try authoritativeEnvelope(serviceID: serviceID)
+        try await HostV6AuthorityFileStore(paths: paths).commit(
+            try HostV6.AuthorityController.rebindManifest(in: envelope)
+        )
+        let transport = AuthorityRoundTripCloudV2Transport(remote: .init(
+            payload: try HostV6.CloudPayloadCodec.encode(envelope),
+            changeTag: "service-delete-restart-initial"
+        ))
+        let broker = MutationListeningTunnelBroker(cleanupOutcomes: [.pending])
+        let controlMaster = MutationTunnelControlMasterExiter(broker: broker)
+        let firstLeaseStore = FileTunnelLeaseStore(
+            directory: paths.tunnelRuntimeDirectory,
+            controlMasterExit: controlMaster
+        )
+        let firstRegistry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: NetworkLoopbackPortReserver(),
+            brokerLauncher: broker,
+            leaseStore: firstLeaseStore,
+            runtimeDirectory: paths.tunnelRuntimeDirectory
+        )
+        let firstRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            paths: paths,
+            cloudTransport: transport,
+            dependencies: KeyPortRuntimeDependencies(tunnelRegistry: firstRegistry)
+        ))
+        let handle = try await firstRegistry.open(
+            try tunnelRequest(serviceID: serviceID, envelope: envelope)
+        )
+        let command = try deleteServiceCommand(serviceID: serviceID, envelope: envelope)
+        let leasePath = paths.tunnelRuntimeDirectory.appendingPathComponent(
+            TunnelRuntimeNaming.leaseName(for: handle.id)
+        )
+        let controlPath = paths.tunnelRuntimeDirectory.appendingPathComponent(
+            TunnelRuntimeNaming.controlName(for: handle.id)
+        ).path
+
+        let interrupted = try await firstRuntime.transact(command)
+
+        XCTAssertEqual(interrupted.status, .committedWithWarnings)
+        XCTAssertEqual(interrupted.warnings, [.cleanupPending])
+        XCTAssertTrue(canConnect(to: handle.local.port))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leasePath.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.v6MutationJournal.path))
+
+        let recoveryLeaseStore = FileTunnelLeaseStore(
+            directory: paths.tunnelRuntimeDirectory,
+            controlMasterExit: controlMaster
+        )
+        let recoveryRegistry = TunnelRegistry(
+            serviceAccessEnabled: true,
+            portReserver: NetworkLoopbackPortReserver(),
+            brokerLauncher: broker,
+            leaseStore: recoveryLeaseStore,
+            runtimeDirectory: paths.tunnelRuntimeDirectory
+        )
+        let recoveryRuntime = try XCTUnwrap(HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: "device-a",
+            paths: paths,
+            cloudTransport: transport,
+            dependencies: KeyPortRuntimeDependencies(tunnelRegistry: recoveryRegistry)
+        ))
+
+        let recovered = try await recoveryRuntime.transact(command)
+        let repeated = try await recoveryRuntime.transact(command)
+
+        let closeCount = await broker.closeCount
+        let forcedControlPaths = await broker.forcedControlPaths
+        XCTAssertEqual(recovered.status, .committed)
+        XCTAssertEqual(recovered.warnings, [])
+        XCTAssertEqual(repeated.status, .committed)
+        XCTAssertEqual(repeated.warnings, [])
+        XCTAssertEqual(closeCount, 1)
+        XCTAssertEqual(forcedControlPaths, [controlPath])
+        XCTAssertFalse(canConnect(to: handle.local.port))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leasePath.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.v6MutationJournal.path))
     }
 
     private func makeFixture(
@@ -1436,7 +1620,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         return (workflow, envelope, authority, journal, ledger, events)
     }
 
-    private func authoritativeEnvelope() throws -> HostV6.MetadataEnvelope {
+    private func authoritativeEnvelope(serviceID: UUID? = nil) throws -> HostV6.MetadataEnvelope {
         let addressID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
         let identityID = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
         let stamp = HostV6.SyncStamp(
@@ -1535,7 +1719,7 @@ final class HostV6MutationWorkflowTests: XCTestCase {
             codeVersion: "6-test",
             signerTeamIdentifier: "TEAMID1234"
         )
-        return try HostV6.AuthorityController.activate(
+        var authoritative = try HostV6.AuthorityController.activate(
             envelope: envelope,
             legacyData: legacyData,
             evidence: evidence,
@@ -1545,6 +1729,75 @@ final class HostV6MutationWorkflowTests: XCTestCase {
                 payloadHash: evidence.verifiedCloudPayloadHash
             )
         ).envelope
+        if let serviceID {
+            authoritative.synced.services = [.init(
+                id: serviceID,
+                hostID: hostID,
+                name: "Postgres",
+                serviceProtocol: .tcp,
+                endpoint: .init(bind: .loopbackV4, port: 5432, path: nil),
+                isFavorite: true,
+                fixedAddressID: addressID,
+                stamp: stamp
+            )]
+            authoritative = try HostV6.AuthorityController.rebindManifest(in: authoritative).envelope
+        }
+        return authoritative
+    }
+
+    private func tunnelRequest(
+        serviceID: UUID,
+        envelope: HostV6.MetadataEnvelope
+    ) throws -> TunnelRequest {
+        let address = try XCTUnwrap(envelope.synced.addresses.first)
+        let identity = try XCTUnwrap(envelope.synced.identities.first)
+        return TunnelRequest(
+            operationID: UUID(),
+            serviceID: serviceID,
+            hostID: hostID,
+            sshIdentityID: identity.id,
+            sshAddressID: address.id,
+            serviceProtocol: .tcp,
+            sshHost: address.normalizedHost,
+            sshPort: address.sshPort,
+            username: identity.username,
+            identityPath: "/fixture/key-fixture",
+            knownHostsPath: "/fixture/known-hosts",
+            remote: RemoteServiceEndpoint(bind: .loopbackV4, port: 5432),
+            networkEpoch: 0
+        )
+    }
+
+    private func deleteServiceCommand(
+        serviceID: UUID,
+        envelope: HostV6.MetadataEnvelope
+    ) throws -> HostV6.ModelCommand {
+        .deleteService(
+            serviceID: serviceID,
+            context: .init(
+                commandID: UUID(),
+                mutationID: UUID(),
+                deviceID: "device-a",
+                timestamp: now.addingTimeInterval(1),
+                expected: try envelope.synced.revisionExpectation(for: .deleteService(serviceID))
+            )
+        )
+    }
+
+    private func canConnect(to port: UInt16) -> Bool {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { return false }
+        defer { Darwin.close(descriptor) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        return withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+            }
+        }
     }
 
     private func runtimeDefaults() throws -> (defaults: UserDefaults, suiteName: String) {
@@ -1762,6 +2015,154 @@ private actor RecordingMutationEffects: HostV6MutationEffectApplying {
         try await failure.check(point)
         await events.append(point.rawValue)
     }
+}
+
+private actor MutationListeningTunnelBroker: TunnelBrokerLaunching {
+    private var cleanupOutcomes: [CleanupStatus]
+    private var sessions: [String: MutationListeningTunnelSession] = [:]
+    private(set) var closeCount = 0
+    private(set) var forcedControlPaths: [String] = []
+
+    init(cleanupOutcomes: [CleanupStatus]) {
+        self.cleanupOutcomes = cleanupOutcomes
+    }
+
+    func launch(_ configuration: TunnelBrokerConfiguration) async throws -> any TunnelBrokerSession {
+        let session = try await MutationListeningTunnelSession(
+            port: configuration.localPort,
+            onClose: { [weak self] in await self?.nextCleanup() ?? .completed }
+        )
+        sessions[configuration.controlPath] = session
+        return session
+    }
+
+    func forceClose(controlPath: String) async -> Bool {
+        guard let session = sessions[controlPath], await session.forceClose() else {
+            return false
+        }
+        sessions.removeValue(forKey: controlPath)
+        forcedControlPaths.append(controlPath)
+        return true
+    }
+
+    private func nextCleanup() -> CleanupStatus {
+        closeCount += 1
+        return cleanupOutcomes.isEmpty ? .completed : cleanupOutcomes.removeFirst()
+    }
+}
+
+private final class MutationListeningTunnelSession: TunnelBrokerSession, @unchecked Sendable {
+    private let listener: NWListener
+    private let callbackQueue = DispatchQueue(label: "KeyPortTests.mutation-tunnel-listener")
+    private let state = MutationListenerState()
+    private let onClose: @Sendable () async -> CleanupStatus
+
+    init(
+        port: UInt16,
+        onClose: @escaping @Sendable () async -> CleanupStatus
+    ) async throws {
+        guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
+            throw MutationTunnelTestError.invalidPort
+        }
+        self.listener = try NWListener(using: .tcp, on: endpointPort)
+        self.onClose = onClose
+        listener.newConnectionHandler = { [callbackQueue] connection in
+            connection.start(queue: callbackQueue)
+        }
+        listener.stateUpdateHandler = { [state] listenerState in
+            let event: MutationListenerEvent?
+            switch listenerState {
+            case .ready: event = .ready
+            case .failed: event = .failed
+            case .cancelled: event = .cancelled
+            default: event = nil
+            }
+            guard let event else { return }
+            Task { await state.record(event) }
+        }
+        listener.start(queue: callbackQueue)
+        for _ in 0..<500 {
+            let snapshot = await state.snapshot()
+            if snapshot.isReady { return }
+            if snapshot.didFail { throw MutationTunnelTestError.listenerFailed }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        throw MutationTunnelTestError.listenerTimedOut
+    }
+
+    func verifyTarget() async throws {}
+
+    func close() async -> CleanupStatus {
+        let requested = await onClose()
+        guard requested != .pending else { return .pending }
+        let closed = await forceClose()
+        return closed ? requested : .pending
+    }
+
+    func forceClose() async -> Bool {
+        listener.cancel()
+        for _ in 0..<500 {
+            if await state.snapshot().isCancelled { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        return false
+    }
+}
+
+private struct MutationTunnelControlMasterExiter: TunnelControlMasterExiting {
+    let broker: MutationListeningTunnelBroker
+
+    func exit(controlPath: String) async -> Bool {
+        await broker.forceClose(controlPath: controlPath)
+    }
+}
+
+private enum MutationListenerEvent: Sendable {
+    case ready
+    case failed
+    case cancelled
+}
+
+private actor MutationListenerState {
+    private var isReady = false
+    private var didFail = false
+    private var isCancelled = false
+
+    func record(_ event: MutationListenerEvent) {
+        switch event {
+        case .ready: isReady = true
+        case .failed: didFail = true
+        case .cancelled: isCancelled = true
+        }
+    }
+
+    func snapshot() -> (isReady: Bool, didFail: Bool, isCancelled: Bool) {
+        (isReady, didFail, isCancelled)
+    }
+}
+
+private enum MutationTunnelTestError: Error {
+    case invalidPort
+    case listenerFailed
+    case listenerTimedOut
+}
+
+private actor MutationTunnelLeaseStore: TunnelLeaseStore {
+    private var leases: [UUID: TunnelLease] = [:]
+    private(set) var removedTunnelIDs: [UUID] = []
+
+    func save(_ lease: TunnelLease) async throws {
+        leases[lease.tunnelID] = lease
+    }
+
+    func remove(_ lease: TunnelLease) async throws {
+        leases.removeValue(forKey: lease.tunnelID)
+        removedTunnelIDs.append(lease.tunnelID)
+    }
+
+    func reap() async -> CleanupStatus { .notNeeded }
+
+    func reap(matching scope: TunnelCleanupScope) async -> CleanupStatus { .notNeeded }
 }
 
 private actor EmptyCloudV2Transport: HostV6CloudV2Transport {

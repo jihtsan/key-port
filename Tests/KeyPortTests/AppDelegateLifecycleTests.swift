@@ -102,4 +102,5 @@ private actor TestLifecycleLeaseStore: TunnelLeaseStore {
     func save(_ lease: TunnelLease) async throws {}
     func remove(_ lease: TunnelLease) async throws {}
     func reap() async -> CleanupStatus { .notNeeded }
+    func reap(matching scope: TunnelCleanupScope) async -> CleanupStatus { .notNeeded }
 }

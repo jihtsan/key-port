@@ -266,6 +266,7 @@ public struct LocalEndpoint: Codable, Hashable, Sendable {
 
 public enum TunnelCloseReason: String, Codable, Hashable, Sendable {
     case userRequested
+    case authoritativeDeletion
     case applicationTermination
     case sleep
     case networkChanged
