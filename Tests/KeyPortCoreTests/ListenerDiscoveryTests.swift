@@ -40,6 +40,18 @@ final class ListenerDiscoveryTests: XCTestCase {
         XCTAssertTrue(result.warnings.contains(.permissionLimited))
     }
 
+    func testMacOSParserTreatsLeadingLineFeedAsTheRealLsofRecordBoundary() throws {
+        let output = Data((
+            "p101\0cnginx\0\nf1\0n127.0.0.1:8080\0TST=LISTEN\0"
+                + "\np102\0cpostgres\0\nf2\0n127.0.0.1:5432\0TST=LISTEN\0"
+        ).utf8)
+
+        let result = try ListenerDiscoveryParser.parseMacOS(output)
+
+        XCTAssertEqual(result.candidates.map { $0.port }, [8080, 5432])
+        XCTAssertEqual(result.candidates.map { $0.processHint }, ["nginx", "postgres"])
+    }
+
     func testParserReportsPartialParseOnlyWhenValidCandidatesRemain() throws {
         let output = """
         LISTEN 0 128 127.0.0.1:8080 0.0.0.0:*
