@@ -146,6 +146,12 @@ actor HostV6Runtime {
         )
     }
 
+    func transact(
+        _ command: HostV6.ModelCommand
+    ) async throws -> HostV6.ModelCommandResult {
+        try await metadataRepository.transact(command)
+    }
+
     private func compatibilitySnapshot(from envelope: HostV6.MetadataEnvelope) throws -> AppSnapshot {
         try HostV6.AuthorityController.compatibilityProjection(
             from: envelope,
@@ -247,7 +253,8 @@ enum HostV6RuntimeAssembly {
         defaults: UserDefaults = .standard,
         paths: KeyPortPaths = KeyPortPaths(),
         evidenceVerifier: HostV6C3EvidenceVerifier = HostV6C3EvidenceVerifier(),
-        cloudTransport: any HostV6CloudV2Transport = CloudKitV2RecordTransport()
+        cloudTransport: any HostV6CloudV2Transport = CloudKitV2RecordTransport(),
+        dependencies: KeyPortRuntimeDependencies = .production
     ) -> HostV6Runtime? {
         let rolloutEnabled = HostV6RuntimeFeatureFlags.isCanaryEnabled(defaults: defaults)
             && HostV6RuntimeFeatureFlags.isCloudV2Enabled(defaults: defaults)
@@ -270,7 +277,10 @@ enum HostV6RuntimeAssembly {
             keychainService: keychain,
             cloudCoordinator: cloudCoordinator,
             authorityStore: authorityStore,
-            paths: paths
+            paths: paths,
+            tunnelCloser: TunnelRegistryHostV6TunnelCloser(
+                registry: dependencies.tunnelRegistry
+            )
         )
         let repository = HostV6MutationWorkflow(
             authorityStore: authorityStore,

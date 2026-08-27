@@ -19,6 +19,32 @@ struct UnavailableHostV6TunnelCloser: HostV6TunnelClosing {
     }
 }
 
+struct TunnelRegistryHostV6TunnelCloser: HostV6TunnelClosing {
+    let registry: TunnelRegistry
+
+    func closeHostTunnels(_ hostID: UUID) async throws {
+        try requireCompleted(await registry.closeHostTunnels(hostID))
+    }
+
+    func closeIdentityTunnels(_ identityID: UUID) async throws {
+        try requireCompleted(await registry.closeIdentityTunnels(identityID))
+    }
+
+    func closeAddressTunnels(_ addressID: UUID) async throws {
+        try requireCompleted(await registry.closeAddressTunnels(addressID))
+    }
+
+    func closeServiceTunnel(_ serviceID: UUID) async throws {
+        try requireCompleted(await registry.closeServiceTunnel(serviceID))
+    }
+
+    private func requireCompleted(_ result: TunnelCloseResult) throws {
+        guard result.cleanup != .pending else {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+    }
+}
+
 actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
     private let configService: SSHConfigService
     private let hostKeyService: HostKeyService
@@ -36,8 +62,8 @@ actor ProductionHostV6MutationEffects: HostV6MutationEffectApplying {
         cloudCoordinator: HostV6CloudSyncCoordinator,
         authorityStore: any HostV6AuthorityStoring,
         paths: KeyPortPaths,
-        fileManager: FileManager = .default,
-        tunnelCloser: any HostV6TunnelClosing = UnavailableHostV6TunnelCloser()
+        tunnelCloser: any HostV6TunnelClosing,
+        fileManager: FileManager = .default
     ) {
         self.configService = configService
         self.hostKeyService = hostKeyService

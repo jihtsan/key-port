@@ -154,6 +154,43 @@ final class TunnelInfrastructureTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: leasePath.path))
     }
 
+    func testLeaseReaperClosesOnlyOrphanedLeasesMatchingTheDeletionScope() async throws {
+        let directory = temporaryDirectory()
+        let controlMaster = TestControlMasterExit()
+        let store = FileTunnelLeaseStore(directory: directory, controlMasterExit: controlMaster)
+        let hostID = UUID()
+        let selectedServiceID = UUID()
+        let unrelatedServiceID = UUID()
+        let selected = makeLease(
+            directory: directory,
+            ownership: TunnelLeaseOwnership(
+                hostID: hostID,
+                sshIdentityID: UUID(),
+                sshAddressID: UUID(),
+                serviceID: selectedServiceID
+            )
+        )
+        let unrelated = makeLease(
+            directory: directory,
+            ownership: TunnelLeaseOwnership(
+                hostID: hostID,
+                sshIdentityID: UUID(),
+                sshAddressID: UUID(),
+                serviceID: unrelatedServiceID
+            )
+        )
+        try await store.save(selected)
+        try await store.save(unrelated)
+
+        let result = await store.reap(matching: .service(selectedServiceID))
+        let exitedPaths = await controlMaster.exitedPaths
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(exitedPaths, [selected.controlPath])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: leasePath(for: selected, in: directory).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: leasePath(for: unrelated, in: directory).path))
+    }
+
     private func temporaryDirectory() -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("KeyPortTunnelTests-\(UUID().uuidString)", isDirectory: true)
@@ -161,6 +198,24 @@ final class TunnelInfrastructureTests: XCTestCase {
             try? FileManager.default.removeItem(at: directory)
         }
         return directory
+    }
+
+    private func makeLease(
+        directory: URL,
+        ownership: TunnelLeaseOwnership
+    ) -> TunnelLease {
+        let tunnelID = UUID()
+        return TunnelLease(
+            tunnelID: tunnelID,
+            controlPath: directory.appendingPathComponent(TunnelRuntimeNaming.controlName(for: tunnelID)).path,
+            brokerPID: nil,
+            createdAt: Date(),
+            ownership: ownership
+        )
+    }
+
+    private func leasePath(for lease: TunnelLease, in directory: URL) -> URL {
+        directory.appendingPathComponent(TunnelRuntimeNaming.leaseName(for: lease.tunnelID))
     }
 }
 

@@ -152,6 +152,8 @@ flowchart TB
 
 依赖方向固定为：`Views -> AppModel -> UseCases -> KeyPortCore protocols/domain`。`HostRepository` 与 `CredentialInventoryRepository` 依赖同一个 actor 隔离的 `MetadataRepository` 事务端口，不能互相调用或各自落盘。平台实现依赖 `KeyPortCore`，`KeyPortCore` 不反向导入 SwiftUI、CloudKit、Network、CoreWLAN 或 AppKit。`KeyPortTunnelBroker` 不依赖主应用，也不暴露任意命令入口。
 
+进程级 composition root 只创建一个 production `TunnelRegistry`。AppDelegate 的启动/休眠/网络/退出清理、Host v6 删除事务以及未来 AppModel 服务访问都必须从该 root 注入同一个 actor；禁止各入口私建 registry，否则删除 journal 无法定位 UI 创建的活动 tunnel。
+
 ## 5. 数据所有权、稳定 ID 与不变量
 
 ### 5.1 同步实体
@@ -222,7 +224,7 @@ public struct RemoteServiceEndpoint: Codable, Hashable, Sendable {
 | `ConnectionRecord`、SSID、进行中 operation | `history-v1.json`，`0600` | **否** | **否** |
 | `DiscoverySession`、`DiscoveryCandidate`、原始命令输出 | 内存；页面关闭即丢弃 | 否 | 否 |
 | `TunnelHandle` | `TunnelRegistry` 内存 | 否 | 否 |
-| crash lease（仅 tunnelID/controlPath/brokerPID/时间） | runtime 目录；关闭/下次启动清理 | 否 | 否 |
+| crash lease（tunnelID/controlPath/brokerPID/时间 + Host/Identity/Address/Service UUID ownership） | runtime 目录；关闭/下次启动或删除 journal 按 ownership 精确清理；旧格式缺 ownership 时 scoped cleanup fail closed，由全量启动 reaper 接管 | 否 | 否 |
 | 密码 | Keychain，account = `SSHIdentity.id` | 否 | 否 |
 | 私钥文件 | `~/.ssh/keyport/identities` | 否 | 否 |
 
