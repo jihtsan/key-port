@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import OSLog
 import SwiftUI
 
@@ -66,11 +67,25 @@ struct KeyPortApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.jihtsan.KeyPort", category: "Windowing")
+    private let tunnelRegistry: TunnelRegistry
+    private var pathMonitor: NWPathMonitor?
+    private var terminationRequested = false
+
+    override init() {
+        self.tunnelRegistry = .production()
+        super.init()
+    }
+
+    init(tunnelRegistry: TunnelRegistry = .production()) {
+        self.tunnelRegistry = tunnelRegistry
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         logger.info("Application finished launching")
+        startTunnelLifecycle()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             guard NSApp.windows.isEmpty else {
                 self.logger.info("Primary SwiftUI window is visible")
@@ -79,6 +94,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.logger.warning("No restored window; requesting a new WindowGroup window")
             NSApp.sendAction(Selector(("newWindow:")), to: nil, from: nil)
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationRequested else { return .terminateLater }
+        terminationRequested = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await tunnelRegistry.closeAll(reason: .applicationTermination)
+            if result.cleanup == .pending {
+                logger.error("Tunnel cleanup remains pending during application termination")
+            }
+            NSApp?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    private func startTunnelLifecycle() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let cleanup = await tunnelRegistry.reapLeases()
+            if cleanup == .pending {
+                logger.warning("A managed tunnel lease remains pending cleanup")
+            }
+        }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                _ = await tunnelRegistry.networkEpochChanged()
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.jihtsan.KeyPort.network-epoch"))
+        pathMonitor = monitor
+    }
+
+    @objc private func handleWillSleep(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await tunnelRegistry.closeAll(reason: .sleep)
         }
     }
 }
