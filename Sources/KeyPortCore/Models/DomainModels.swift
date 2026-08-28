@@ -12,20 +12,22 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
     case authorizationConflict
     case syncPending
     case checking
+    case syncing
 
     public var title: String {
         switch self {
-        case .authorized: "Authorized"
-        case .needsAuthorization: "Needs authorization"
-        case .missingLocalKey: "Missing local key"
-        case .hostKeyPending: "Host key pending"
-        case .hostKeyMismatch: "Host key changed"
-        case .unreachable: "Unreachable"
-        case .passwordAuthenticationFailed: "Password failed"
-        case .keyAuthenticationFailed: "Key failed"
-        case .authorizationConflict: "Authorization conflict"
-        case .syncPending: "Sync pending"
-        case .checking: "Checking"
+        case .authorized: "免密可用"
+        case .needsAuthorization: "待启用免密"
+        case .missingLocalKey: "缺少本机密钥"
+        case .hostKeyPending: "主机密钥待确认"
+        case .hostKeyMismatch: "主机密钥已变更"
+        case .unreachable: "无法连接"
+        case .passwordAuthenticationFailed: "密码验证失败"
+        case .keyAuthenticationFailed: "免密验证失败"
+        case .authorizationConflict: "授权冲突"
+        case .syncPending: "免密待验证"
+        case .checking: "检测中"
+        case .syncing: "同步中"
         }
     }
 }
@@ -38,10 +40,10 @@ public enum AuthenticationCheckState: String, Codable, Hashable, Sendable {
 
     public var title: String {
         switch self {
-        case .checking: "Checking"
-        case .succeeded: "Passed"
-        case .failed: "Failed"
-        case .blocked: "Blocked"
+        case .checking: "检查中"
+        case .succeeded: "已通过"
+        case .failed: "失败"
+        case .blocked: "已阻止"
         }
     }
 }
@@ -55,6 +57,53 @@ public struct AuthenticationCheck: Codable, Hashable, Sendable {
         self.state = state
         self.detail = detail
         self.checkedAt = checkedAt
+    }
+}
+
+public struct RemoteMachineConfiguration: Codable, Hashable, Sendable {
+    public static let refreshInterval: TimeInterval = 24 * 60 * 60
+
+    public var hostname: String
+    public var operatingSystem: String
+    public var kernel: String
+    public var architecture: String
+    public var processorCount: Int?
+    public var memoryBytes: UInt64?
+    public var synchronizedAt: Date
+
+    public init(
+        hostname: String,
+        operatingSystem: String,
+        kernel: String,
+        architecture: String,
+        processorCount: Int? = nil,
+        memoryBytes: UInt64? = nil,
+        synchronizedAt: Date = .now
+    ) {
+        self.hostname = hostname
+        self.operatingSystem = operatingSystem
+        self.kernel = kernel
+        self.architecture = architecture
+        self.processorCount = processorCount
+        self.memoryBytes = memoryBytes
+        self.synchronizedAt = synchronizedAt
+    }
+
+    public var capacitySummary: String? {
+        var components: [String] = []
+        if let processorCount, processorCount > 0 {
+            components.append("\(processorCount)C")
+        }
+        if let memoryBytes, memoryBytes > 0 {
+            let gibibytes = Double(memoryBytes) / 1_073_741_824
+            if gibibytes >= 1 {
+                components.append("\(Int(gibibytes.rounded()))G")
+            } else {
+                let mebibytes = max(1, Int((Double(memoryBytes) / 1_048_576).rounded()))
+                components.append("\(mebibytes)M")
+            }
+        }
+        return components.isEmpty ? nil : components.joined()
     }
 }
 
@@ -90,12 +139,14 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     public var lastCheckedAt: Date?
     public var passwordCheck: AuthenticationCheck?
     public var keyCheck: AuthenticationCheck?
+    public var machineConfiguration: RemoteMachineConfiguration?
+    public var machineConfigurationRefreshAttemptedAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
     public var isDeleted: Bool
     public var version: Int
 
-    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
+    public init(id: UUID = UUID(), name: String, host: String, port: Int = 22, username: String, alias: String, group: String = "", notes: String = "", confirmedHostKeys: [HostKeyRecord] = [], status: AuthorizationStatus = .hostKeyPending, statusDetail: String? = nil, lastCheckedAt: Date? = nil, passwordCheck: AuthenticationCheck? = nil, keyCheck: AuthenticationCheck? = nil, machineConfiguration: RemoteMachineConfiguration? = nil, machineConfigurationRefreshAttemptedAt: Date? = nil, createdAt: Date = .now, updatedAt: Date = .now, isDeleted: Bool = false, version: Int = 1) {
         self.id = id
         self.name = name
         self.host = host
@@ -110,6 +161,8 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
         self.lastCheckedAt = lastCheckedAt
         self.passwordCheck = passwordCheck
         self.keyCheck = keyCheck
+        self.machineConfiguration = machineConfiguration
+        self.machineConfigurationRefreshAttemptedAt = machineConfigurationRefreshAttemptedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
@@ -117,6 +170,18 @@ public struct ServerConnection: Identifiable, Codable, Hashable, Sendable {
     }
 
     public var endpoint: String { "\(host):\(port)" }
+
+    public func shouldRefreshMachineConfiguration(at date: Date = .now) -> Bool {
+        let lastRefresh = [
+            machineConfiguration?.synchronizedAt,
+            machineConfigurationRefreshAttemptedAt
+        ]
+        .compactMap { $0 }
+        .max()
+
+        guard let lastRefresh else { return true }
+        return date.timeIntervalSince(lastRefresh) >= RemoteMachineConfiguration.refreshInterval
+    }
 }
 
 public struct Device: Identifiable, Codable, Hashable, Sendable {
@@ -126,14 +191,16 @@ public struct Device: Identifiable, Codable, Hashable, Sendable {
     public var registeredAt: Date
     public var lastActiveAt: Date
     public var isRevoked: Bool
+    public var tailscaleIdentity: TailscaleDeviceIdentity?
 
-    public init(id: String, name: String, isCurrent: Bool, registeredAt: Date = .now, lastActiveAt: Date = .now, isRevoked: Bool = false) {
+    public init(id: String, name: String, isCurrent: Bool, registeredAt: Date = .now, lastActiveAt: Date = .now, isRevoked: Bool = false, tailscaleIdentity: TailscaleDeviceIdentity? = nil) {
         self.id = id
         self.name = name
         self.isCurrent = isCurrent
         self.registeredAt = registeredAt
         self.lastActiveAt = lastActiveAt
         self.isRevoked = isRevoked
+        self.tailscaleIdentity = tailscaleIdentity
     }
 }
 
@@ -167,7 +234,7 @@ public struct SSHKeyRecord: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct Authorization: Identifiable, Codable, Hashable, Sendable {
-    public var id: String { "\(serverID.uuidString):\(keyID)" }
+    public var id: String { "\(serverID.uuidString):\(fingerprint)" }
     public var serverID: UUID
     public var keyID: String
     public var fingerprint: String
@@ -175,8 +242,22 @@ public struct Authorization: Identifiable, Codable, Hashable, Sendable {
     public var status: AuthorizationStatus
     public var authorizedAt: Date?
     public var lastVerifiedAt: Date?
+    public var updatedAt: Date
+    public var isDeleted: Bool
+    public var version: Int
 
-    public init(serverID: UUID, keyID: String, fingerprint: String, remoteComment: String, status: AuthorizationStatus, authorizedAt: Date? = nil, lastVerifiedAt: Date? = nil) {
+    public init(
+        serverID: UUID,
+        keyID: String,
+        fingerprint: String,
+        remoteComment: String,
+        status: AuthorizationStatus,
+        authorizedAt: Date? = nil,
+        lastVerifiedAt: Date? = nil,
+        updatedAt: Date = .now,
+        isDeleted: Bool = false,
+        version: Int = 1
+    ) {
         self.serverID = serverID
         self.keyID = keyID
         self.fingerprint = fingerprint
@@ -184,6 +265,39 @@ public struct Authorization: Identifiable, Codable, Hashable, Sendable {
         self.status = status
         self.authorizedAt = authorizedAt
         self.lastVerifiedAt = lastVerifiedAt
+        self.updatedAt = updatedAt
+        self.isDeleted = isDeleted
+        self.version = version
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case serverID
+        case keyID
+        case fingerprint
+        case remoteComment
+        case status
+        case authorizedAt
+        case lastVerifiedAt
+        case updatedAt
+        case isDeleted
+        case version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serverID = try container.decode(UUID.self, forKey: .serverID)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        fingerprint = try container.decode(String.self, forKey: .fingerprint)
+        remoteComment = try container.decode(String.self, forKey: .remoteComment)
+        status = try container.decode(AuthorizationStatus.self, forKey: .status)
+        authorizedAt = try container.decodeIfPresent(Date.self, forKey: .authorizedAt)
+        lastVerifiedAt = try container.decodeIfPresent(Date.self, forKey: .lastVerifiedAt)
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
+            ?? lastVerifiedAt
+            ?? authorizedAt
+            ?? .distantPast
+        isDeleted = try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false
+        version = max(1, try container.decodeIfPresent(Int.self, forKey: .version) ?? 1)
     }
 }
 
@@ -209,12 +323,34 @@ public struct AuditEvent: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct AppSnapshot: Codable, Sendable {
-    public var schemaVersion = 3
+    public var schemaVersion = 5
     public var servers: [ServerConnection] = []
     public var devices: [Device] = []
     public var keys: [SSHKeyRecord] = []
     public var authorizations: [Authorization] = []
     public var auditEvents: [AuditEvent] = []
+    public var nodeAssociations: [NodeAssociation] = []
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, servers, devices, keys, authorizations, auditEvents, nodeAssociations
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        servers = try container.decodeIfPresent([ServerConnection].self, forKey: .servers) ?? []
+        devices = try container.decodeIfPresent([Device].self, forKey: .devices) ?? []
+        keys = try container.decodeIfPresent([SSHKeyRecord].self, forKey: .keys) ?? []
+        authorizations = try container.decodeIfPresent([Authorization].self, forKey: .authorizations) ?? []
+        auditEvents = try container.decodeIfPresent([AuditEvent].self, forKey: .auditEvents) ?? []
+        nodeAssociations = try container.decodeIfPresent([NodeAssociation].self, forKey: .nodeAssociations) ?? []
+    }
+
+    public mutating func migrateNodeAssociationsSchemaIfNeeded() {
+        guard schemaVersion < 5 else { return }
+        nodeAssociations = []
+        schemaVersion = 5
+    }
 }

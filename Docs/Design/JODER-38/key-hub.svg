@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="none">
+  <title>KeyPort Key Hub menu bar template icon</title>
+  <g stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="9" cy="6.25" r="2.65"/>
+    <path d="M9 8.9v5.35h2.25v-1.8h1.65v-1.8H9"/>
+    <path d="M6.35 6.25H3.1M11.65 6.25h3.25"/>
+  </g>
+  <circle cx="2.15" cy="6.25" r="1.25" fill="#000"/>
+  <circle cx="15.85" cy="6.25" r="1.25" fill="#000"/>
+</svg>

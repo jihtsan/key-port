@@ -8,15 +8,17 @@ enum SSHServiceError: LocalizedError {
     case missingPrivateKey
     case missingPassword
     case passwordAuthenticationRejected
+    case identityRouteUnavailable
     case operationFailed(String)
 
     var errorDescription: String? {
         switch self {
-        case .hostKeyNotConfirmed: "Confirm the server host key before authentication."
-        case .hostKeyChanged: "The host key changed. Authentication was blocked."
-        case .missingPrivateKey: "The selected key has no usable local private key."
-        case .missingPassword: "No server password is stored in Keychain."
-        case .passwordAuthenticationRejected: "Password authentication was rejected by the server."
+        case .hostKeyNotConfirmed: "身份验证前，请先确认服务器主机密钥。"
+        case .hostKeyChanged: "主机密钥已变更，身份验证被阻止。"
+        case .missingPrivateKey: "所选密钥没有可用的本地私钥。"
+        case .missingPassword: "Keychain 中未存储服务器密码。"
+        case .passwordAuthenticationRejected: "服务器拒绝了密码登录。"
+        case .identityRouteUnavailable: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
         case .operationFailed(let message): message
         }
     }
@@ -64,10 +66,45 @@ actor OpenSSHService {
         throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
     }
 
+    func inspectMachineWithPassword(server: ServerConnection, passwordData: Data) async throws -> RemoteMachineConfiguration? {
+        let broker = try passwordBroker(passwordData: passwordData)
+        defer { broker.cleanup() }
+        broker.startWriter()
+        let result = try await runner.run(
+            "/usr/bin/ssh",
+            arguments: commonArguments(server: server) + SSHAuthenticationPolicy.passwordOnlyArguments + [
+                "\(server.username)@\(server.host)",
+                "sh", "-s",
+            ],
+            input: Data(machineConfigurationScript.utf8),
+            environment: askPassEnvironment(broker: broker)
+        )
+        if result.succeeded { return RemoteMachineConfigurationParser.parse(result.stdout) }
+        if authenticationWasRejected(result.stderr) { return nil }
+        throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
+    }
+
+    func inspectMachineWithPublicKey(server: ServerConnection, key: SSHKeyRecord) async throws -> RemoteMachineConfiguration? {
+        guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
+        guard let identity = key.privateKeyPath else { throw SSHServiceError.missingPrivateKey }
+        let result = try await runner.run(
+            "/usr/bin/ssh",
+            arguments: commonArguments(server: server) + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
+                "-i", identity,
+                "\(server.username)@\(server.host)",
+                "sh", "-s",
+            ],
+            input: Data(machineConfigurationScript.utf8)
+        )
+        if result.succeeded { return RemoteMachineConfigurationParser.parse(result.stdout) }
+        if authenticationWasRejected(result.stderr) { return nil }
+        throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
+    }
+
     func installPublicKey(server: ServerConnection, key: SSHKeyRecord, passwordData: Data) async throws {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
         guard let parsed = PublicKeyParser.parse(key.publicKey) else {
-            throw SSHServiceError.operationFailed("The selected public key is invalid.")
+            throw SSHServiceError.operationFailed("所选公钥无效。")
         }
 
         let encodedLine = Data(key.publicKey.utf8).base64EncodedString()
@@ -94,18 +131,18 @@ actor OpenSSHService {
             "-o", "BatchMode=yes", "-i", identityPath,
             "\(server.username)@\(server.host)", "sh", "-s",
         ], input: Data(script.utf8))
-        guard result.succeeded else { throw SSHServiceError.operationFailed("Remote authorization could not be revoked.") }
+        guard result.succeeded else { throw SSHServiceError.operationFailed("无法撤销远程授权。") }
         _ = fingerprint
     }
 
     func readAuthorizedKeys(server: ServerConnection, identityPath: String) async throws -> [AuthorizedKeyLine] {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
-        let script = "test ! -f \"$HOME/.ssh/authorized_keys\" || cat \"$HOME/.ssh/authorized_keys\"\n"
+        let script = SSHRemoteCommandScripts.readAuthorizedKeys
         let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server) + [
             "-o", "BatchMode=yes", "-i", identityPath,
             "\(server.username)@\(server.host)", "sh", "-s",
         ], input: Data(script.utf8))
-        guard result.succeeded else { throw SSHServiceError.operationFailed("The remote authorized_keys file could not be read.") }
+        guard result.succeeded else { throw SSHServiceError.operationFailed("无法读取远程 authorized_keys 文件。") }
         return AuthorizedKeysParser.parse(result.stdout)
     }
 
@@ -122,9 +159,13 @@ actor OpenSSHService {
         ]
     }
 
+    private var machineConfigurationScript: String {
+        SSHRemoteCommandScripts.machineInspection
+    }
+
     private func passwordBroker(passwordData: Data) throws -> PasswordFIFO {
         guard FileManager.default.isExecutableFile(atPath: askPassPath) else {
-            throw SSHServiceError.operationFailed("KeyPort AskPass helper is unavailable.")
+            throw SSHServiceError.operationFailed("KeyPort AskPass 辅助程序不可用。")
         }
         return try PasswordFIFO(paths: paths, passwordData: passwordData)
     }
@@ -139,61 +180,22 @@ actor OpenSSHService {
     }
 
     private func enrollmentScript(encodedLine: String, keyBlob: String) -> String {
-        """
-        set -eu
-        umask 077
-        key_line=$(printf '%s' '\(encodedLine)' | base64 -d)
-        key_blob='\(keyBlob)'
-        mkdir -p "$HOME/.ssh"
-        chmod 700 "$HOME/.ssh"
-        auth="$HOME/.ssh/authorized_keys"
-        touch "$auth"
-        chmod 600 "$auth"
-        if awk -v blob="$key_blob" '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"; then
-          exit 0
-        fi
-        backup="$auth.keyport-backup-$(date +%Y%m%d%H%M%S)"
-        cp -p "$auth" "$backup"
-        tmp="$auth.keyport-tmp-$$"
-        trap 'rm -f "$tmp"' EXIT HUP INT TERM
-        cp "$auth" "$tmp"
-        printf '%s\n' "$key_line" >> "$tmp"
-        chmod 600 "$tmp"
-        mv "$tmp" "$auth"
-        trap - EXIT HUP INT TERM
-        awk -v blob="$key_blob" '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"
-        """
+        SSHRemoteCommandScripts.installAuthorizedKey(encodedLine: encodedLine, keyBlob: keyBlob)
     }
 
     private func revocationScript(keyBlob: String) -> String {
-        """
-        set -eu
-        umask 077
-        auth="$HOME/.ssh/authorized_keys"
-        [ -f "$auth" ] || exit 0
-        backup="$auth.keyport-backup-$(date +%Y%m%d%H%M%S)"
-        cp -p "$auth" "$backup"
-        tmp="$auth.keyport-tmp-$$"
-        trap 'rm -f "$tmp"' EXIT HUP INT TERM
-        awk -v blob='\(keyBlob)' '{ remove=0; for (i=1; i<=NF; i++) if ($i == blob) remove=1; if (!remove) print $0 }' "$auth" > "$tmp"
-        chmod 600 "$tmp"
-        mv "$tmp" "$auth"
-        trap - EXIT HUP INT TERM
-        if awk -v blob='\(keyBlob)' '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"; then
-          exit 1
-        fi
-        """
+        SSHRemoteCommandScripts.revokeAuthorizedKey(keyBlob: keyBlob)
     }
 
     private func classifyAuthenticationError(_ stderr: String) -> String {
         let lower = stderr.lowercased()
-        if lower.contains("host key verification failed") { return "Host key verification failed; authorization was blocked." }
-        if lower.contains("permission denied") { return "Password authentication was rejected by the server." }
-        if lower.contains("connection timed out") || lower.contains("operation timed out") { return "The SSH connection timed out." }
-        if lower.contains("connection refused") { return "The SSH server refused the connection." }
-        if lower.contains("could not resolve hostname") { return "The SSH server name could not be resolved." }
-        if lower.contains("no route to host") { return "No network route to the SSH server is available." }
-        return "The SSH authentication operation failed."
+        if lower.contains("host key verification failed") { return "主机密钥验证失败，SSH 操作已被阻止。" }
+        if lower.contains("permission denied") { return "服务器拒绝了密码登录。" }
+        if lower.contains("connection timed out") || lower.contains("operation timed out") { return "SSH 连接超时。" }
+        if lower.contains("connection refused") { return "SSH 服务器拒绝了连接。" }
+        if lower.contains("could not resolve hostname") { return "无法解析 SSH 服务器名称。" }
+        if lower.contains("no route to host") { return "没有可用的网络路由连接 SSH 服务器。" }
+        return "SSH 身份验证操作失败。"
     }
 
     private func authenticationWasRejected(_ stderr: String) -> Bool {
@@ -216,7 +218,7 @@ private final class PasswordFIFO: @unchecked Sendable {
         self.passwordData = passwordData
         guard mkfifo(path, S_IRUSR | S_IWUSR) == 0 else {
             try? FileManager.default.removeItem(at: directory)
-            throw SSHServiceError.operationFailed("The protected AskPass channel could not be created.")
+            throw SSHServiceError.operationFailed("无法创建受保护的 AskPass 通道。")
         }
     }
 

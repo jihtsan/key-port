@@ -1,4 +1,6 @@
 import AppKit
+import KeyPortCore
+import Network
 import OSLog
 import SwiftUI
 
@@ -8,7 +10,21 @@ struct KeyPortApp: App {
     @State private var model: AppModel
 
     init() {
-        let appModel = AppModel()
+        let dependencies = KeyPortRuntimeDependencies.production
+        let defaults = UserDefaults.standard
+        let currentDeviceID: String
+        if let storedDeviceID = defaults.string(forKey: "KeyPort.deviceID") {
+            currentDeviceID = storedDeviceID
+        } else {
+            currentDeviceID = KeyPortNaming.newDeviceID()
+            defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+        }
+        let hostV6Runtime = HostV6RuntimeAssembly.makeIfEnabled(
+            currentDeviceID: currentDeviceID,
+            defaults: defaults,
+            dependencies: dependencies
+        )
+        let appModel = AppModel(hostV6Runtime: hostV6Runtime, defaults: defaults)
         _model = State(initialValue: appModel)
         AppWindowFallback.scheduleIfNeeded(model: appModel)
     }
@@ -22,20 +38,69 @@ struct KeyPortApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands { KeyPortCommands(model: model) }
 
+        MenuBarExtra {
+            KeyPortMenuBarView(model: model)
+        } label: {
+            menuBarIcon
+        }
+        .menuBarExtraStyle(.menu)
+
         Settings {
             SettingsView(model: model)
                 .frame(width: 560, height: 420)
         }
     }
+
+    private var menuBarIcon: some View {
+        if let image = loadMenuBarImage() {
+            Image(nsImage: image)
+                .renderingMode(.template)
+                .accessibilityLabel("KeyPort")
+        } else {
+            Image(systemName: "key.horizontal")
+                .accessibilityLabel("KeyPort")
+        }
+    }
+
+    private func loadMenuBarImage() -> NSImage? {
+        let bundles = [Bundle.main, Bundle.module]
+        let resourceNames = ["key-hub@2x", "key-hub@1x"]
+
+        for bundle in bundles {
+            for resourceName in resourceNames {
+                guard let url = bundle.url(forResource: resourceName, withExtension: "png"),
+                      let image = NSImage(contentsOf: url) else { continue }
+                image.isTemplate = true
+                image.size = NSSize(width: 18, height: 18)
+                return image
+            }
+        }
+
+        return nil
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.jihtsan.KeyPort", category: "Windowing")
+    private let tunnelRegistry: TunnelRegistry
+    private var pathMonitor: NWPathMonitor?
+    private var terminationRequested = false
+
+    override init() {
+        self.tunnelRegistry = KeyPortRuntimeDependencies.production.tunnelRegistry
+        super.init()
+    }
+
+    init(tunnelRegistry: TunnelRegistry) {
+        self.tunnelRegistry = tunnelRegistry
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         logger.info("Application finished launching")
+        startTunnelLifecycle()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             guard NSApp.windows.isEmpty else {
                 self.logger.info("Primary SwiftUI window is visible")
@@ -44,6 +109,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.logger.warning("No restored window; requesting a new WindowGroup window")
             NSApp.sendAction(Selector(("newWindow:")), to: nil, from: nil)
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationRequested else { return .terminateLater }
+        terminationRequested = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await tunnelRegistry.closeAll(reason: .applicationTermination)
+            if result.cleanup == .pending {
+                logger.error("Tunnel cleanup remains pending during application termination")
+            }
+            NSApp?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    private func startTunnelLifecycle() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let cleanup = await tunnelRegistry.reapLeases()
+            if cleanup == .pending {
+                logger.warning("A managed tunnel lease remains pending cleanup")
+            }
+        }
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(handleWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                _ = await tunnelRegistry.networkEpochChanged()
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.jihtsan.KeyPort.network-epoch"))
+        pathMonitor = monitor
+    }
+
+    @objc private func handleWillSleep(_ notification: Notification) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await tunnelRegistry.closeAll(reason: .sleep)
         }
     }
 }
