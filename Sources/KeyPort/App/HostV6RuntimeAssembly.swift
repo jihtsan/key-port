@@ -30,6 +30,7 @@ enum HostV6PresentationMode: Equatable, Sendable {
 struct HostV6Presentation: Sendable {
     let snapshot: AppSnapshot
     let mode: HostV6PresentationMode
+    let graphEnvelope: HostV6.MetadataEnvelope?
 }
 
 actor HostV6Runtime {
@@ -99,7 +100,11 @@ actor HostV6Runtime {
                ) {
                 return try await presentation(from: activated, legacyStore: legacyStore)
             }
-            return HostV6Presentation(snapshot: legacySnapshot, mode: .canary)
+            return HostV6Presentation(
+                snapshot: legacySnapshot,
+                mode: .canary,
+                graphEnvelope: bundle?.envelope
+            )
         }
         let envelope = try await metadataRepository.snapshot()
         return try await presentation(from: envelope, legacyStore: legacyStore)
@@ -114,16 +119,22 @@ actor HostV6Runtime {
         }
         switch manifest.mode {
         case .legacyAuthoritative, .v6Canary:
-            return HostV6Presentation(snapshot: try await legacyStore.load(), mode: .canary)
+            return HostV6Presentation(
+                snapshot: try await legacyStore.load(),
+                mode: .canary,
+                graphEnvelope: envelope
+            )
         case .v6Authoritative:
             return HostV6Presentation(
                 snapshot: try compatibilitySnapshot(from: envelope),
-                mode: .authoritative
+                mode: .authoritative,
+                graphEnvelope: envelope
             )
         case .compatibilityRollback:
             return HostV6Presentation(
                 snapshot: try compatibilitySnapshot(from: envelope),
-                mode: .compatibilityRollback
+                mode: .compatibilityRollback,
+                graphEnvelope: envelope
             )
         }
     }
@@ -137,13 +148,17 @@ actor HostV6Runtime {
         }
     }
 
-    func saveLegacySnapshot(_ snapshot: AppSnapshot, to legacyStore: SnapshotStore) async throws {
+    func saveLegacySnapshot(
+        _ snapshot: AppSnapshot,
+        to legacyStore: SnapshotStore
+    ) async throws -> HostV6.MetadataEnvelope {
         try await authorizeLegacyWrite()
         try await legacyStore.save(snapshot)
-        _ = try await legacyStore.stageV6Shadow(
+        let bundle = try await legacyStore.stageV6Shadow(
             currentDeviceID: currentDeviceID,
             credentialInspector: credentialInspector
         )
+        return bundle.envelope
     }
 
     func transact(

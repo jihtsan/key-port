@@ -11,9 +11,19 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         NavigationSplitView {
-            List(SidebarDestination.allCases, selection: $model.destination) { destination in
-                Label(destination.title, systemImage: destination.systemImage)
-                    .tag(destination)
+            List(selection: $model.destination) {
+                Section("工作区") {
+                    ForEach(SidebarDestination.workspaceCases) { destination in
+                        Label(destination.title, systemImage: destination.systemImage)
+                            .tag(destination)
+                    }
+                }
+                Section("兼容视图") {
+                    ForEach(SidebarDestination.compatibilityCases) { destination in
+                        Label(destination.title, systemImage: destination.systemImage)
+                            .tag(destination)
+                    }
+                }
             }
             .listStyle(.sidebar)
             .navigationTitle("KeyPort")
@@ -203,6 +213,12 @@ struct ContentView: View {
     @ViewBuilder
     private var contentColumn: some View {
         switch model.destination {
+        case .graph:
+            GraphWorkspaceView(model: model)
+        case .nodes:
+            GraphNodesView(model: model)
+        case .activity:
+            GraphActivityListView(model: model)
         case .servers:
             ServerListView(model: model) { serverID in
                 model.selectedServerID = serverID
@@ -223,6 +239,10 @@ struct ContentView: View {
     @ViewBuilder
     private var detailColumn: some View {
         switch model.destination {
+        case .graph, .nodes:
+            GraphInspectorView(workspace: model.graphWorkspace)
+        case .activity:
+            AuditOverviewView(model: model)
         case .servers:
             if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)
@@ -250,6 +270,19 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
+        if model.destination == .graph {
+            ToolbarItem {
+                Button {
+                    model.destination = .servers
+                    showsAddServer = true
+                } label: {
+                    Label("添加主机", systemImage: "plus")
+                }
+                .help("通过兼容接入流程添加主机；V6 权威模式下不可用")
+                .disabled(model.isMetadataReadOnly || model.isBusy)
+            }
+        }
+
         if model.destination == .servers {
             ToolbarItemGroup {
                 Button {
