@@ -7,8 +7,8 @@ enum HostKeyServiceError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .scanFailed(let detail): "Host key scan failed: \(detail)"
-        case .noKeys: "The endpoint returned no supported SSH host keys."
+        case .scanFailed(let detail): "主机密钥扫描失败：\(detail)"
+        case .noKeys: "端点未返回受支持的 SSH 主机密钥。"
         }
     }
 }
@@ -48,16 +48,23 @@ actor HostKeyService {
     }
 
     private func sanitized(_ error: String, status: Int32, endpoint: String) -> String {
-        if let detail = error
-            .split(separator: "\n")
-            .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
-            .last(where: { !$0.isEmpty }) {
-            return detail
+        let lowercasedError = error.lowercased()
+        if lowercasedError.contains("timed out") || lowercasedError.contains("timeout") {
+            return "连接 \(endpoint) 超时。"
+        }
+        if lowercasedError.contains("connection refused") {
+            return "端点 \(endpoint) 拒绝了连接。"
+        }
+        if lowercasedError.contains("resolve") || lowercasedError.contains("name or service not known") {
+            return "无法解析端点 \(endpoint)。"
+        }
+        if lowercasedError.contains("no route to host") || lowercasedError.contains("network is unreachable") {
+            return "没有可用的网络路由连接端点 \(endpoint)。"
         }
         if status == 1 {
-            return "No SSH host key response was received from \(endpoint) within 5 seconds."
+            return "5 秒内未收到来自 \(endpoint) 的 SSH 主机密钥响应。"
         }
-        return "ssh-keyscan exited with status \(status) for \(endpoint)."
+        return "对 \(endpoint) 执行 ssh-keyscan 时以状态码 \(status) 退出。"
     }
 
     private func atomicWrite(_ text: String, to destination: URL, permissions: Int) throws {

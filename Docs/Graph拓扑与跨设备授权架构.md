@@ -1,380 +1,317 @@
 # KeyPort Graph 拓扑与跨设备授权架构
 
 - 状态：提案
-- 文档版本：V2.0
+- 文档版本：V2.1
 - 日期：2026-08-28
 - 关联 Issue：[GitHub #26](https://github.com/jihtsan/key-port/issues/26)
 - 领域词汇：[CONTEXT.md](../CONTEXT.md)
+- 承重基线：[主机工作台技术架构与迁移契约](./Design/JODER-10/host-workbench-architecture.md)
 
 ## 1. 结论
 
-Graph 方向适合作为 KeyPort 的新主界面，但它必须表达真实的管理关系，而不是把现有服务器列表换成散点图。
+Graph 方向适合作为 KeyPort 的新主界面，而且当前仓库已经具备承载它的数据模型。正确方案不是再造一套 `RemoteResource` 或图数据库，而是把已有 `HostV6.SyncedGraph` 投影成用户可理解的设备、主机、SSH 账户、服务和授权拓扑。
 
-推荐的新产品核心是：**一个通过 iCloud 私有工作区同步的个人 SSH 访问拓扑**。工作区中的远端资源和服务在所有设备间共享；每台 Mac 保持独立 SSH 身份；每一条设备到远端资源的可访问关系，都由具体访问配置、SSH 身份和密钥授权推导出来。
+推荐的新产品核心是：**一个通过 iCloud 同步元数据、由每台 Mac 独立持有私钥的个人 SSH 访问拓扑**。
 
-因此：
+1. 主机 A、B 在工作区中各只有一个稳定 `Host`，不会为每台 Mac 复制一份。
+2. 每台 KeyPort 设备拥有自己的 `SSHKeyRecord` 和本地私钥。
+3. “设备能访问主机”由 `Device → SSHKeyRecord → Authorization → SSHIdentity → Host` 推导。
+4. 主机上的 HTTP、HTTPS 和 TCP 服务使用已有 `SavedService` 表达。
+5. Tailscale 等真实网络节点与 SSH 账户的映射使用已有 `NodeAssociation`，不能被普通画布连线替代。
+6. Graph 只显示和操作事实，不成为新的授权真源，也不表示物理路由或任意命令执行能力。
 
-1. A、B 服务器在工作区中各只有一个稳定的远端资源 ID，不会为每台 Mac 复制一份。
-2. Mac 1 和 Mac 2 分别拥有自己的 SSH 身份，并各自形成到 A、B 的密钥授权。
-3. Mac 2 新增 C 或 C 上的服务后，其他设备同步的是同一个 C 和服务节点。
-4. “能看到节点”不等于“当前 Mac 已经能访问节点”；当前设备仍需用自己的公钥完成授权。
-5. Graph 是领域数据的投影，不是独立事实源，也不需要引入图数据库。
+## 2. 当前基线
 
-## 2. 产品目标与非目标
+在本文之前，仓库已经完成了比早期 MVP 更深的 Host v6 承重层：
 
-### 2.1 目标
+- V5 `AppSnapshot` 和列表式 SwiftUI 仍是默认用户界面与兼容写路径。
+- `HostV6.SyncedGraph` 已规范化保存 Host、Address、SSH Account、Device、Key、Host Key Pin、Service、Authorization、Node Association 和 Merge Review。
+- `MetadataEnvelope` 已把同步事实、本机状态和迁移来源分开。
+- v5 → v6 确定性影子迁移、CloudKit v2、向量时钟、墓碑、冲突保留、authority manifest 和恢复 journal 已实现。
+- 服务发现、直连/隧道决策、`KeyPortTunnelBroker` 和精确隧道清理已实现，但相关功能仍受开关和验收门禁控制。
+- 当前 UI 已有状态感知的 `PasswordlessPrimaryAction`，能够在“验证、启用、生成密钥、输入密码、核对 Host Key”之间选择。
+- C3 双 Mac 签名环境验收尚未完成，Host v6 写权不能被 Graph UI 绕过。
 
-- 以图的方式回答“有哪些设备、远端资源和服务，它们之间是什么关系”。
-- 明确回答“当前 Mac 能否通过哪个账号访问哪个远端资源”。
-- 将新增连接、账号验证和启用 SSH 密钥访问组织成可解释的流程。
-- 让新 Mac 通过 iCloud 恢复拓扑和公开元数据，再用独立密钥获得自己的访问权。
-- 在节点和关系持续增长时，仍能搜索、过滤、分组和诊断。
-- 保留现有 Host Key、Keychain、私钥隔离和远端原子写入等安全边界。
+因此，Graph 的主要工作是投影、交互和应用编排，而不是重新设计持久化模型。本文若与 Host v6 的 authority、CloudKit 或删除契约冲突，以 JODER-10 承重文档和已合并实现为准。
 
-### 2.2 非目标
-
-- Graph 不表示真实物理网络、路由路径、流量或隧道，除非未来有可验证的数据来源。
-- 不自动扫描整个局域网并创建未知设备。
-- 不把 KeyPort 扩展为通用服务器监控、内嵌终端或远程命令执行工具。
-- 不同步私钥，不让多台 Mac 共用同一把默认私钥。
-- 不因为某条云端授权记录存在，就宣称远端 `authorized_keys` 当前一定包含该公钥。
-- 当前工作区仍是单个 Apple ID 的私有空间，不在本阶段引入团队共享和审批。
-
-## 3. 核心领域模型
-
-现有 `ServerConnection` 同时承担远端对象、网络入口、登录账号、Host Key、认证检查和 UI 状态。Graph 要成立，必须先拆开这些概念。
+## 3. Graph 使用的现有领域图
 
 ```mermaid
 flowchart LR
-    D[Device Node\n设备节点] -->|owns| I[SSH Identity\nSSH 身份]
-    R[Remote Resource\n远端资源] -->|exposes| A[Access Profile\n访问配置]
-    R -->|hosts| S[Hosted Service\n托管服务]
-    I -->|Key Grant\n密钥授权| A
-    R -. user-confirmed relation .-> R2[Remote Resource]
-    S -. depends on .-> S2[Hosted Service]
+    D[Device\nKeyPort 设备] -->|owns| K[SSHKeyRecord\n设备公钥]
+    K -->|Authorization| I[SSHIdentity\nSSH 账户]
+    I -->|belongs to| H[Host\n稳定主机]
+    H -->|has| A[AccessAddress\n访问地址]
+    A -->|trusted by| P[HostKeyPin\n主机信任]
+    H -->|hosts| S[SavedService\n已保存服务]
+    I -->|NodeAssociation| N[Actual Node\n实际网络节点]
 ```
 
-### 3.1 同步实体
+### 3.1 代码实体与界面语言
 
-| 实体 | 关键字段 | 说明 |
+| Host v6 实体 | 界面名称 | Graph 角色 |
 | --- | --- | --- |
-| `Workspace` | ID、名称、创建时间 | 一个 Apple ID 下的个人 KeyPort 工作区 |
-| `DeviceNode` | ID、名称、平台、注册时间、最近活跃时间、撤销时间 | 每台 Mac 的稳定公开身份；“是否为当前设备”是本地属性 |
-| `RemoteResource` | ID、名称、类型、环境、标签、备注、删除时间、版本 | 逻辑服务器、虚拟机、NAS 或网络设备，不包含登录账号 |
-| `HostedService` | ID、所属资源 ID、名称、类型、标签、备注、删除时间 | PostgreSQL、Redis、Web 应用等可选服务节点 |
-| `AccessProfile` | ID、资源 ID、协议、主机、端口、账号、SSH 别名、备注、删除时间、版本 | 一个账号级 SSH 入口；同一资源可有多个账号或入口 |
-| `HostTrust` | 访问配置 ID、算法、指纹、确认设备、确认时间、替换时间 | 用户确认过的 SSH 主机身份及历史 |
-| `SSHIdentity` | ID、设备 ID、算法、公钥、指纹、名称、撤销时间 | 只同步公开部分；私钥位置和 Agent 状态不属于该实体 |
-| `KeyGrant` | ID、访问配置 ID、身份 ID、首次建立时间、最后确认时间、观察设备、撤销时间 | 一条已建立或曾观察到的密钥授权元数据 |
-| `TopologyRelation` | ID、起点 ID、终点 ID、类型、备注、删除时间 | 用户确认的 `hosts`、`dependsOn` 等逻辑关系 |
-| `GraphPlacement` | 视图 ID、节点 ID、位置、固定状态、分组、更新时间 | 只保存展示偏好，不保存授权事实 |
+| `HostV6.Host` | 主机 | 稳定的主节点 |
+| `HostV6.AccessAddress` | 访问地址 | 主机 Inspector 中的路由候选，默认不单独占节点 |
+| `HostV6.SSHIdentity` | SSH 账户 | 主机内部账号或访问边详情；它不是设备密钥 |
+| `HostV6.Device` | KeyPort 设备 | 当前 Mac 和其他已注册 Mac 的节点 |
+| `HostV6.SSHKeyRecord` | SSH 密钥 | 设备安全详情，默认折叠 |
+| `HostV6.HostKeyPin` | 主机信任 | 地址安全状态和阻断证据 |
+| `HostV6.SavedService` | 已保存服务 | 主机的子节点，可直接访问或通过受控隧道访问 |
+| `HostV6.Authorization` | 账户授权 | 设备到主机访问边的事实链 |
+| `HostV6.NodeAssociation` | 节点关联 | SSH 账户到 Tailscale 等实际节点的稳定映射 |
+| `HostV6.MergeReview` | 待解决冲突 | 阻断对应节点动作的同步冲突 |
 
-### 3.2 本地实体
+### 3.2 本机证据
 
-| 实体 | 关键字段 | 原因 |
+以下内容来自 `HostV6.LocalState`，只影响当前 Mac 的 Graph 状态：
+
+- `LocalDeviceState`：哪一个 Device 是当前设备。
+- `LocalSSHKeyState`：私钥路径、Agent 和本机可用性。
+- `LocalSSHIdentityState`：账号检查结果和最近检查时间。
+- `ReachabilityEvidence`：某地址在当前网络 epoch 下是否可达。
+- 本机审计事件和备注。
+
+这些状态不能被另一台 Mac 的成功结果覆盖，也不能因为 CloudKit 中存在 Authorization 就直接显示“当前 Mac 可用”。
+
+## 4. Graph 投影语义
+
+### 4.1 默认节点
+
+- KeyPort 设备：当前设备突出显示，其他设备用于比较授权覆盖。
+- Host：远端物理机或虚拟机，是 Graph 的主要管理节点。
+- Saved Service：默认折叠在 Host 中，在服务视图中展开。
+- Actual Node：只在存在稳定 Node Association 或用户打开网络节点层时显示。
+
+Access Address、SSH Account、SSH Key 和 Host Key Pin 默认进入 Inspector。开启“显示安全细节”后，才展开这些中间实体，避免主画布被账号和密钥节点淹没。
+
+### 4.2 默认边
+
+| 边 | 推导链 | 含义 |
 | --- | --- | --- |
-| `LocalIdentityPresence` | SSH 身份 ID、私钥路径、Agent 状态、最后扫描时间 | 私钥和本地路径不能跨设备同步 |
-| `CredentialLocator` | 访问配置 ID、Keychain service/account、同步偏好 | 只定位 Keychain 项，不包含密码值 |
-| `AccessObservation` | 观察设备、访问配置、可达性、Host Key、密码认证、密钥认证、时间、错误分类 | 结果依赖当前网络和当前设备，不能当作全局状态 |
-| `EnrollmentSession` | 草稿、当前步骤、临时 Host Key、临时凭据证明、错误 | 未完成接入前不污染同步工作区 |
-| `OperationRun` | 操作类型、目标、阶段、进度、可取消状态 | 表达当前授权、撤销和批量任务 |
+| Device → Host | `Device → SSHKeyRecord → Authorization → SSHIdentity → Host` | 某设备的密钥曾被具体 SSH 账户授权 |
+| Current Device ⇢ Host | 当前设备 + Host 的活动 SSH Account，但没有已确认 Authorization | 待检查或待授权候选；使用虚线，不是持久化事实 |
+| Host → Saved Service | `SavedService.hostID` | 服务由该 Host 承载 |
+| SSH Account → Actual Node | 活动 `NodeAssociation` | 由强证据或用户确认的真实节点映射 |
 
-### 3.3 事实源
+候选访问边只为当前设备生成，避免全部设备视图出现设备数 × 账户数的虚假关系。同一 Host 有多个 SSH Account 时，主画布仍只显示一个 Host；点击访问边后在 Inspector 中选择具体账号和别名。
 
-| 数据 | 权威来源 | CloudKit 中的含义 |
+### 4.3 不自动生成的边
+
+- 相同网段、相似名称、共享公网 IP 或相同操作系统不产生 Host 合并边。
+- Node Association 不等于 SSH Authorization。
+- Host 到 Host 的连线不自动表示路由、跳板、依赖或数据流。
+- 自动发现的服务候选在用户确认前不成为 Saved Service。
+- 画布上的拖放和位置变化不能创建授权。
+
+如果未来需要“服务 A 依赖数据库 B”这类用户维护关系，应单独增加有类型、有来源的领域实体和 schema 迁移，不能复用 Node Association 或 Authorization。
+
+### 4.4 视图模式
+
+第一版提供三种投影：
+
+1. **当前设备**：当前 Mac 居中，显示它对所有 Host 的可用、待授权或阻断状态。
+2. **全部设备**：显示每台 KeyPort 设备到共享 Host 的独立账户授权。
+3. **服务**：隐藏设备细节，展开 Host 和 Saved Service，并给出直连或隧道访问方式。
+
+节点较多时提供搜索、分组、仅显示异常、仅显示当前设备可访问、折叠服务和自动布局。Nodes 列表必须作为键盘、VoiceOver 和高密度管理的文本等价入口。
+
+## 5. 状态投影
+
+Graph 不再把所有问题压成一个 `AuthorizationStatus`。摘要由下列独立证据计算：
+
+| 状态轴 | 现有来源 | 示例 |
 | --- | --- | --- |
-| 远端资源、服务、访问配置和用户拓扑关系 | KeyPort 工作区 | 同步事实 |
-| Host Key 信任决定 | 用户确认记录 | 其他设备用于比较的期望指纹，不是新的网络验证 |
-| 公钥和设备归属 | `SSHIdentity` | 可同步公开元数据 |
-| 私钥 | 当前设备文件系统或 SSH Agent | 禁止上传 |
-| 服务器密码 | Keychain；用户可选 iCloud Keychain 同步 | 禁止进入 CloudKit |
-| 密钥是否真实存在于远端 | 远端账号的 `authorized_keys` | `KeyGrant` 只是最近已知或成功建立的记录 |
-| 当前设备能否连接 | 当前设备的实时检查 | 不由其他设备的成功状态代替 |
+| 可达性 | `ReachabilityEvidence`、地址选择结果 | 未知、可达、不可达、证据过期 |
+| 主机信任 | `HostKeyPin`、`KnownHostsLine`、当前扫描 | 待确认、可信、变化、冲突 |
+| SSH 路由 | Address/Identity/Service 固定地址和路由投影 | 可解析、无地址、冲突阻断 |
+| 当前设备密钥 | `LocalSSHKeyState` | 可用、缺少私钥、仅 Agent、已撤销 |
+| 远端授权 | `Authorization.remoteState/relationState` | 未知、已授权、已撤销、已脱离 |
+| 本机复验 | `LocalSSHIdentityState` | 未检查、成功、失败、检查中 |
+| 同步与写权 | `MergeReview`、authority mode、Cloud 状态 | 干净、冲突、canary、只读兼容 |
+| 操作 | 接入、授权、撤销、隧道任务 | 空闲、进行中、失败、待清理 |
 
-## 4. Graph 投影
+摘要优先级为：
 
-### 4.1 默认可见节点
+1. Host Key 变化、阻断性 Merge Review 或无安全路由。
+2. 正在进行或需要恢复的操作。
+3. 明确授权漂移、远端失败或缺少私钥。
+4. 待验证或待授权。
+5. 当前设备最近一次公钥复验成功。
+6. 其他设备的历史授权或未知状态。
 
-- 设备节点：当前 Mac 和工作区中的其他已注册设备。
-- 远端资源：服务器、虚拟机、NAS、网络设备。
-- 托管服务：用户明确添加到某个远端资源上的服务。
+绿色访问边必须能追溯到具体 SSH Account、设备密钥、Authorization 和当前设备最近一次成功复验。其他设备的边可以显示“最近已知授权”，但不能替当前设备宣称实时可达。
 
-`AccessProfile`、`SSHIdentity` 和 `HostTrust` 默认放在节点或边的 Inspector 中，不占用主画布。用户开启“显示安全细节”后，才将 SSH 身份和密钥授权展开为可见节点与边。
+## 6. 新增主机和 SSH 账户
 
-### 4.2 默认可见关系
-
-| 关系 | 来源 | 含义 |
-| --- | --- | --- |
-| 设备 → 远端资源 | `DeviceNode → SSHIdentity → KeyGrant → AccessProfile → RemoteResource` | 某设备曾建立该账号级密钥授权 |
-| 当前设备 ⇢ 远端资源 | 当前设备 + 工作区中的活动 `AccessProfile`，但没有已确认的 `KeyGrant` | 仅用于提示待检查或待授权的候选边；使用虚线且不作为持久化事实 |
-| 远端资源 → 服务 | `HostedService.resourceID` | 服务由该资源托管 |
-| 资源/服务 → 资源/服务 | `TopologyRelation` | 用户确认的依赖或逻辑关联 |
-
-候选访问边只为当前设备生成，避免“全部设备”视图出现设备数 × 访问配置数的虚假关系。Graph 不从相同网段、相似主机名或同步顺序自动推断资源或服务关系；自动发现只能形成候选，必须由用户确认后才成为工作区事实。
-
-### 4.3 视图模式
-
-第一版提供三种投影，底层使用同一份实体：
-
-1. **当前设备**：当前 Mac 居中，突出它能访问、待授权或被阻断的远端资源。
-2. **全部设备**：显示每台设备与共享远端资源之间的授权差异。
-3. **服务拓扑**：隐藏设备，突出远端资源、托管服务和依赖关系。
-
-节点较多时必须提供搜索、环境/标签过滤、仅显示异常、折叠服务和自动布局。Graph 之外保留一个可排序的“节点列表”作为高密度浏览和无障碍入口，但它不再是产品的默认心智模型。
-
-### 4.4 状态不是单一枚举
-
-现有 `AuthorizationStatus` 混合了网络、Host Key、凭据、密钥和同步状态。新模型应保存相互独立的状态维度：
-
-| 维度 | 建议状态 |
-| --- | --- |
-| 可达性 | `unknown`、`reachable`、`unreachable` |
-| 主机信任 | `pending`、`trusted`、`mismatch` |
-| 密码凭据 | `unknown`、`missing`、`available`、`verified`、`rejected` |
-| 当前设备密钥访问 | `unknown`、`notAuthorized`、`verified`、`drifted`、`revoked` |
-| 同步 | `clean`、`pending`、`conflict` |
-| 操作 | `idle`、`checking`、`authorizing`、`revoking`、`failed` |
-
-Graph 再根据这些维度投影摘要，优先级为：Host Key 异常阻断 > 正在执行 > 明确失败/漂移 > 待授权 > 已验证 > 未知或过期。颜色只能辅助表达，节点图标、线型、标签和 Inspector 文本必须同时给出含义。
-
-## 5. 新增远端资源与账号验证流程
-
-主流程采用“先验证、后加入工作区”，按钮名称使用“密钥访问”而不是“免密”。SSH 密钥登录仍然是认证，只是无需每次输入账号密码。
+用户提出的“新增 → 密码验证 → 添加 → 启用免密”是合理主流程，但必须把 Host Key 放在发送密码之前，并允许已有密钥用户跳过密码证明。
 
 ```mermaid
 stateDiagram-v2
     [*] --> Draft
-    Draft --> Probing: 继续
-    Probing --> AwaitingHostTrust: 获得 Host Key
-    AwaitingHostTrust --> ProvingAccount: 用户确认指纹
-    ProvingAccount --> ReadyToAdd: 密码或已有密钥验证成功
-    ReadyToAdd --> Added: 验证并添加
-    Added --> EnsuringKeyAccess: 启用密钥访问
-    EnsuringKeyAccess --> Authorized: 密钥登录复验成功
-    EnsuringKeyAccess --> ReadyToAuthorize: 需要密码或本机密钥
-    Probing --> Failed
-    ProvingAccount --> Failed
-    AwaitingHostTrust --> Blocked: 指纹异常或用户拒绝
+    Draft --> ProbeAddress: 继续
+    ProbeAddress --> AwaitHostTrust: 获取 Host Key
+    AwaitHostTrust --> ProveAccount: 用户确认指纹
+    ProveAccount --> ReadyToCommit: 密码或已有密钥验证成功
+    ReadyToCommit --> Added: 验证并添加
+    Added --> EnsureKeyAccess: 启用密钥访问
+    EnsureKeyAccess --> Verified: 公钥复验成功
+    EnsureKeyAccess --> NeedsCredential: 缺少密码或本地密钥
+    ProbeAddress --> Failed
+    AwaitHostTrust --> Blocked: 指纹异常或用户拒绝
+    ProveAccount --> Failed
 ```
 
-### 5.1 表单阶段
+### 6.1 `EnrollmentCoordinator`
 
-用户输入：
+新增流程应由一个可暂停的应用层编排器负责，而不是由 Sheet 直接依次调用 Host Key、Keychain、SSH Config 和仓储：
 
-- 远端资源名称和类型。
-- 主机或域名、SSH 端口、登录账号。
-- 稳定 SSH 别名。
-- 可选环境、标签、备注和托管服务。
+1. 收集 Host 名称、地址、端口、SSH 用户、别名和可选分组。
+2. 解析地址并扫描 Host Key。
+3. 用临时 known_hosts 完成确认；提交前不污染正式文件。
+4. 默认通过账号密码进行仅认证检查；已有本地密钥可登录时允许以密钥证明账号可控。
+5. 验证成功后，在一个 Host v6 事务中创建或复用 Host、Address、SSHIdentity、HostKeyPin 和 KnownHostsLine。
+6. 用户明确选择“保存为待处理”时可以跳过账号证明，但 Graph 必须标为未验证且禁止绿色访问边。
 
-如果主机、端口和账号与已有访问配置相似，界面提示“关联到已有远端资源”或“仍然创建新的访问配置”，但不能仅凭 IP 自动合并。
+Host v6 当前 `ModelCommand` 主要覆盖删除、撤销和冲突解决。新 UI 获得 v6 写权之前，必须先补齐创建/更新 Host、Address、SSHIdentity、Pin、Service 和 Authorization 的命令，不允许 UI 直接改 `SyncedGraph` 数组。
 
-### 5.2 主机身份阶段
+## 7. “启用密钥访问”
 
-1. 检查 DNS/TCP 并扫描 Host Key。
-2. 首次连接展示算法和 SHA256 指纹。
-3. 用户确认后形成 `HostTrust`。
-4. 指纹变化或已有记录不一致时立即阻断；在确认之前不得发送密码。
+当前 `PasswordlessPrimaryAction` 已经实现了用户期望的状态感知入口。重构时保留其行为，用户可见名称建议使用“启用密钥访问”，并用“免输密码登录”解释结果。
 
-### 5.3 账号证明阶段
-
-默认提供两条证明路径：
-
-- **账号密码验证**：输入密码，执行仅认证后立即退出的 SSH 检查；成功后可选择只用一次、保存在本机 Keychain，或允许 iCloud Keychain 同步。
-- **使用已有密钥验证**：当前设备已有可登录身份时直接形成凭据证明，不强迫用户再次输入密码。
-
-只有验证成功后，“验证并添加”才把 `RemoteResource`、`AccessProfile` 和 `HostTrust` 作为一个事务写入本地工作区并排队同步。用户也可以明确选择“保存为待处理”，但此类记录必须显示为未验证，不能产生绿色访问边。
-
-## 6. “启用密钥访问”操作
-
-用户描述的“一键判断，有就验证，没有就授权”应实现成一个深模块，而不是让 UI 依次拼接多个服务调用。
-
-### 6.1 用户界面语义
-
-| 当前状态 | 主按钮 | 行为 |
+| 当前证据 | 主按钮 | 行为 |
 | --- | --- | --- |
-| 从未检查 | 启用密钥访问 | 先测试当前设备身份；必要时授权 |
-| 已有密钥可登录 | 已启用 · 重新验证 | 只检查，不修改远端 |
-| 本机有密钥但未授权 | 授权当前设备 | 使用已验证密码安装公钥并复验 |
-| 本机无身份 | 创建身份并授权 | 生成独立 Ed25519 身份后继续 |
-| 缺少可用密码 | 添加账号密码 | 验证后继续原操作 |
-| Host Key 异常 | 核对主机身份 | 阻断任何认证和远端写入 |
+| 已有公钥复验成功 | 重新验证 | 只检查，不修改远端 |
+| 有本地私钥和可用密码 | 授权当前设备 | 安装公钥并复验 |
+| 有私钥但无密码 | 输入密码并授权 | 验证密码后继续 |
+| 无本地私钥 | 创建密钥并授权 | 生成当前设备独立 Ed25519 密钥后继续 |
+| Host Key 待确认或变化 | 核对主机身份 | 阻断密码和远端写入 |
+| Merge Review 或路由冲突 | 解决冲突 | 不猜测地址或账号 |
 
-界面可以在辅助文案中使用“免输密码登录”，但领域和代码统一使用“密钥访问”或 `EnableKeyAccess`。
+### 7.1 `AccessCoordinator` 不变量
 
-### 6.2 编排步骤
+1. 重新获取 Host Key，并在认证前匹配 Host Trust。
+2. 为当前设备选择本地可用 SSH Key；没有时显式生成。
+3. 先执行公钥认证。已经成功时只更新本机证据和 Authorization 确认时间。
+4. 公钥失败时才读取已经验证的账号密码。
+5. LocalAuthentication 成功后，按公钥 blob 幂等写入 `authorized_keys`。
+6. 再次执行公钥认证；只有复验成功才显示“密钥访问可用”。
+7. 通过 Host v6 事务记录 Authorization，并重建当前设备 SSH Config。
+8. 写入不含秘密的 Activity；部分失败必须可重试和恢复。
 
-`EnableKeyAccess` 必须保证以下顺序和不变量：
+如果远端写入成功但复验失败，显示“授权结果待核对”，不得生成绿色边。重试必须先检查公钥是否已经存在。
 
-1. 获取最新 Host Key，并与 `HostTrust` 比较。
-2. 为当前设备选择本地可用 SSH 身份；没有时生成一把独立 Ed25519 密钥。
-3. 先执行公钥认证检查。
-4. 若已成功，只更新 `AccessObservation` 和 `KeyGrant.lastConfirmedAt`，不修改远端。
-5. 若未授权，要求一个已验证且仍可读取的密码凭据。
-6. 通过固定、幂等操作按公钥 blob 向 `authorized_keys` 安装公钥。
-7. 再次执行公钥认证；只有复验成功才创建或更新 `KeyGrant`。
-8. 写入当前设备的 SSH Config，并验证稳定别名解析结果。
-9. 持久化不含秘密的审计事件并排队同步元数据。
+## 8. 多设备场景
 
-若远端写入成功但复验失败，结果必须是“授权结果待核对”，不能展示“已启用”。重试应先检查公钥是否已经存在，避免重复写入。
+### 8.1 Mac 1 管理 A 和 B
 
-## 7. 多设备场景
+工作区中存在 Host A、B，各自的 Address 和 SSH Account。Mac 1 的 Device 拥有 Key K1，K1 通过两个 Authorization 关联到 A、B 的具体 SSH Account。Graph 投影为 Mac 1 到 A、B 的两条访问边。
 
-### 7.1 Mac 1 已连接 A 和 B
+### 8.2 Mac 2 登录同一 iCloud 工作区
 
-工作区包含：
+1. CloudKit v2 恢复 Host、Address、SSH Account、Host Key Pin、Device、公开密钥、Authorization、Service 和 Node Association。
+2. Mac 2 注册自己的 Device 并生成 K2；不会下载 K1 私钥。
+3. Graph 仍可显示 Mac 1 到 A、B 的最近已知授权；Mac 2 到 A、B 是待检查候选边。
+4. 如果用户曾允许账号密码通过 iCloud Keychain 同步，Mac 2 可在一次本机身份验证后批量为 K2 建立授权。
+5. 每个账号复验成功后，新增 K2 对应 Authorization，形成 Mac 2 的独立访问边。
 
-- `DeviceNode(Mac 1)` 及其 `SSHIdentity(K1)`。
-- `RemoteResource(A)`、`RemoteResource(B)` 和各自访问配置。
-- `K1 → A`、`K1 → B` 两条 `KeyGrant`。
+### 8.3 Mac 2 新增 C 和服务
 
-Graph 将它们投影成 Mac 1 到 A、B 的两条访问边。
+Mac 2 创建 Host C、SSH Account 和 Saved Service。CloudKit 同步后，Mac 1 看到的是同一个 C 和服务节点；Mac 1 不会因此自动拥有 C 的私钥授权。服务能否直连或需要隧道由现有地址选择和 Service Access 规则决定。
 
-### 7.2 Mac 2 首次登录同一 iCloud 账户
+## 9. iCloud 与本地数据边界
 
-1. CloudKit 恢复 A、B、访问配置、Host Key 期望值、Mac 1 公钥元数据和既有授权记录。
-2. Mac 2 注册新的 `DeviceNode`，生成自己的 `SSHIdentity(K2)`；不复制 K1 私钥。
-3. Graph 仍显示 Mac 1 到 A、B 的历史授权；Mac 2 到 A、B 显示“待检查/待授权”。
-4. 如果 iCloud Keychain 中存在用户允许同步的账号密码，用户通过一次本机身份验证后可批量为 Mac 2 授权。
-5. A、B 的 `authorized_keys` 分别新增 K2，复验成功后形成 Mac 2 到 A、B 的访问边。
+### 9.1 采用现有 Host v6 同步契约
 
-### 7.3 Mac 2 新增 C 和数据库服务
+Graph 首版不另建 CloudKit Zone 或每实体记录。继续使用：
 
-Mac 2 新建 `RemoteResource(C)`、`AccessProfile(C/root)` 和 `HostedService(C/PostgreSQL)`。CloudKit 同步后，Mac 1 看到的是同一个 C 和 PostgreSQL 节点，以及 C 托管 PostgreSQL 的关系；Mac 1 不会自动获得 C 的访问权。
+- 本机 `state-v6.json` 的 `MetadataEnvelope`。
+- CloudKit 私有数据库中的 `KPMetadataV2/keyport-metadata-v2` 单记录 payload。
+- 每实体 SyncStamp、向量时钟、墓碑和 Merge Review 完成逻辑级合并。
+- 800 KiB payload 硬门禁；达到门禁后再立项迁移为每实体 CloudKit 记录。
+- V1 payload 只作为兼容期单向输入，不接收 V6 无法反写的 Host/Service 数据。
+- authority manifest 和 C3 证据控制 v5 → v6 写权切换。
 
-## 8. iCloud 同步方案
+Graph 展示不能绕过 canary、`v6Authoritative` 或 `compatibilityRollback` 模式。Canary 阶段可读取影子图并深链到旧操作界面，但不得直接修改 V6。
 
-### 8.1 推荐分层
+### 9.2 密码、私钥和远端事实
 
-```mermaid
-flowchart TB
-    UI[Graph / Inspector / Enrollment UI]
-    APP[Topology Catalog + Access Coordinator + Sync Coordinator]
-    LOCAL[(本地规范化存储)]
-    CLOUD[(CloudKit 私有数据库)]
-    KC[(Keychain / iCloud Keychain)]
-    KEY[(本机私钥 / SSH Agent)]
-    REMOTE[(远端 authorized_keys)]
-
-    UI --> APP
-    APP --> LOCAL
-    APP <--> CLOUD
-    APP --> KC
-    APP --> KEY
-    APP <--> REMOTE
-```
-
-- **CloudKit 私有数据库**：同步工作区元数据和 Graph 展示偏好。
-- **iCloud Keychain**：按用户选择同步服务器密码；与 CloudKit 完全分离。
-- **本地存储**：离线可用的完整元数据副本、待同步操作和设备本地观测。
-- **本机文件/Agent**：保存或提供私钥。
-- **远端服务器**：保存真实的密钥授权。
-
-### 8.2 CloudKit 记录形态
-
-目标实现使用私有自定义 Zone，并按实体保存独立记录；不再把整个 `AppSnapshot` 编码成单个 `payload`。
-
-建议记录类型：
-
-```text
-KPWorkspace
-KPDevice
-KPRemoteResource
-KPHostedService
-KPAccessProfile
-KPHostTrust
-KPSSHIdentity
-KPKeyGrant
-KPTopologyRelation
-KPGraphPlacement
-KPTombstone
-```
-
-实体级记录带稳定 ID、schema version、revision、modifiedAt 和 modifiedByDeviceID。Graph 布局单独记录并对拖动更新做防抖，避免频繁位置变化与安全元数据产生冲突。
-
-### 8.3 同步与冲突原则
-
-1. 启动、应用重新激活、本地事务提交后和用户手动操作时触发增量同步；不承诺应用未运行时的实时同步。
-2. 使用 Zone change token 拉取增量，使用本地 outbox 重试上传。
-3. 删除使用带 `deletedAt` 的 tombstone，防止长期离线设备复活旧实体。
-4. 公钥按指纹去重；设备、资源、访问配置和关系按稳定 ID 合并。
-5. Host Key 历史和 KeyGrant 以追加/撤销为主，不静默覆盖安全证据。
-6. 主机、端口、账号、资源归属或 Host Key 出现并发修改时创建显式冲突，阻断自动认证；不能简单以最后写入者覆盖。
-7. 名称、标签、备注和 Graph 位置可采用字段规则合并；无法判断时保留双方值并提示。
-8. `AccessObservation` 默认不上传。其他设备的成功检查可作为审计线索，但不能覆盖当前设备的实时结果。
-
-### 8.4 密码同步
-
-密码项使用固定 Keychain service 和 `AccessProfile.id` 作为 account。用户为每个访问配置选择：
-
-- 仅本次使用，不保存。
-- 保存到当前 Mac Keychain。
-- 保存并允许 iCloud Keychain 同步。
-
-CloudKit 只保存用户的同步偏好，不能保存“云端一定存在密码”的断言。每台设备都要独立查询 Keychain 可用性；读取已保存密码并执行远端写入前，需要 LocalAuthentication。
-
-## 9. 应用模块与接口
-
-目标代码应把复杂行为放进少量深模块，SwiftUI 只持有选择、筛选、表单和操作进度。
-
-| 模块 | 小接口提供的能力 | 隐藏的实现 |
+| 数据 | 位置 | 是否随 CloudKit v2 同步 |
 | --- | --- | --- |
-| `TopologyCatalog` | 提交领域事务、查询工作区和 Graph 快照 | 实体一致性、去重、tombstone、迁移和本地持久化 |
-| `EnrollmentCoordinator` | 开始/推进/取消一个接入会话 | 连通性、Host Key、凭据证明、草稿事务和恢复 |
-| `AccessCoordinator` | 确保、验证或撤销一个设备的密钥访问 | 身份选择、密码读取、SSH 写入、复验、Config 和审计 |
-| `GraphProjector` | 根据查询生成 `GraphSnapshot` | 多实体连接、状态优先级、过滤和可见性规则 |
-| `SyncCoordinator` | 同步并返回结构化报告 | change token、outbox、冲突、CloudKit 映射和重试 |
-| `SecretVault` | 保存、读取和删除账号密码 | Security.framework、同步属性和内存清理 |
-| `SSHTransport` | 执行有限的检查与授权能力 | 系统 OpenSSH/AskPass 或未来替代实现 |
+| Host、Address、SSH Account、Service、公开 Key、Authorization、Node Association | Host v6 synced graph | 是 |
+| Graph 当前筛选、选择和自动布局 | 当前 Mac | 否 |
+| 私钥路径、Agent、本机可用性、Reachability、审计 | Host v6 local state | 否 |
+| 账号密码 | Keychain；用户可选 iCloud Keychain | 不进入 CloudKit |
+| 真实远端公钥授权 | 远端 `authorized_keys` | Cloud 只保存最近已知 Authorization |
 
-`SSHTransport`、`SecretVault`、云同步和本地存储各自具有生产适配器和测试适配器，因此它们是实际 seam。Host Key 判定、Graph 投影和状态机属于进程内逻辑，不应为了测试再暴露额外协议。
+首版使用确定性自动布局，避免为 Graph 坐标引入 V7 schema。未来若用户要求跨设备同步固定位置，应把布局建模成独立、低风险、可丢弃的展示记录；位置冲突绝不能阻断 SSH 动作。
 
-## 10. 安全不变量
+## 10. 应用模块
 
-1. 任何密码认证前必须先确认或匹配 Host Key。
-2. 密码不得进入 CloudKit、本地元数据、命令参数、普通 stdin、日志或 Graph。
-3. 私钥不得跨设备同步；每台设备默认拥有独立 SSH 身份。
+目标结构沿用当前 SwiftPM target 和 Host v6 seam，不新增一套平行领域层：
+
+| 模块 | 对外能力 | 隐藏的复杂度 |
+| --- | --- | --- |
+| `TopologyGraphProjector` | 输入 MetadataEnvelope 和查询，输出 `TopologyGraphSnapshot` | 实体连接、候选边、状态优先级、过滤和证据摘要 |
+| `EnrollmentCoordinator` | 开始、推进、恢复、取消接入会话 | Host Key、账号证明、临时文件和原子提交 |
+| `AccessCoordinator` | 确保、验证、撤销当前设备的账号授权 | 密钥、Keychain、OpenSSH、远端写入、复验和 Config |
+| `GraphWorkspaceModel` | 选择、搜索、视图模式和任务展示 | SwiftUI 状态，不拥有领域事实 |
+| `HostV6Runtime/MetadataRepository` | 版本化快照和领域命令 | 写权、journal、向量时钟、迁移和外部效果恢复 |
+| 现有平台适配器 | SSH、Keychain、CloudKit、Tailscale、Tunnel | 不可靠外部系统和结构化错误 |
+
+`TopologyGraphProjector` 属于纯 KeyPortCore 逻辑。`EnrollmentCoordinator` 和 `AccessCoordinator` 属于主应用用例层，依赖现有协议和适配器。SwiftUI 不直接读取 Keychain、不运行 Process，也不修改 `SyncedGraph` 数组。
+
+## 11. 安全不变量
+
+1. 任何密码认证前必须确认或匹配当前地址的 Host Key。
+2. 密码不得进入 Graph、CloudKit、本地元数据、命令参数或日志。
+3. 私钥不跨设备同步，每台 Mac 默认使用独立 SSH Key。
 4. 公钥安装必须按 blob 幂等、保留未知行、备份、原子替换并复验。
-5. 云端 `KeyGrant` 不能替代远端验证；过期或失败时显示“待确认”或“漂移”。
-6. 撤销设备只同步撤销意图；真正删除远端公钥仍需一台拥有有效访问权的设备执行。
-7. Graph 中任何绿色访问边都必须能追溯到具体访问配置、SSH 身份和最近一次成功观测。
-8. 用户定义的服务依赖关系不得被解释成应用可以执行任意跨节点命令。
+5. Cloud Authorization 不能替代远端验证；失败时显示未知、漂移或待核对。
+6. Node Association 不能替代账号级 Authorization。
+7. 阻断性 Merge Review、Host Key 变化或无安全路由时，Graph 必须禁用认证、服务访问和隧道动作。
+8. 删除 Host 或 SSH Account 不能宣称远端公钥已经撤销；继续遵守现有 detached/remoteState 契约。
+9. Graph 不提供任意命令、交互式 Shell、自动网络路由或 TLS 绕过。
 
-## 11. 首版范围
+## 12. 实施范围
 
-### 11.1 P0
+### 12.1 P0
 
-- 设备、远端资源、访问配置、SSH 身份、密钥授权的规范化模型。
-- 当前设备和全部设备两种 Graph 投影。
-- 新增连接的分步验证流程。
-- “启用密钥访问”编排和单节点操作。
-- CloudKit 实体级同步、iCloud Keychain 可选密码同步。
-- 节点 Inspector、搜索、过滤和等价列表视图。
-- V3 快照向新模型的一次性迁移。
+- 基于 Host v6 的纯 Graph 投影和 fixtures。
+- 当前设备、全部设备、服务三种视图。
+- Graph/Nodes/Inspector/Activity 新界面骨架。
+- 统一接入向导和现有状态感知密钥访问动作。
+- Canary 只读 Graph 与旧账号操作深链。
+- v6 create/update/authorize 命令和 authority 后的原生写路径。
+- 搜索、过滤、异常聚焦和文本等价视图。
 
-### 11.2 P1
+### 12.2 P1
 
-- 托管服务节点和 `hosts` 关系。
-- 用户维护的 `dependsOn` 关系。
-- 多节点批量授权与逐项恢复。
-- Graph 自定义分组和跨设备布局同步。
-- 授权漂移检查和设备撤销任务。
+- 多账号选择、批量授权逐项进度和恢复。
+- Saved Service 的直接/隧道访问入口。
+- Node Association 展开层和冲突解决入口。
+- Host Key 历史、Merge Review 和连接历史的可视化。
+- 100+ 节点的布局性能和可访问性优化。
 
-### 11.3 暂缓
+### 12.3 暂缓
 
-- 自动网络发现、跳板机路径、端口转发拓扑。
-- 团队共享、角色和审批。
+- 用户自定义 Host/Service 依赖边。
+- 自动局域网拓扑、物理路由和跳板路径图。
+- 团队共享、审批和角色。
+- 图数据库和每实体 CloudKit 迁移。
 - 通用服务监控和任意远程命令。
-- 用图数据库替换本地或 CloudKit 存储。
 
-## 12. 验收场景
+## 13. 验收场景
 
-1. Mac 1 添加并验证 A、B，Graph 出现两个资源；启用密钥访问后显示两条可追溯的访问边。
-2. Mac 2 同步后看到同一个 A、B，但不会继承 Mac 1 的私钥或虚假显示为当前设备已授权。
-3. Mac 2 使用自己的公钥授权 A、B 后，全部设备视图显示两台 Mac 的独立授权关系。
-4. Mac 2 添加 C 和 PostgreSQL 服务后，Mac 1 同步得到同一节点与托管关系。
-5. 已有公钥可登录时，“启用密钥访问”只验证，不重复修改远端。
-6. 公钥不可登录但密码已验证时，操作安装公钥并在复验成功后才显示已启用。
-7. Host Key 变化时，即使密码可用也不得继续认证或写入。
-8. CloudKit 不可用时已有本地拓扑和 SSH 连接继续工作；恢复后增量同步。
-9. 同一资源的多个账号形成多个访问配置，但默认 Graph 仍只显示一个远端资源节点。
-10. 任何 CloudKit 记录、日志和导出元数据中都找不到密码或私钥内容。
+1. V6 fixture 中的 Device、Key、Authorization、SSH Account 和 Host 被投影为可追溯访问边。
+2. 同一 Host 的多个地址和账号默认只占一个主节点，Inspector 可准确展开。
+3. Mac 1 管理 A/B 后，Mac 2 同步看到相同 Host，但不会继承 Mac 1 私钥或虚假显示为当前设备已授权。
+4. Mac 2 用独立 K2 授权 A/B 后，全部设备视图显示两台 Mac 的独立关系。
+5. Mac 2 新增 C 和 Saved Service 后，Mac 1 同步看到同一节点和服务。
+6. 已有密钥可登录时，“启用密钥访问”只验证，不重复修改远端。
+7. 无密钥授权但密码有效时，安装公钥并在复验成功后才生成绿色边。
+8. Host Key 变化、Merge Review 或地址冲突时，所有相关 Graph 动作被阻断并展示原因。
+9. Canary/兼容回滚模式下 Graph 不取得 V6 写权。
+10. CloudKit 不可用时本地 Graph、已有 SSH Config 和服务状态继续可读；恢复后按现有契约合并。
+11. Graph、Nodes 列表和 VoiceOver 对同一节点、状态和动作提供等价信息。
+12. Cloud payload、日志、Graph snapshot 和导出中都不存在密码或私钥内容。

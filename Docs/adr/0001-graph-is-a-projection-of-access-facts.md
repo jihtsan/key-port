@@ -2,8 +2,8 @@
 status: proposed
 ---
 
-# Graph is a projection of normalized access facts
+# Graph is a projection of Host v6 access facts
 
-KeyPort will persist devices, remote resources, access profiles, SSH identities, key grants, services, and explicit topology relations as normalized facts, then derive Graph nodes and edges from them. The canvas itself will not become an authorization source of truth and the project will not adopt a graph database for this feature, because SSH access must remain traceable to a specific identity, account-level access profile, remote observation, and security decision while CloudKit continues to synchronize entity-level records.
+KeyPort will derive visual nodes and edges from the existing `HostV6.SyncedGraph` and device-local evidence rather than persist a second canvas graph or adopt a graph database. A rendered device-to-host edge must remain traceable through Device, SSHKeyRecord, Authorization, SSH Account, and Host; Host-to-service and account-to-actual-node edges must likewise come from SavedService and NodeAssociation.
 
-The consequence is that layout metadata may be lost or reset without changing access, arbitrary lines cannot create authorization, and every rendered access edge must expose the facts and evidence that produced it.
+Layout metadata may be reset without changing access, arbitrary lines cannot create authorization, and future user-defined dependency edges require their own typed domain record instead of overloading Authorization or NodeAssociation.

@@ -7,10 +7,11 @@ struct PasswordEntryView: View {
     let canSynchronize: Bool
     let isSaving: Bool
     let errorMessage: String?
-    let onTest: (String) async -> AuthenticationCheck
-    let onSave: (String, Bool, Bool, AuthenticationCheck) -> Void
+    let onTest: (String, String) async -> AuthenticationCheck
+    let onSave: (String, String, Bool, Bool, AuthenticationCheck) -> Void
     let onCancel: () -> Void
 
+    @State private var username: String
     @State private var password = ""
     @State private var synchronizable = false
     @State private var validationGate = PasswordSSHValidationGate()
@@ -18,32 +19,60 @@ struct PasswordEntryView: View {
     @State private var testTask: Task<Void, Never>?
 
     private var currentPasswordPassed: Bool {
-        !password.isEmpty &&
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !password.isEmpty &&
             !isTesting &&
             validationGate.canSave
+    }
+
+    init(
+        server: ServerConnection,
+        canAuthorize: Bool,
+        canSynchronize: Bool,
+        isSaving: Bool,
+        errorMessage: String?,
+        onTest: @escaping (String, String) async -> AuthenticationCheck,
+        onSave: @escaping (String, String, Bool, Bool, AuthenticationCheck) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.server = server
+        self.canAuthorize = canAuthorize
+        self.canSynchronize = canSynchronize
+        self.isSaving = isSaving
+        self.errorMessage = errorMessage
+        self.onTest = onTest
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _username = State(initialValue: server.username)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Server Password").font(.title2).fontWeight(.semibold)
+                Text("SSH 用户凭据").font(.title2).fontWeight(.semibold)
                 Text(verbatim: "\(server.name) · \(server.host):\(server.port)").foregroundStyle(.secondary)
             }
 
             Form {
-                SecureField("Password", text: $password)
-                    .disabled(isSaving || isTesting)
+                Section("凭据") {
+                    TextField("用户", text: $username)
+                        .textContentType(.username)
+                        .disabled(isSaving || isTesting)
 
-                Section("Password SSH Test") {
+                    SecureField("密码", text: $password)
+                        .disabled(isSaving || isTesting)
+                }
+
+                Section("密码登录验证") {
                     HStack(alignment: .center, spacing: 12) {
                         passwordTestStatus
                         Spacer()
                         Button {
                             testPassword()
                         } label: {
-                            Label("Test Password SSH", systemImage: "lock.open")
+                            Label("验证密码", systemImage: "lock.open")
                         }
-                        .disabled(password.isEmpty || isSaving || isTesting)
+                        .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty || isSaving || isTesting)
                     }
 
                     if let testCheck = validationGate.check {
@@ -52,16 +81,16 @@ struct PasswordEntryView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("Test the current password before saving it to Keychain.")
+                        Text("保存到 Keychain 前，请先测试当前用户和密码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Toggle("Allow iCloud Keychain sync", isOn: $synchronizable)
+                Toggle("允许通过 iCloud Keychain 同步", isOn: $synchronizable)
                     .disabled(!canSynchronize || isSaving || isTesting)
                 if !canSynchronize {
-                    Label("iCloud Keychain sync is unavailable in this build", systemImage: "icloud.slash")
+                    Label("此版本无法使用 iCloud Keychain 同步", systemImage: "icloud.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -79,18 +108,18 @@ struct PasswordEntryView: View {
                     ProgressView().controlSize(.small)
                 }
                 Spacer()
-                Button("Cancel", role: .cancel, action: onCancel)
+                Button("取消", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
                     .disabled(isSaving || isTesting)
                 if canAuthorize {
-                    Button("Save") { save(authorizeAfterSave: false) }
+                    Button("保存") { save(authorizeAfterSave: false) }
                         .disabled(!currentPasswordPassed || isSaving)
-                    Button("Save and Authorize") { save(authorizeAfterSave: true) }
+                    Button("保存并启用免密") { save(authorizeAfterSave: true) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!currentPasswordPassed || isSaving)
                 } else {
-                    Button("Save") { save(authorizeAfterSave: false) }
+                    Button("保存") { save(authorizeAfterSave: false) }
                         .keyboardShortcut(.defaultAction)
                         .buttonStyle(.borderedProminent)
                         .disabled(!currentPasswordPassed || isSaving)
@@ -100,6 +129,14 @@ struct PasswordEntryView: View {
         .padding(24)
         .frame(width: 500)
         .frame(minHeight: 430)
+        .onAppear {
+            if canSynchronize {
+                synchronizable = UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
+            }
+        }
+        .onChange(of: username) { _, _ in
+            validationGate.inputChanged()
+        }
         .onChange(of: password) { _, _ in
             validationGate.inputChanged()
         }
@@ -112,37 +149,41 @@ struct PasswordEntryView: View {
     @ViewBuilder
     private var passwordTestStatus: some View {
         if isTesting {
-            Label("Checking", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+            Label("检查中", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                 .foregroundStyle(.blue)
         } else if let testCheck = validationGate.check {
             switch testCheck.state {
             case .checking:
-                Label("Checking", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                Label("检查中", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                     .foregroundStyle(.blue)
             case .succeeded:
-                Label("Passed", systemImage: "checkmark.circle.fill")
+                Label("已通过", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             case .failed:
-                Label("Failed", systemImage: "xmark.circle.fill")
+                Label("失败", systemImage: "xmark.circle.fill")
                     .foregroundStyle(.red)
             case .blocked:
-                Label("Blocked", systemImage: "exclamationmark.shield.fill")
+                Label("已阻止", systemImage: "exclamationmark.shield.fill")
                     .foregroundStyle(.orange)
             }
         } else {
-            Label("Not tested", systemImage: "minus.circle")
+            Label("未测试", systemImage: "minus.circle")
                 .foregroundStyle(.secondary)
         }
     }
 
     private func testPassword() {
-        guard !password.isEmpty, !isSaving, !isTesting else { return }
+        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !password.isEmpty,
+              !isSaving,
+              !isTesting else { return }
         let revision = validationGate.beginTest()
+        let candidateUsername = username
         let candidate = password
         isTesting = true
 
         testTask = Task { @MainActor in
-            let result = await onTest(candidate)
+            let result = await onTest(candidateUsername, candidate)
             guard !Task.isCancelled else { return }
             isTesting = false
             validationGate.finishTest(result, for: revision)
@@ -151,6 +192,6 @@ struct PasswordEntryView: View {
 
     private func save(authorizeAfterSave: Bool) {
         guard currentPasswordPassed, let testCheck = validationGate.check else { return }
-        onSave(password, synchronizable, authorizeAfterSave, testCheck)
+        onSave(username, password, synchronizable, authorizeAfterSave, testCheck)
     }
 }

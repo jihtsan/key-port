@@ -10,73 +10,96 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Form {
-                Section("Device") {
-                    LabeledContent("Current device", value: model.currentDevice?.name ?? "Not registered")
-                    LabeledContent("Device ID", value: model.currentDevice?.id ?? "Unavailable")
+                Section("设备") {
+                    LabeledContent("当前设备", value: model.currentDevice?.name ?? "未注册")
+                    LabeledContent("设备 ID", value: model.currentDevice?.id ?? "不可用")
                 }
-                Section("SSH Files") {
-                    LabeledContent("Managed config", value: "~/.ssh/keyport/config")
-                    LabeledContent("Known hosts", value: "~/.ssh/keyport/known_hosts")
+                Section("SSH 文件") {
+                    LabeledContent("托管配置", value: "~/.ssh/keyport/config")
+                    LabeledContent("已知主机", value: "~/.ssh/keyport/known_hosts")
                 }
             }
             .formStyle(.grouped)
-            .tabItem { Label("General", systemImage: "gearshape") }
+            .tabItem { Label("通用", systemImage: "gearshape") }
 
             Form {
-                Section("Metadata") {
-                    Toggle("Sync non-secret metadata with iCloud", isOn: $cloudSyncEnabled)
-                    LabeledContent("Status", value: model.cloudState.title)
-                    Button("Sync Now") { Task { await model.synchronizeCloud() } }
+                Section("元数据") {
+                    Toggle("通过 iCloud 同步非敏感元数据", isOn: $cloudSyncEnabled)
+                    LabeledContent("状态") {
+                        HStack(spacing: 6) {
+                            if model.cloudState == .checking || model.cloudState == .syncing {
+                                ProgressView().controlSize(.small)
+                            }
+                            Label(model.cloudState.title, systemImage: model.cloudState.systemImage)
+                        }
+                    }
+                    if let detail = model.cloudState.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let lastCloudSyncAt = model.lastCloudSyncAt {
+                        LabeledContent("上次同步", value: lastCloudSyncAt.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    Button {
+                        Task { await model.synchronizeCloud() }
+                    } label: {
+                        Label("立即同步", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                    }
                         .disabled(!cloudSyncEnabled || model.isBusy)
                 }
-                Section("Passwords") {
-                    Toggle("Default to iCloud Keychain for new passwords", isOn: $defaultPasswordSync)
+                Section("密码") {
+                    Toggle("新密码默认使用 iCloud Keychain", isOn: $defaultPasswordSync)
                         .disabled(!model.canSynchronizePasswords)
                     if !model.canSynchronizePasswords {
-                        Label("iCloud Keychain sync is unavailable in this build", systemImage: "icloud.slash")
+                        Label("此版本无法使用 iCloud Keychain 同步", systemImage: "icloud.slash")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text("Server passwords are Keychain items and are never included in CloudKit metadata.")
+                    Text("服务器密码作为 Keychain 项目保存，绝不会包含在 CloudKit 元数据中。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
-            .tabItem { Label("Sync", systemImage: "icloud") }
+            .tabItem { Label("同步", systemImage: "icloud") }
 
             Form {
-                Section("Local Authentication") {
-                    Text("Password access and batch authorization require Touch ID or the Mac login password.")
+                Section("本地身份验证") {
+                    Text("访问密码和批量启用免密需要使用 Touch ID 或 Mac 登录密码。")
                 }
-                Section("Clipboard") {
-                    Stepper("Clear copied secrets after \(Int(clipboardClearSeconds)) seconds", value: $clipboardClearSeconds, in: 10...120, step: 10)
+                Section("剪贴板") {
+                    Stepper("在 \(Int(clipboardClearSeconds)) 秒后清除已复制的敏感内容", value: $clipboardClearSeconds, in: 10...120, step: 10)
                 }
             }
             .formStyle(.grouped)
-            .tabItem { Label("Security", systemImage: "lock.shield") }
+            .tabItem { Label("安全性", systemImage: "lock.shield") }
 
             Form {
-                Section("Encrypted Metadata Archive") {
-                    SecureField("Recovery password", text: $archivePassword)
+                Section("加密元数据归档") {
+                    SecureField("恢复密码", text: $archivePassword)
                     HStack {
-                        Button("Export") { Task { await model.exportMetadata(password: archivePassword) } }
-                        Button("Import") { Task { await model.importMetadata(password: archivePassword) } }
+                        Button("导出") { Task { await model.exportMetadata(password: archivePassword) } }
+                        Button("导入") { Task { await model.importMetadata(password: archivePassword) } }
                     }
                     .disabled(archivePassword.isEmpty || model.isBusy)
                 }
-                Section("Contents") {
-                    LabeledContent("Included", value: "Servers, aliases, public keys, devices, authorizations")
-                    LabeledContent("Excluded", value: "Passwords, private keys, local paths, audit log")
+                Section("内容") {
+                    LabeledContent("包含", value: "服务器、别名、公钥、设备、授权")
+                    LabeledContent("不包含", value: "密码、私钥、本地路径、审计日志")
                 }
             }
             .formStyle(.grouped)
-            .tabItem { Label("Archive", systemImage: "archivebox") }
+            .tabItem { Label("归档", systemImage: "archivebox") }
         }
         .padding(10)
         .onAppear {
             if !model.canSynchronizePasswords {
                 defaultPasswordSync = false
             }
+        }
+        .onChange(of: cloudSyncEnabled) { _, enabled in
+            model.cloudSyncSettingChanged(enabled)
         }
     }
 }

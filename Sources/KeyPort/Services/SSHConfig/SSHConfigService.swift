@@ -5,11 +5,41 @@ enum SSHConfigError: LocalizedError {
     case aliasConflict(String)
 
     var errorDescription: String? {
-        switch self { case .aliasConflict(let alias): "The SSH alias '\(alias)' already exists in ~/.ssh/config." }
+        switch self { case .aliasConflict(let alias): "SSH 别名“\(alias)”已存在于 ~/.ssh/config 中。" }
     }
 }
 
 actor SSHConfigService {
+    private struct ManagedConfigDerivationState: Codable {
+        enum Phase: String, Codable {
+            case transitioning
+            case steady
+        }
+
+        let schemaVersion: Int
+        let phase: Phase
+        let previousContentHash: String?
+        let targetContentHash: String
+
+        static func transitioning(previous: String?, target: String) -> Self {
+            Self(
+                schemaVersion: 1,
+                phase: .transitioning,
+                previousContentHash: previous,
+                targetContentHash: target
+            )
+        }
+
+        static func steady(_ hash: String) -> Self {
+            Self(
+                schemaVersion: 1,
+                phase: .steady,
+                previousContentHash: nil,
+                targetContentHash: hash
+            )
+        }
+    }
+
     private let runner: ProcessRunner
     private let paths: KeyPortPaths
 
@@ -42,23 +72,159 @@ actor SSHConfigService {
         try paths.prepareDirectories()
         let existing = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
         let existingAliases = SSHConfigGenerator.aliases(in: existing)
-
-        let keyByID = Dictionary(uniqueKeysWithValues: keys.compactMap { key in key.privateKeyPath.map { (key.id, $0) } })
-        let serverByID = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, $0) })
-        let entries = authorizations.compactMap { authorization -> SSHConfigEntry? in
-            guard authorization.status == .authorized,
-                  let server = serverByID[authorization.serverID],
-                  !existingAliases.contains(server.alias),
-                  let identity = keyByID[authorization.keyID] else { return nil }
-            return SSHConfigEntry(server: server, identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~"))
-        }
-        try atomicWrite(SSHConfigGenerator.managedConfig(entries: entries), to: paths.managedConfig, permissions: 0o600, backup: true)
+        let entries = managedEntries(
+            servers: servers,
+            keys: keys,
+            authorizations: authorizations,
+            excludingAliases: existingAliases
+        )
+        let managedConfig = SSHConfigGenerator.managedConfig(entries: entries)
+        try writeManagedConfigFailingClosed(managedConfig)
         if !entries.isEmpty {
             let updatedUserConfig = SSHConfigGenerator.addingManagedInclude(to: existing)
             if updatedUserConfig != existing {
                 try atomicWrite(updatedUserConfig, to: paths.userConfig, permissions: 0o600, backup: true)
             }
         }
+    }
+
+    func adoptExistingManagedConfigBaseline(
+        servers: [ServerConnection],
+        keys: [SSHKeyRecord],
+        authorizations: [Authorization]
+    ) throws -> Bool {
+        try paths.prepareDirectories()
+        let existingUserConfig = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
+        let desiredConfig = SSHConfigGenerator.managedConfig(entries: managedEntries(
+            servers: servers,
+            keys: keys,
+            authorizations: authorizations,
+            excludingAliases: SSHConfigGenerator.aliases(in: existingUserConfig)
+        ))
+        let desiredData = Data(desiredConfig.utf8)
+        guard FileManager.default.fileExists(atPath: paths.managedConfig.path) else {
+            return desiredData.isEmpty
+        }
+
+        let existingData = try Data(contentsOf: paths.managedConfig)
+        let existingHash = HostV6.CanonicalJSON.sha256(existingData)
+        guard let state = try loadDerivationState() else {
+            guard existingData == desiredData else { return false }
+            try writeDerivationState(.steady(existingHash))
+            return true
+        }
+
+        try validateExistingManagedConfig(state: state, existingHash: existingHash)
+        guard state.phase == .steady,
+              state.targetContentHash == existingHash,
+              existingData == desiredData else {
+            return false
+        }
+        return true
+    }
+
+    private func writeManagedConfigFailingClosed(_ managedConfig: String) throws {
+        let desiredData = Data(managedConfig.utf8)
+        let desiredHash = HostV6.CanonicalJSON.sha256(desiredData)
+        let existingData = FileManager.default.fileExists(atPath: paths.managedConfig.path)
+            ? try Data(contentsOf: paths.managedConfig)
+            : nil
+        let existingHash = existingData.map(HostV6.CanonicalJSON.sha256)
+        let state = try loadDerivationState()
+
+        guard let state else {
+            guard existingData == nil || existingData == desiredData else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+            if existingData == nil {
+                try writeDerivationState(.transitioning(previous: nil, target: desiredHash))
+                try atomicWrite(managedConfig, to: paths.managedConfig, permissions: 0o600, backup: false)
+            }
+            try writeDerivationState(.steady(desiredHash))
+            return
+        }
+
+        try validateExistingManagedConfig(state: state, existingHash: existingHash)
+        if state.phase == .transitioning, desiredHash != state.targetContentHash {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+
+        if existingHash == desiredHash {
+            if state.phase != .steady {
+                try writeDerivationState(.steady(desiredHash))
+            }
+            return
+        }
+
+        try writeDerivationState(.transitioning(previous: existingHash, target: desiredHash))
+        try atomicWrite(managedConfig, to: paths.managedConfig, permissions: 0o600, backup: true)
+        try writeDerivationState(.steady(desiredHash))
+    }
+
+    private func managedEntries(
+        servers: [ServerConnection],
+        keys: [SSHKeyRecord],
+        authorizations: [Authorization],
+        excludingAliases existingAliases: Set<String>
+    ) -> [SSHConfigEntry] {
+        let keyByID = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+            key.privateKeyPath.map { (key.id, $0) }
+        })
+        let serverByID = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, $0) })
+        return authorizations.compactMap { authorization -> SSHConfigEntry? in
+            guard authorization.status == .authorized,
+                  let server = serverByID[authorization.serverID],
+                  !existingAliases.contains(server.alias),
+                  let identity = keyByID[authorization.keyID] else { return nil }
+            return SSHConfigEntry(
+                server: server,
+                identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~")
+            )
+        }
+    }
+
+    private func validateExistingManagedConfig(
+        state: ManagedConfigDerivationState,
+        existingHash: String?
+    ) throws {
+        guard state.schemaVersion == 1 else {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+        switch state.phase {
+        case .steady:
+            guard existingHash == state.targetContentHash else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+        case .transitioning:
+            guard existingHash == state.previousContentHash
+                    || existingHash == state.targetContentHash else {
+                throw HostV6.CloudV2Error.failure(.artifactMismatch)
+            }
+        }
+    }
+
+    private func loadDerivationState() throws -> ManagedConfigDerivationState? {
+        guard FileManager.default.fileExists(atPath: paths.managedConfigDerivationState.path) else {
+            return nil
+        }
+        do {
+            return try HostV6.CanonicalJSON.decode(
+                ManagedConfigDerivationState.self,
+                from: Data(contentsOf: paths.managedConfigDerivationState)
+            )
+        } catch {
+            throw HostV6.CloudV2Error.failure(.artifactMismatch)
+        }
+    }
+
+    private func writeDerivationState(_ state: ManagedConfigDerivationState) throws {
+        let data = try HostV6.CanonicalJSON.encode(state)
+        try atomicWrite(
+            String(decoding: data, as: UTF8.self),
+            to: paths.managedConfigDerivationState,
+            permissions: 0o600,
+            backup: false
+        )
     }
 
     private func atomicWrite(_ text: String, to destination: URL, permissions: Int, backup: Bool) throws {

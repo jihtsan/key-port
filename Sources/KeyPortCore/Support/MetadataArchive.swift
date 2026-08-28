@@ -17,9 +17,9 @@ public enum MetadataArchiveError: LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .passwordRequired: "Enter a recovery password for the encrypted archive."
-        case .invalidContainer: "This is not a supported KeyPort archive."
-        case .authenticationFailed: "The archive password is incorrect or the file was modified."
+        case .passwordRequired: "请输入加密归档的恢复密码。"
+        case .invalidContainer: "这不是受支持的 KeyPort 归档。"
+        case .authenticationFailed: "归档密码不正确，或文件已被修改。"
         }
     }
 }

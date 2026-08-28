@@ -20,7 +20,7 @@ public struct PasswordSSHValidationGate: Sendable {
         validatedRevision = nil
         check = AuthenticationCheck(
             state: .checking,
-            detail: "Testing password-only SSH authentication..."
+            detail: "正在测试仅使用密码的 SSH 身份验证..."
         )
         return revision
     }
