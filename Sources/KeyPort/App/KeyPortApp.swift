@@ -63,7 +63,7 @@ struct KeyPortApp: App {
     }
 
     private func loadMenuBarImage() -> NSImage? {
-        let bundles = [Bundle.main, Bundle.module]
+        let bundles = [Bundle.main, packagedResourceBundle].compactMap { $0 }
         let resourceNames = ["key-hub@2x", "key-hub@1x"]
 
         for bundle in bundles {
@@ -77,6 +77,18 @@ struct KeyPortApp: App {
         }
 
         return nil
+    }
+
+    private var packagedResourceBundle: Bundle? {
+        let resourceBundleName = "KeyPort_KeyPort.bundle"
+        let candidates = [
+            Bundle.main.bundleURL.appendingPathComponent(resourceBundleName),
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents")
+                .appendingPathComponent("Resources")
+                .appendingPathComponent(resourceBundleName),
+        ]
+        return candidates.compactMap { Bundle(url: $0) }.first
     }
 }
 
