@@ -1,7 +1,7 @@
 # Design
 
 ## Source of truth
-- Status: Active
+- Status: Current implementation baseline; the proposed Graph replacement is defined in `Docs/Graph拓扑与跨设备授权架构.md` and `Docs/整体重构与迁移计划.md`
 - Last refreshed: 2026-08-06
 - Primary product surfaces: macOS server, key, device, and audit views
 - Evidence reviewed: `CONTEXT.md`, `Docs/SSH-KeyPort-一期需求规格.md`, `Docs/macOS-技术框架与组件选型.md`, `Sources/KeyPort/Features/Servers`, `Sources/KeyPort/Stores/AppModel.swift`
