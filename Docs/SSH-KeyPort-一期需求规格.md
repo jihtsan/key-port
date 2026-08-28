@@ -1,5 +1,7 @@
 # SSH KeyPort 一期需求规格
 
+> **文档定位（2026-08-28）：** 本文是一期产品与 V5 兼容界面的需求基线；已合并的 Host v6、CloudKit v2、迁移和隧道契约见 [主机工作台技术架构](./Design/JODER-10/host-workbench-architecture.md)。Graph 与新 UI 方向见 [Graph 拓扑与跨设备授权架构](./Graph拓扑与跨设备授权架构.md) 和 [整体重构与迁移计划](./整体重构与迁移计划.md)，本文安全约束继续有效。
+
 - 文档版本：V1.1
 - 产品阶段：MVP
 - 目标平台：macOS

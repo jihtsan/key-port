@@ -191,6 +191,10 @@ git diff --check
 
 ## 相关文档
 
+- [文档导航](Docs/README.md)
+- [Graph 拓扑与跨设备授权架构](Docs/Graph拓扑与跨设备授权架构.md)
+- [整体重构与迁移计划](Docs/整体重构与迁移计划.md)
+- [主机工作台技术架构与迁移契约](Docs/Design/JODER-10/host-workbench-architecture.md)
 - [一期需求规格](Docs/SSH-KeyPort-一期需求规格.md)
 - [一期实现架构与验证说明](Docs/一期实现架构与验证说明.md)
 - [SSH 技术原型结论](Docs/SSH-技术原型结论.md)
