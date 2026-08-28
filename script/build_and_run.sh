@@ -21,6 +21,8 @@ APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 APP_TUNNEL_BROKER="$APP_HELPERS/KeyPortTunnelBroker"
+RESOURCE_BUNDLE_NAME="KeyPort_KeyPort.bundle"
+RESOURCE_BUNDLE_SOURCE=""
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_NAME="KeyPort.icns"
 APP_ICON_SOURCE="$ROOT_DIR/Resources/$APP_ICON_NAME"
@@ -48,12 +50,18 @@ swift build --product KeyPort
 swift build --product KeyPortAskPass
 swift build --product KeyPortTunnelBroker
 BUILD_DIR="$(swift build --show-bin-path)"
+RESOURCE_BUNDLE_SOURCE="$BUILD_DIR/$RESOURCE_BUNDLE_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_DIR/KeyPort" "$APP_BINARY"
 cp "$BUILD_DIR/KeyPortAskPass" "$APP_HELPERS/KeyPortAskPass"
 cp "$BUILD_DIR/KeyPortTunnelBroker" "$APP_TUNNEL_BROKER"
+if [[ ! -d "$RESOURCE_BUNDLE_SOURCE" ]]; then
+  echo "SwiftPM resource bundle is missing: $RESOURCE_BUNDLE_SOURCE" >&2
+  exit 2
+fi
+cp -R "$RESOURCE_BUNDLE_SOURCE" "$APP_RESOURCES/"
 if [[ ! -f "$APP_ICON_SOURCE" ]]; then
   echo "App icon is missing: $APP_ICON_SOURCE" >&2
   exit 2
@@ -61,6 +69,10 @@ fi
 cp "$APP_ICON_SOURCE" "$APP_RESOURCES/$APP_ICON_NAME"
 cp "$ROOT_DIR/Sources/KeyPort/Resources/key-hub@1x.png" "$APP_RESOURCES/key-hub@1x.png"
 cp "$ROOT_DIR/Sources/KeyPort/Resources/key-hub@2x.png" "$APP_RESOURCES/key-hub@2x.png"
+if [[ ! -d "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME/Contents/Resources" ]]; then
+  echo "Packaged SwiftPM resource bundle is incomplete: $APP_RESOURCES/$RESOURCE_BUNDLE_NAME" >&2
+  exit 2
+fi
 chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass" "$APP_TUNNEL_BROKER"
 if [[ ! -x "$APP_TUNNEL_BROKER" ]]; then
   echo "Tunnel broker helper is missing or not executable: $APP_TUNNEL_BROKER" >&2
