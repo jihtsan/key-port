@@ -237,7 +237,10 @@ struct ContentView: View {
     private var detailColumn: some View {
         switch model.destination {
         case .servers:
-            if model.isHostWorkbenchEnabled, let row = model.selectedHostRow {
+            if model.isHostWorkbenchEnabled, !model.isLoaded {
+                HostWorkbenchLoadingView()
+                    .navigationTitle("主机")
+            } else if model.isHostWorkbenchEnabled, let row = model.selectedHostRow {
                 HostWorkbenchDetailView(row: row, model: model)
             } else if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)
@@ -279,13 +282,14 @@ struct ContentView: View {
                     Label(model.isHostWorkbenchEnabled ? "添加主机" : "添加服务器", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                .disabled(!model.isLoaded)
 
                 Button {
                     accountSourceServerID = model.selectedServerID
                 } label: {
                     Label("添加用户", systemImage: "person.badge.plus")
                 }
-                .disabled(model.selectedServerID == nil || model.isBusy)
+                .disabled(model.selectedServerID == nil || model.isBusy || !model.isLoaded)
 
                 Button {
                     guard let serverID = model.selectedServerID else { return }
@@ -294,21 +298,21 @@ struct ContentView: View {
                     Label(selectedPasswordlessAction.title, systemImage: selectedPasswordlessAction.systemImage)
                 }
                 .help(selectedPasswordlessAction.help)
-                .disabled(model.selectedServerID == nil || model.isBusy || selectedPasswordlessAction == .checking)
+                .disabled(model.selectedServerID == nil || model.isBusy || !model.isLoaded || selectedPasswordlessAction == .checking)
 
                 Button {
                     Task { await model.synchronizeSSHAuthorizationSelected() }
                 } label: {
                     Label("同步 SSH 授权", systemImage: "key.horizontal.fill")
                 }
-                .disabled(model.selectedServerID == nil || model.isBusy)
+                .disabled(model.selectedServerID == nil || model.isBusy || !model.isLoaded)
 
                 Button {
                     showsEditServer = true
                 } label: {
                     Label("编辑用户", systemImage: "pencil")
                 }
-                .disabled(model.selectedServerID == nil || model.isBusy)
+                .disabled(model.selectedServerID == nil || model.isBusy || !model.isLoaded)
 
             }
         }

@@ -1,6 +1,41 @@
 import KeyPortCore
 import SwiftUI
 
+enum HostWorkbenchListState: Equatable {
+    case loading
+    case empty
+    case noResults
+    case populated
+
+    static func resolve(isLoading: Bool, rowCount: Int, searchText: String) -> Self {
+        if isLoading { return .loading }
+        if rowCount > 0 { return .populated }
+        return searchText.isEmpty ? .empty : .noResults
+    }
+}
+
+struct HostWorkbenchLoadingView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.regular)
+            Text("正在加载主机")
+                .font(.headline)
+            Text("正在读取主机、访问地址和 SSH 身份。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("正在加载主机")
+        .accessibilityValue("正在读取主机、访问地址和 SSH 身份")
+        .accessibilityIdentifier("host-workbench-loading")
+    }
+}
+
 struct HostWorkbenchListView: View {
     let model: AppModel
     let onAddAccount: (UUID) -> Void
@@ -8,8 +43,9 @@ struct HostWorkbenchListView: View {
 
     var body: some View {
         @Bindable var model = model
+        let rows = model.activeHostRows
         List(selection: $model.selectedHostID) {
-            ForEach(model.activeHostRows) { row in
+            ForEach(rows) { row in
                 HostWorkbenchListRow(
                     row: row,
                     onEdit: {
@@ -36,16 +72,23 @@ struct HostWorkbenchListView: View {
             model.selectHost(hostID)
         }
         .overlay {
-            if model.activeHostRows.isEmpty {
-                if model.searchText.isEmpty {
-                    ContentUnavailableView(
-                        "暂无主机",
-                        systemImage: "server.rack",
-                        description: Text("请添加主机和首个 SSH 用户。")
-                    )
-                } else {
-                    ContentUnavailableView.search(text: model.searchText)
-                }
+            switch HostWorkbenchListState.resolve(
+                isLoading: !model.isLoaded,
+                rowCount: rows.count,
+                searchText: model.searchText
+            ) {
+            case .loading:
+                HostWorkbenchLoadingView()
+            case .empty:
+                ContentUnavailableView(
+                    "暂无主机",
+                    systemImage: "server.rack",
+                    description: Text("请添加主机和首个 SSH 用户。")
+                )
+            case .noResults:
+                ContentUnavailableView.search(text: model.searchText)
+            case .populated:
+                EmptyView()
             }
         }
     }

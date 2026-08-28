@@ -355,6 +355,7 @@ final class AppModel {
         self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
         self.discoveryCoordinator = discoveryCoordinator
         self.connectionHistory = .makeDefault(paths: paths)
+        self.isHostWorkbenchEnabled = HostV6RuntimeFeatureFlags.isWorkbenchEnabled(defaults: defaults)
     }
 
     var activeServers: [ServerConnection] {

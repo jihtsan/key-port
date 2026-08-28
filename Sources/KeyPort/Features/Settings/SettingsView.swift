@@ -2,14 +2,68 @@ import AppKit
 import KeyPortCore
 import SwiftUI
 
+struct NetworkHintStatusPresentation: Equatable {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let needsLocationSettings: Bool
+
+    init(result: NetworkHintResult) {
+        switch result {
+        case .available:
+            title = "可用"
+            detail = "网络提示可用，连接记录可以保存当前 Wi-Fi 名称。"
+            systemImage = "checkmark.circle"
+            needsLocationSettings = false
+        case .disabled:
+            title = "已关闭"
+            detail = "网络提示已关闭，不会读取或保存 Wi-Fi 名称。"
+            systemImage = "minus.circle"
+            needsLocationSettings = false
+        case .notDetermined:
+            title = "尚未授权"
+            detail = "网络提示尚未获得位置权限，连接记录不会保存 Wi-Fi 名称。"
+            systemImage = "questionmark.circle"
+            needsLocationSettings = true
+        case .denied:
+            title = "已拒绝"
+            detail = "网络提示的位置权限已拒绝，连接记录不会保存 Wi-Fi 名称。"
+            systemImage = "location.slash"
+            needsLocationSettings = true
+        case .restricted:
+            title = "受限制"
+            detail = "网络提示的位置权限受系统限制，连接记录不会保存 Wi-Fi 名称。"
+            systemImage = "location.slash"
+            needsLocationSettings = true
+        case .servicesDisabled:
+            title = "系统服务已关闭"
+            detail = "系统位置服务已关闭，网络提示无法读取 Wi-Fi 名称。"
+            systemImage = "location.slash"
+            needsLocationSettings = true
+        case .unavailable:
+            title = "不可用"
+            detail = "当前无法读取 Wi-Fi 名称，连接记录不会保存网络提示。"
+            systemImage = "wifi.slash"
+            needsLocationSettings = false
+        }
+    }
+}
+
 struct SettingsView: View {
     let model: AppModel
+    let networkHintProvider: any NetworkHintProviding
     @AppStorage("KeyPort.clipboardClearSeconds") private var clipboardClearSeconds = 30.0
     @AppStorage("KeyPort.cloudSyncEnabled") private var cloudSyncEnabled = false
     @AppStorage("KeyPort.defaultPasswordSync") private var defaultPasswordSync = false
     @AppStorage(UserDefaultsNetworkHintSettings.key) private var networkHintEnabled = false
     @State private var archivePassword = ""
     @State private var networkHintStatus: NetworkHintResult = .disabled
+
+    init(model: AppModel, networkHintProvider: (any NetworkHintProviding)? = nil) {
+        self.model = model
+        self.networkHintProvider = networkHintProvider
+            ?? SystemNetworkHintProvider(settings: UserDefaultsNetworkHintSettings())
+    }
 
     var body: some View {
         TabView {
@@ -25,18 +79,20 @@ struct SettingsView: View {
                 Section("网络提示") {
                     Toggle("记录私网连接的 Wi-Fi 名称", isOn: $networkHintEnabled)
                     LabeledContent("权限状态") {
-                        Label(networkHintStatus.displayTitle, systemImage: networkHintStatus.systemImage)
+                        Label(networkHintStatusPresentation.title, systemImage: networkHintStatusPresentation.systemImage)
+                            .accessibilityIdentifier("network-hint-permission-status")
                     }
-                    Text("仅保存在本机连接记录中，不影响 SSH 或服务访问。")
+                    Text(networkHintStatusPresentation.detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    if networkHintStatus.needsLocationSettings {
+                    if networkHintStatusPresentation.needsLocationSettings {
                         Button {
                             openLocationSettings()
                         } label: {
                             Label("打开位置服务设置", systemImage: "gearshape")
                         }
+                        .help("在系统设置中修改 KeyPort 的位置服务权限")
                     }
                 }
             }
@@ -128,8 +184,11 @@ struct SettingsView: View {
     }
 
     private func updateNetworkHintStatus() async {
-        let settings = UserDefaultsNetworkHintSettings()
-        networkHintStatus = await SystemNetworkHintProvider(settings: settings).currentSSID()
+        networkHintStatus = await networkHintProvider.currentSSID()
+    }
+
+    private var networkHintStatusPresentation: NetworkHintStatusPresentation {
+        NetworkHintStatusPresentation(result: networkHintStatus)
     }
 
     private func openLocationSettings() {
@@ -137,36 +196,5 @@ struct SettingsView: View {
             return
         }
         NSWorkspace.shared.open(url)
-    }
-}
-
-private extension NetworkHintResult {
-    var displayTitle: String {
-        switch self {
-        case .available: "可用"
-        case .disabled: "已关闭"
-        case .notDetermined: "尚未授权"
-        case .denied: "已拒绝"
-        case .restricted: "受限制"
-        case .servicesDisabled: "系统服务已关闭"
-        case .unavailable: "不可用"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .available: "checkmark.circle"
-        case .disabled: "minus.circle"
-        case .notDetermined: "questionmark.circle"
-        case .denied, .restricted, .servicesDisabled: "location.slash"
-        case .unavailable: "wifi.slash"
-        }
-    }
-
-    var needsLocationSettings: Bool {
-        switch self {
-        case .notDetermined, .denied, .restricted, .servicesDisabled: true
-        case .available, .disabled, .unavailable: false
-        }
     }
 }
