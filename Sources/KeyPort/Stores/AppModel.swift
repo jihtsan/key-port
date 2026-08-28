@@ -3,13 +3,34 @@ import KeyPortCore
 import Observation
 
 enum SidebarDestination: String, CaseIterable, Identifiable {
+    case graph, nodes, activity
     case servers, keys, devices, logs
+
+    static let workspaceCases: [Self] = [.graph, .nodes, .activity]
+    static let compatibilityCases: [Self] = [.servers, .keys, .devices, .logs]
+
     var id: String { rawValue }
     var title: String {
-        switch self { case .servers: "服务器"; case .keys: "密钥"; case .devices: "设备"; case .logs: "审计日志" }
+        switch self {
+        case .graph: "Graph"
+        case .nodes: "节点"
+        case .activity: "活动"
+        case .servers: "服务器"
+        case .keys: "密钥"
+        case .devices: "设备"
+        case .logs: "审计日志"
+        }
     }
     var systemImage: String {
-        switch self { case .servers: "server.rack"; case .keys: "key"; case .devices: "laptopcomputer"; case .logs: "list.bullet.rectangle" }
+        switch self {
+        case .graph: "point.3.connected.trianglepath.dotted"
+        case .nodes: "circle.grid.3x3"
+        case .activity: "clock.arrow.circlepath"
+        case .servers: "server.rack"
+        case .keys: "key"
+        case .devices: "laptopcomputer"
+        case .logs: "list.bullet.rectangle"
+        }
     }
 }
 
@@ -256,7 +277,7 @@ final class AppModel {
     }
 
     var snapshot = AppSnapshot()
-    var destination: SidebarDestination = .servers
+    var destination: SidebarDestination = .graph
     var selectedServerID: UUID?
     var selectedKeyID: String?
     var selectedKeyItemID: String?
@@ -286,6 +307,7 @@ final class AppModel {
     var tailscaleStatus: TailscaleStatus?
     var tailscaleDiscoveryState: TailscaleDiscoveryState = .idle
     var nodeAssociationCandidates: [String: [NodeAssociationCandidate]] = [:]
+    let graphWorkspace = GraphWorkspaceModel()
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
 
     private let store: SnapshotStore
@@ -738,10 +760,19 @@ final class AppModel {
             if let hostV6Runtime {
                 presentation = try await hostV6Runtime.loadPresentationSnapshot(from: store)
             } else {
-                presentation = HostV6Presentation(snapshot: try await store.load(), mode: .canary)
+                presentation = HostV6Presentation(
+                    snapshot: try await store.load(),
+                    mode: .canary,
+                    graphEnvelope: nil
+                )
             }
             snapshot = presentation.snapshot
             isMetadataReadOnly = !presentation.mode.allowsLegacyWrites
+            graphWorkspace.update(
+                envelope: presentation.graphEnvelope,
+                currentDeviceID: presentation.graphEnvelope?.local.deviceStates.first(where: \.isCurrent)?.deviceID
+                    ?? snapshot.devices.first(where: \.isCurrent)?.id
+            )
             if presentation.mode.allowsLegacyWrites {
                 _ = try? await configService.adoptExistingManagedConfigBaseline(
                     servers: snapshot.servers.filter { !$0.isDeleted },
@@ -2956,7 +2987,12 @@ final class AppModel {
     private func persist() async {
         do {
             if let hostV6Runtime {
-                try await hostV6Runtime.saveLegacySnapshot(snapshot, to: store)
+                let envelope = try await hostV6Runtime.saveLegacySnapshot(snapshot, to: store)
+                graphWorkspace.update(
+                    envelope: envelope,
+                    currentDeviceID: envelope.local.deviceStates.first(where: \.isCurrent)?.deviceID
+                        ?? snapshot.devices.first(where: \.isCurrent)?.id
+                )
             } else {
                 try await store.save(snapshot)
             }
