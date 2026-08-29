@@ -34,6 +34,14 @@ _Avoid_: 可达性状态、VPN 授权、IP 地址
 
 Endpoint 可以记录稳定的网络范围标签，但 Wi‑Fi 名称、网卡、信号强度和当前网络切换属于 Reachability Observation 的环境上下文，不属于 Node 或 Endpoint 的身份。
 
+**Automatic Endpoint Matching（自动端点匹配）**：
+只有规范化后的 Tailscale MagicDNS 或 Tailscale IP 与外部节点记录唯一精确相等时，才自动把 Endpoint 关联到 Node；公网 IP、普通 DNS、主机名相似或共享出口只能作为候选或人工确认依据。
+_Avoid_: 模糊匹配、按公网 IP 合并、按名称合并
+
+**Public Network Endpoint（公网端点）**：
+网络范围为 publicNetwork 的 Endpoint，表示从公网到达 Node 或 Service 的访问坐标；它可以与 Tailnet Endpoint 同属于一个 Node，但自身不证明机器身份，也不自动触发节点合并。
+_Avoid_: 公网节点、公网身份、出口 IP 身份
+
 **Service（服务）**：
 运行或承载在某个 Node 上、具有独立访问入口的逻辑能力，例如 PostgreSQL、HTTP 服务或内部 API。服务可以拥有自己的端口、协议和域名，不应被误当成一台机器。
 _Avoid_: Host、端口、数据库节点

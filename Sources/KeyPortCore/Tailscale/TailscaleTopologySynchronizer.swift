@@ -91,6 +91,7 @@ public enum TailscaleTopologySynchronizer {
                 in: &result,
                 observedAt: observedAt
             )
+            upsertTailscaleEndpoints(for: updatedIdentity, in: &result)
 
             guard let observation = TailscaleNodeObservation(
                 tailnetKey: tailnetKey,
@@ -123,6 +124,8 @@ public enum TailscaleTopologySynchronizer {
     ) -> UUID? {
         let candidates = Set(topology.activeEndpoints.compactMap { endpoint -> UUID? in
             guard endpoint.nodeID != excludedNodeID,
+                  endpoint.serviceID == nil,
+                  endpoint.protocol == .ssh,
                   endpointMatches(endpoint.address, tailscaleNode: tailscaleNode) else {
                 return nil
             }
@@ -191,5 +194,84 @@ public enum TailscaleTopologySynchronizer {
             node.updatedAt = observedAt
         }
         topology.nodes[index] = node
+    }
+
+    private static func upsertTailscaleEndpoints(
+        for identity: TailscaleNodeIdentity,
+        in topology: inout TopologySnapshot
+    ) {
+        guard topology.nodes.contains(where: { $0.id == identity.keyPortNodeID && !$0.isDeleted }) else {
+            return
+        }
+
+        var candidates: [(address: String, priority: Int)] = []
+        if let magicDNS = cleanAddress(identity.magicDNS) {
+            candidates.append((magicDNS, 0))
+        }
+        candidates.append(contentsOf: identity.addresses.enumerated().compactMap { index, value in
+            guard let address = cleanAddress(value) else { return nil }
+            return (address, index + 1)
+        })
+
+        var seen = Set<String>()
+        for candidate in candidates {
+            let normalizedAddress = TailscaleHostIdentity.normalize(candidate.address)
+            guard !normalizedAddress.isEmpty, seen.insert(normalizedAddress).inserted else {
+                continue
+            }
+
+            let existingIndex = topology.endpoints.firstIndex { endpoint in
+                endpoint.nodeID == identity.keyPortNodeID
+                    && endpoint.serviceID == nil
+                    && endpoint.protocol == .ssh
+                    && endpoint.port == 22
+                    && TailscaleHostIdentity.normalize(endpoint.address) == normalizedAddress
+            }
+
+            if let existingIndex {
+                var endpoint = topology.endpoints[existingIndex]
+                endpoint.isDeleted = false
+                if endpoint.source == .migrated {
+                    endpoint.source = .tailscale
+                    endpoint.networkScope = .tailnet
+                } else if endpoint.source == .tailscale {
+                    endpoint.networkScope = .tailnet
+                }
+                if endpoint.networkScope == .unknown {
+                    endpoint.networkScope = .tailnet
+                }
+                endpoint.priority = min(endpoint.priority, candidate.priority)
+                topology.endpoints[existingIndex] = endpoint
+            } else {
+                topology.endpoints.append(Endpoint(
+                    id: TopologyStableID.nodeEndpoint(
+                        nodeID: identity.keyPortNodeID,
+                        address: candidate.address,
+                        port: 22,
+                        protocol: .ssh
+                    ),
+                    nodeID: identity.keyPortNodeID,
+                    address: candidate.address,
+                    label: candidate.address,
+                    port: 22,
+                    protocol: .ssh,
+                    networkScope: .tailnet,
+                    source: .tailscale,
+                    priority: candidate.priority
+                ))
+            }
+        }
+
+        topology.endpoints.sort { $0.id.uuidString < $1.id.uuidString }
+    }
+
+    private static func cleanAddress(_ value: String?) -> String? {
+        guard var value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        while value.hasSuffix(".") {
+            value.removeLast()
+        }
+        return value.isEmpty ? nil : value
     }
 }

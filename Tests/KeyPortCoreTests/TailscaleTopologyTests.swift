@@ -90,6 +90,168 @@ final class TailscaleTopologyTests: XCTestCase {
         )
     }
 
+    func testTailscaleRefreshPromotesMigratedMagicDNSEndpointToTailnet() throws {
+        let nodeID = UUID(uuidString: "40400000-0000-4000-8000-000000000001")!
+        let endpointID = UUID(uuidString: "40400000-0000-4000-8000-000000000002")!
+        let topology = TopologySnapshot(
+            nodes: [Node(
+                id: nodeID,
+                name: "生产服务器",
+                roles: [.sshHost],
+                createdAt: observedAt,
+                updatedAt: observedAt
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: nodeID,
+                address: "server.example.ts.net",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .migrated
+            )]
+        )
+        let result = TailscaleTopologySynchronizer.apply(
+            status: TailscaleStatus(
+                backendState: "Running",
+                tailnetName: "example.com",
+                magicDNSSuffix: "ts.net",
+                nodes: [makeNode(
+                    id: "node-server",
+                    name: "server",
+                    dnsName: "server.example.ts.net",
+                    addresses: ["100.64.0.2"]
+                )],
+                observedAt: observedAt
+            ),
+            to: topology,
+            observerDeviceID: "device-current"
+        )
+
+        XCTAssertEqual(result.tailscaleNodes.first?.keyPortNodeID, nodeID)
+        XCTAssertEqual(result.endpoint(id: endpointID)?.networkScope, .tailnet)
+        XCTAssertEqual(result.endpoint(id: endpointID)?.source, .tailscale)
+    }
+
+    func testTailscaleRefreshMaterializesTailnetEndpointsIdempotently() throws {
+        let nodeID = UUID(uuidString: "40500000-0000-4000-8000-000000000001")!
+        let serviceID = UUID(uuidString: "40500000-0000-4000-8000-000000000002")!
+        let serviceEndpointID = UUID(uuidString: "40500000-0000-4000-8000-000000000003")!
+        let topology = TopologySnapshot(
+            nodes: [Node(
+                id: nodeID,
+                name: "服务节点",
+                roles: [.serviceHost],
+                createdAt: observedAt,
+                updatedAt: observedAt
+            )],
+            endpoints: [Endpoint(
+                id: serviceEndpointID,
+                nodeID: nodeID,
+                serviceID: serviceID,
+                address: "service.example.ts.net",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .tailnet,
+                source: .manual
+            )],
+            services: [Service(
+                id: serviceID,
+                nodeID: nodeID,
+                name: "SSH 代理服务",
+                protocol: .ssh,
+                endpointIDs: [serviceEndpointID]
+            )]
+        )
+        let status = TailscaleStatus(
+            backendState: "Running",
+            tailnetName: "example.com",
+            magicDNSSuffix: "ts.net",
+            nodes: [makeNode(
+                id: "node-service",
+                name: "service",
+                dnsName: "service.example.ts.net",
+                addresses: ["100.64.0.9", "fd7a:115c:a1e0::9"]
+            )],
+            observedAt: observedAt
+        )
+
+        let first = TailscaleTopologySynchronizer.apply(
+            status: status,
+            to: topology,
+            observerDeviceID: "device-current"
+        )
+        let identity = try XCTUnwrap(first.tailscaleNodes.first)
+        let nodeEndpoints = first.endpoints.filter {
+            $0.nodeID == identity.keyPortNodeID && $0.serviceID == nil
+        }
+        XCTAssertEqual(
+            Set(nodeEndpoints.map(\.address)),
+            ["service.example.ts.net", "100.64.0.9", "fd7a:115c:a1e0::9"]
+        )
+        XCTAssertTrue(nodeEndpoints.allSatisfy {
+            $0.networkScope == .tailnet && $0.source == .tailscale && $0.port == 22
+        })
+        XCTAssertEqual(first.endpoints.first { $0.id == serviceEndpointID }?.serviceID, serviceID)
+
+        let second = TailscaleTopologySynchronizer.apply(
+            status: status,
+            to: first,
+            observerDeviceID: "device-current",
+            observedAt: observedAt.addingTimeInterval(30)
+        )
+        XCTAssertEqual(
+            second.endpoints.filter { $0.nodeID == identity.keyPortNodeID && $0.serviceID == nil }.count,
+            3
+        )
+        XCTAssertEqual(second.endpoints.count, first.endpoints.count)
+    }
+
+    func testTailscaleMatchingIgnoresServiceOnlyEndpoints() throws {
+        let legacyNodeID = UUID(uuidString: "40600000-0000-4000-8000-000000000001")!
+        let serviceID = UUID(uuidString: "40600000-0000-4000-8000-000000000002")!
+        let topology = TopologySnapshot(
+            nodes: [Node(
+                id: legacyNodeID,
+                name: "仅服务节点",
+                roles: [.serviceHost],
+                createdAt: observedAt,
+                updatedAt: observedAt
+            )],
+            endpoints: [Endpoint(
+                id: UUID(uuidString: "40600000-0000-4000-8000-000000000003")!,
+                nodeID: legacyNodeID,
+                serviceID: serviceID,
+                address: "service.example.ts.net",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .tailnet
+            )]
+        )
+        let result = TailscaleTopologySynchronizer.apply(
+            status: TailscaleStatus(
+                backendState: "Running",
+                tailnetName: "example.com",
+                magicDNSSuffix: "ts.net",
+                nodes: [makeNode(
+                    id: "node-new",
+                    name: "new",
+                    dnsName: "service.example.ts.net",
+                    addresses: ["100.64.0.10"]
+                )],
+                observedAt: observedAt
+            ),
+            to: topology,
+            observerDeviceID: "device-current"
+        )
+
+        XCTAssertEqual(result.tailscaleNodes.first?.keyPortNodeID, TopologyStableID.node(
+            forTailscale: "example.com",
+            nodeID: "node-new"
+        ))
+        XCTAssertNotEqual(result.tailscaleNodes.first?.keyPortNodeID, legacyNodeID)
+    }
+
     func testGraphProjectsTailscalePeerAndSearchesStableNodeID() throws {
         let currentDeviceID = "device-current"
         let currentNodeID = UUID(uuidString: "41000000-0000-4000-8000-000000000001")!

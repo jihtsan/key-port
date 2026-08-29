@@ -576,6 +576,23 @@ public enum TopologyStableID {
         )
     }
 
+    /// Stable ID for a node-level access endpoint.
+    ///
+    /// Service endpoints historically use `endpoint(...)`. Keeping a separate
+    /// namespace lets a node and one of its services share the same address,
+    /// port, and protocol without either record being retyped by discovery.
+    public static func nodeEndpoint(
+        nodeID: UUID,
+        address: String,
+        port: UInt16,
+        protocol: EndpointProtocol
+    ) -> UUID {
+        uuidV5(
+            namespace: namespace,
+            name: "node-endpoint/\(nodeID.uuidString.lowercased())/\(normalize(address))/\(port)/\(`protocol`.rawValue)"
+        )
+    }
+
     public static func hostKeyTrust(endpointID: UUID, algorithm: String, fingerprint: String) -> UUID {
         uuidV5(
             namespace: namespace,
@@ -859,7 +876,147 @@ public enum TopologySnapshotMigration {
         result.accessVerifications = mergeByKey(migrated.accessVerifications, existing.accessVerifications, by: \.id) { current, _ in current }
         result.nodeAssociations = mergeByKey(migrated.nodeAssociations, existing.nodeAssociations, by: \.id) { current, _ in current }
         result.auditEvents = mergeByKey(migrated.auditEvents, existing.auditEvents, by: { $0.id.uuidString }) { current, _ in current }
+        reattachLegacyAccountsToTailscaleNodes(in: &result, preserving: existing)
         return result
+    }
+
+    /// Reconnects a legacy SSH account to a Tailscale-backed Node when the
+    /// account's node-level SSH address is an exact, unique Tailscale match.
+    /// Public DNS/IP addresses deliberately do not participate in this step.
+    private static func reattachLegacyAccountsToTailscaleNodes(
+        in topology: inout TopologySnapshot,
+        preserving existing: TopologySnapshot
+    ) {
+        let identities = existing.activeTailscaleNodes.filter { identity in
+            topology.nodes.contains { $0.id == identity.keyPortNodeID && !$0.isDeleted }
+        }
+        guard !identities.isEmpty else { return }
+
+        let targetNodeIDs = Set(identities.map(\.keyPortNodeID))
+        let sourceNodeIDs = Set(topology.activeAccounts.map(\.nodeID))
+            .subtracting(targetNodeIDs)
+            .sorted { $0.uuidString < $1.uuidString }
+
+        for sourceNodeID in sourceNodeIDs {
+            let sourceEndpoints = topology.activeEndpoints.filter {
+                $0.nodeID == sourceNodeID
+                    && $0.serviceID == nil
+                    && $0.protocol == .ssh
+            }
+            guard !sourceEndpoints.isEmpty,
+                  !topology.services.contains(where: { $0.nodeID == sourceNodeID && !$0.isDeleted }) else {
+                continue
+            }
+
+            let candidateNodeIDs = Set(sourceEndpoints.flatMap { endpoint in
+                identities
+                    .filter { $0.matches(host: endpoint.address) }
+                    .map(\.keyPortNodeID)
+            })
+            guard candidateNodeIDs.count == 1,
+                  let targetNodeID = candidateNodeIDs.first,
+                  targetNodeID != sourceNodeID,
+                  topology.nodes.contains(where: { $0.id == targetNodeID && !$0.isDeleted }) else {
+                continue
+            }
+
+            var endpointRemaps: [UUID: UUID] = [:]
+            for endpoint in sourceEndpoints {
+                let targetEndpointID = topology.activeEndpoints.first(where: { candidate in
+                    candidate.nodeID == targetNodeID
+                        && candidate.serviceID == nil
+                        && candidate.protocol == endpoint.protocol
+                        && candidate.port == endpoint.port
+                        && TailscaleHostIdentity.normalize(candidate.address)
+                            == TailscaleHostIdentity.normalize(endpoint.address)
+                })?.id ?? TopologyStableID.nodeEndpoint(
+                    nodeID: targetNodeID,
+                    address: endpoint.address,
+                    port: endpoint.port,
+                    protocol: endpoint.protocol
+                )
+
+                endpointRemaps[endpoint.id] = targetEndpointID
+                if !topology.endpoints.contains(where: { $0.id == targetEndpointID }) {
+                    var movedEndpoint = endpoint
+                    movedEndpoint.id = targetEndpointID
+                    movedEndpoint.nodeID = targetNodeID
+                    if identities.contains(where: { $0.keyPortNodeID == targetNodeID && $0.matches(host: endpoint.address) }) {
+                        movedEndpoint.networkScope = .tailnet
+                        if movedEndpoint.source == .migrated {
+                            movedEndpoint.source = .tailscale
+                        }
+                    }
+                    topology.endpoints.append(movedEndpoint)
+                }
+            }
+
+            for accountIndex in topology.sshAccounts.indices
+                where topology.sshAccounts[accountIndex].nodeID == sourceNodeID {
+                topology.sshAccounts[accountIndex].nodeID = targetNodeID
+                if let targetEndpointID = endpointRemaps[topology.sshAccounts[accountIndex].endpointID] {
+                    topology.sshAccounts[accountIndex].endpointID = targetEndpointID
+                }
+            }
+
+            for trustIndex in topology.hostKeyTrusts.indices {
+                guard let targetEndpointID = endpointRemaps[topology.hostKeyTrusts[trustIndex].endpointID] else {
+                    continue
+                }
+                let trust = topology.hostKeyTrusts[trustIndex]
+                let duplicate = topology.hostKeyTrusts.indices.contains { index in
+                    index != trustIndex
+                        && topology.hostKeyTrusts[index].endpointID == targetEndpointID
+                        && topology.hostKeyTrusts[index].algorithm == trust.algorithm
+                        && topology.hostKeyTrusts[index].fingerprint == trust.fingerprint
+                        && !topology.hostKeyTrusts[index].isDeleted
+                }
+                if duplicate {
+                    topology.hostKeyTrusts[trustIndex].isDeleted = true
+                } else {
+                    topology.hostKeyTrusts[trustIndex].endpointID = targetEndpointID
+                    topology.hostKeyTrusts[trustIndex].id = TopologyStableID.hostKeyTrust(
+                        endpointID: targetEndpointID,
+                        algorithm: trust.algorithm,
+                        fingerprint: trust.fingerprint
+                    )
+                }
+            }
+
+            for endpointIndex in topology.endpoints.indices
+                where topology.endpoints[endpointIndex].nodeID == sourceNodeID
+                    && topology.endpoints[endpointIndex].serviceID == nil
+                    && topology.endpoints[endpointIndex].protocol == .ssh {
+                topology.endpoints[endpointIndex].isDeleted = true
+            }
+
+            if let sourceIndex = topology.nodes.firstIndex(where: { $0.id == sourceNodeID }),
+               let targetIndex = topology.nodes.firstIndex(where: { $0.id == targetNodeID }) {
+                let source = topology.nodes[sourceIndex]
+                var target = topology.nodes[targetIndex]
+                target.roles = Array(Set(target.roles + source.roles)).sorted { $0.rawValue < $1.rawValue }
+                if target.name.isEmpty { target.name = source.name }
+                if target.group.isEmpty { target.group = source.group }
+                if target.notes.isEmpty { target.notes = source.notes }
+                if target.machineConfiguration == nil {
+                    target.machineConfiguration = source.machineConfiguration
+                }
+                target.createdAt = min(target.createdAt, source.createdAt)
+                target.updatedAt = max(target.updatedAt, source.updatedAt)
+                target.isDeleted = false
+                if !target.roles.contains(.sshHost) {
+                    target.roles.append(.sshHost)
+                    target.roles.sort { $0.rawValue < $1.rawValue }
+                }
+                topology.nodes[targetIndex] = target
+                topology.nodes[sourceIndex].isDeleted = true
+            }
+        }
+
+        topology.nodes.sort { $0.id.uuidString < $1.id.uuidString }
+        topology.endpoints.sort { $0.id.uuidString < $1.id.uuidString }
+        topology.sshAccounts.sort { $0.id.uuidString < $1.id.uuidString }
+        topology.hostKeyTrusts.sort { $0.id.uuidString < $1.id.uuidString }
     }
 
     private static func mergeByKey<T>(

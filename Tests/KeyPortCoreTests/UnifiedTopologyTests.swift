@@ -206,4 +206,123 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertEqual(refreshed.endpoint(id: serviceEndpointID)?.networkScope, .publicNetwork)
         XCTAssertTrue(refreshed.node(id: remoteNode.id)?.roles.contains(.serviceHost) == true)
     }
+
+    func testLegacyRefreshReattachesExactTailscaleAddressAndPreservesMultipleAccounts() throws {
+        let currentDeviceID = "device-current"
+        let targetNodeID = TopologyStableID.node(forTailscale: "acme.example", nodeID: "ts-node-1")
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000011")!,
+                name: "生产服务器",
+                host: "server.acme.ts.net",
+                username: "root",
+                alias: "prod-root"
+            ),
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000012")!,
+                name: "生产服务器",
+                host: "server.acme.ts.net",
+                username: "deploy",
+                alias: "prod-deploy"
+            )
+        ]
+
+        let migrated = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+        let identity = try XCTUnwrap(TailscaleNodeIdentity(
+            keyPortNodeID: targetNodeID,
+            tailnetKey: "acme.example",
+            tailscaleNodeID: "ts-node-1",
+            displayName: "生产服务器",
+            magicDNS: "server.acme.ts.net",
+            addresses: ["100.100.0.10"]
+        ))
+        let existing = TopologySnapshot(
+            nodes: migrated.nodes.filter { !$0.isSSHHost } + [
+                Node(id: targetNodeID, name: "生产服务器", roles: [])
+            ],
+            profiles: migrated.profiles,
+            endpoints: [Endpoint(
+                id: TopologyStableID.nodeEndpoint(
+                    nodeID: targetNodeID,
+                    address: "server.acme.ts.net",
+                    port: 22,
+                    protocol: .ssh
+                ),
+                nodeID: targetNodeID,
+                address: "server.acme.ts.net",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .tailnet,
+                source: .tailscale
+            )],
+            tailscaleNodes: [identity]
+        )
+
+        let refreshed = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: existing,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        let sourceNodeID = try XCTUnwrap(migrated.nodes.first(where: \.isSSHHost)?.id)
+        XCTAssertEqual(refreshed.activeAccounts.count, 2)
+        XCTAssertTrue(refreshed.activeAccounts.allSatisfy { $0.nodeID == targetNodeID })
+        XCTAssertEqual(refreshed.activeEndpoints.filter { $0.nodeID == targetNodeID }.count, 1)
+        XCTAssertTrue(refreshed.nodes.first(where: { $0.id == sourceNodeID })?.isDeleted == true)
+        XCTAssertTrue(refreshed.node(id: targetNodeID)?.roles.contains(.sshHost) == true)
+    }
+
+    func testLegacyRefreshDoesNotAttachPublicAddressToTailscaleNode() throws {
+        let currentDeviceID = "device-current"
+        let targetNodeID = TopologyStableID.node(forTailscale: "acme.example", nodeID: "ts-node-2")
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            id: UUID(uuidString: "10000000-0000-4000-8000-000000000013")!,
+            name: "公网服务器",
+            host: "203.0.113.10",
+            username: "root",
+            alias: "public-root"
+        )]
+
+        let migrated = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+        let identity = try XCTUnwrap(TailscaleNodeIdentity(
+            keyPortNodeID: targetNodeID,
+            tailnetKey: "acme.example",
+            tailscaleNodeID: "ts-node-2",
+            displayName: "Tailnet 服务器",
+            magicDNS: "server.acme.ts.net",
+            addresses: ["100.100.0.11"]
+        ))
+        let existing = TopologySnapshot(
+            nodes: migrated.nodes.filter { !$0.isSSHHost } + [
+                Node(id: targetNodeID, name: "Tailnet 服务器", roles: [.sshHost])
+            ],
+            profiles: migrated.profiles,
+            tailscaleNodes: [identity]
+        )
+
+        let refreshed = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: existing,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        let publicNodeID = try XCTUnwrap(migrated.nodes.first(where: \.isSSHHost)?.id)
+        XCTAssertEqual(refreshed.activeNodes.filter(\.isSSHHost).count, 2)
+        XCTAssertEqual(refreshed.activeAccounts.first?.nodeID, publicNodeID)
+        XCTAssertEqual(refreshed.activeEndpoints.first?.networkScope, .publicNetwork)
+    }
 }
