@@ -190,7 +190,17 @@ struct GraphInspectorView: View {
 
     @ViewBuilder
     private func endpointsSection(_ item: NodeWorkspaceItem) -> some View {
-        if !item.node.endpointSummaries.isEmpty {
+        if !item.endpoints.isEmpty {
+            GroupBox("访问端点") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(item.endpoints) { endpoint in
+                        NodeEndpointRow(endpoint: endpoint)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
+        } else if !item.node.endpointSummaries.isEmpty {
             GroupBox("访问端点") {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(item.node.endpointSummaries, id: \.self) { endpoint in
@@ -393,6 +403,78 @@ private struct NodeStatusFact: View {
             Text(value)
                 .font(.callout)
                 .lineLimit(1)
+        }
+    }
+}
+
+private struct NodeEndpointRow: View {
+    let endpoint: Endpoint
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: endpoint.networkScope.systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(endpoint.displayAddress)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+
+                HStack(spacing: 5) {
+                    Text(endpoint.networkScope.displayTitle)
+                    Text("·")
+                    Text(endpoint.source.displayTitle)
+                    if endpoint.protocol != .ssh {
+                        Text("·")
+                        Text(endpoint.protocol.rawValue.uppercased())
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                if endpoint.label != endpoint.address {
+                    Text(endpoint.label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private extension NetworkScope {
+    var displayTitle: String {
+        switch self {
+        case .lan: "局域网"
+        case .publicNetwork: "公网"
+        case .tailnet: "Tailnet"
+        case .vpn: "VPN"
+        case .unknown: "范围未知"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .lan: "wifi"
+        case .publicNetwork: "globe"
+        case .tailnet: "network"
+        case .vpn: "lock.shield"
+        case .unknown: "questionmark.circle"
+        }
+    }
+}
+
+private extension EndpointSource {
+    var displayTitle: String {
+        switch self {
+        case .migrated: "已迁移"
+        case .manual: "手动"
+        case .discovered: "自动发现"
+        case .tailscale: "Tailscale 自动"
         }
     }
 }
