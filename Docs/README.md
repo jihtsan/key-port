@@ -4,12 +4,14 @@
 
 以下文档定义 Issue [#26](https://github.com/jihtsan/key-port/issues/26) 的目标方向：
 
-1. [领域词汇](../CONTEXT.md)：统一 Host、访问地址、SSH 账户、KeyPort 设备、密钥、服务、授权和节点关联。
-2. [Graph 拓扑与跨设备授权架构](./Graph拓扑与跨设备授权架构.md)：定义 Host v6 Graph 投影、接入/授权流程、多设备场景和 iCloud 边界。
-3. [整体重构与迁移计划](./整体重构与迁移计划.md)：定义 UI 全量替换、AppModel 拆分、Host v6 写权切换、删除门槛和实施阶段。
-4. [ADR 0001：Graph 是 Host v6 访问事实的投影](./adr/0001-graph-is-a-projection-of-access-facts.md)：记录不创建第二套 Graph 事实源的决策。
+1. [领域词汇](../CONTEXT.md)：统一 Node、节点角色、工作区设备档案、Endpoint、SSH 账户、服务、授权和本地观测。
+2. [网络拓扑领域模型重构设计](./网络拓扑领域模型重构设计.md)：定义全量重构的 Node/Role/Profile/Endpoint 边界、SSH 第一阶段和 VPN/RDP/服务扩展位置。
+3. [ADR 0002：统一 Node 身份并分离访问事实](./adr/0002-unify-node-identity-and-separate-access-facts.md)：记录 Host/Device 合并为统一机器身份、访问事实保持独立的架构决策。
+4. [Graph 拓扑与跨设备授权架构](./Graph拓扑与跨设备授权架构.md)：记录当前 Host v6 Graph 投影、接入/授权流程、多设备场景和 iCloud 边界；实体边界重构时以新领域模型为准。
+5. [整体重构与迁移计划](./整体重构与迁移计划.md)：记录当前 Host v6 写权切换、旧 UI 删除门槛和实施阶段；后续实现阶段需按新领域模型调整。
+6. [ADR 0001：Graph 是 Host v6 访问事实的投影](./adr/0001-graph-is-a-projection-of-access-facts.md)：记录不创建第二套 Graph 事实源的历史决策。
 
-这些文档是提案，不覆盖已经生效的 Host v6 authority、CloudKit v2、迁移、删除和隧道安全契约。出现冲突时，先遵守已合并的承重契约，再修订提案。
+新的领域模型文档是全量重构的目标基线；Graph 架构和整体重构计划中的 Host v6 实体关系是当前实现基线，不应继续作为新实体的设计依据。涉及安全、同步、迁移和隧道的既有契约仍需在代码重构时逐项迁移和验证。
 
 ## 当前承重架构与实现证据
 
@@ -31,8 +33,8 @@
 
 ## 阅读顺序
 
-- 想理解新方向：领域词汇 → Graph 架构 → 整体重构计划。
+- 想理解新方向：领域词汇 → 网络拓扑领域模型重构设计 → ADR 0002 → Graph 架构 → 整体重构计划。
 - 想实现 Graph：先读 JODER-10 第 5-10 节，再读 Graph 架构第 3-10 节。
 - 想改接入或免密流程：先读 APP Review 第 4、10、11 节，再读整体计划第 5、7、8 节。
-- 想改同步或数据模型：以 JODER-10 和 Host v6 代码为准，Graph 文档只定义投影和 UI 消费方式。
+- 想改同步或数据模型：先读网络拓扑领域模型重构设计，再以 JODER-10 和当前 Host v6 代码核对迁移契约；Graph 文档只定义投影和 UI 消费方式。
 - 想了解当前运行版本：读根 README、APP Review 和一期实现架构说明。
