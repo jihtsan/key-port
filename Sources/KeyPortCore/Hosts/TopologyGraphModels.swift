@@ -13,6 +13,10 @@ public struct TopologyGraphNodeID: RawRepresentable, Codable, Hashable, Sendable
         Self(rawValue: "device:\(id)")
     }
 
+    public static func node(_ id: UUID) -> Self {
+        Self(rawValue: "node:\(id.uuidString.lowercased())")
+    }
+
     public static func host(_ id: UUID) -> Self {
         Self(rawValue: "host:\(id.uuidString.lowercased())")
     }
@@ -31,6 +35,7 @@ public struct TopologyGraphNodeID: RawRepresentable, Codable, Hashable, Sendable
 }
 
 public enum TopologyGraphNodeKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case node
     case device
     case host
     case sshAccount
@@ -39,6 +44,7 @@ public enum TopologyGraphNodeKind: String, Codable, CaseIterable, Hashable, Send
 }
 
 public enum TopologyGraphEdgeKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case nodeAccess
     case deviceAccess
     case candidateAccess
     case hostService
@@ -232,7 +238,9 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
     public let kind: TopologyGraphNodeKind
     public let title: String
     public let subtitle: String?
+    public let endpointSummaries: [String]
     public let status: TopologyGraphStatus
+    public let isWorkspaceDevice: Bool
     public let source: HostV6.EntityReference?
     public let supportingReferences: [HostV6.EntityReference]
 
@@ -241,7 +249,9 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
         kind: TopologyGraphNodeKind,
         title: String,
         subtitle: String? = nil,
+        endpointSummaries: [String] = [],
         status: TopologyGraphStatus = .unknown,
+        isWorkspaceDevice: Bool? = nil,
         source: HostV6.EntityReference? = nil,
         supportingReferences: [HostV6.EntityReference] = []
     ) {
@@ -249,9 +259,44 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
         self.kind = kind
         self.title = title
         self.subtitle = subtitle
+        self.endpointSummaries = endpointSummaries
         self.status = status
+        self.isWorkspaceDevice = isWorkspaceDevice ?? (kind == .device)
         self.source = source
         self.supportingReferences = supportingReferences.sorted(by: Self.sortReferences)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case title
+        case subtitle
+        case endpointSummaries
+        case status
+        case isWorkspaceDevice
+        case source
+        case supportingReferences
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(TopologyGraphNodeID.self, forKey: .id)
+        let kind = try container.decode(TopologyGraphNodeKind.self, forKey: .kind)
+        self.init(
+            id: id,
+            kind: kind,
+            title: try container.decode(String.self, forKey: .title),
+            subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle),
+            endpointSummaries: try container.decodeIfPresent([String].self, forKey: .endpointSummaries) ?? [],
+            status: try container.decodeIfPresent(TopologyGraphStatus.self, forKey: .status) ?? .unknown,
+            isWorkspaceDevice: try container.decodeIfPresent(Bool.self, forKey: .isWorkspaceDevice)
+                ?? (kind == .device),
+            source: try container.decodeIfPresent(HostV6.EntityReference.self, forKey: .source),
+            supportingReferences: try container.decodeIfPresent(
+                [HostV6.EntityReference].self,
+                forKey: .supportingReferences
+            ) ?? []
+        )
     }
 
     private static func sortReferences(
@@ -350,6 +395,7 @@ public struct TopologyGraphQuery: Codable, Hashable, Sendable {
 public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
     public let schemaVersion: Int
     public let currentDeviceID: String?
+    public let primaryNodeID: TopologyGraphNodeID?
     public let authorityMode: HostV6.AuthorityMode?
     public let query: TopologyGraphQuery
     public let nodes: [TopologyGraphNode]
@@ -359,6 +405,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
     public init(
         schemaVersion: Int = 1,
         currentDeviceID: String?,
+        primaryNodeID: TopologyGraphNodeID? = nil,
         authorityMode: HostV6.AuthorityMode?,
         query: TopologyGraphQuery,
         nodes: [TopologyGraphNode],
@@ -367,6 +414,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.currentDeviceID = currentDeviceID
+        self.primaryNodeID = primaryNodeID
         self.authorityMode = authorityMode
         self.query = query
         self.nodes = nodes
@@ -376,6 +424,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
 
     public static let empty = Self(
         currentDeviceID: nil,
+        primaryNodeID: nil,
         authorityMode: nil,
         query: TopologyGraphQuery(),
         nodes: [],
@@ -387,6 +436,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
         switch query.viewMode {
         case .currentDevice, .allDevices:
             visibleKinds = Set([
+                .node,
                 .device,
                 .host,
                 query.showsServices ? .service : nil,
@@ -395,6 +445,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
             ].compactMap { $0 })
         case .services:
             visibleKinds = Set([
+                .node,
                 .host,
                 query.showsServices ? .service : nil,
                 query.includesSupportingNodes ? .sshAccount : nil,
@@ -408,7 +459,14 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
                 let currentDeviceNodeID = TopologyGraphNodeID.device(currentDeviceID)
                 ids = ids.filter { !$0.rawValue.hasPrefix("device:") || $0 == currentDeviceNodeID }
 
-                if query.includesSupportingNodes {
+                if let primaryNodeID {
+                    ids = ids.filter { nodeID in
+                        guard let node = nodes.first(where: { $0.id == nodeID }) else { return true }
+                        return !node.isWorkspaceDevice || node.id == primaryNodeID
+                    }
+                }
+
+                if query.includesSupportingNodes && primaryNodeID == nil {
                     let currentDeviceEdges = edges.filter {
                         $0.from == currentDeviceNodeID || $0.to == currentDeviceNodeID
                     }
@@ -432,6 +490,9 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
                 }
             } else {
                 ids = ids.filter { !$0.rawValue.hasPrefix("device:") }
+                ids = ids.filter { nodeID in
+                    nodes.first(where: { $0.id == nodeID })?.isWorkspaceDevice != true
+                }
                 if query.includesSupportingNodes {
                     ids = ids.filter {
                         !$0.rawValue.hasPrefix("ssh-account:") && !$0.rawValue.hasPrefix("actual-node:")
@@ -468,6 +529,7 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
         return Self(
             schemaVersion: schemaVersion,
             currentDeviceID: currentDeviceID,
+            primaryNodeID: primaryNodeID,
             authorityMode: authorityMode,
             query: query,
             nodes: filteredNodes,
@@ -491,11 +553,12 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
 
     private static func sortNodes(_ left: TopologyGraphNode, _ right: TopologyGraphNode) -> Bool {
         let kindOrder: [TopologyGraphNodeKind: Int] = [
-            .device: 0,
-            .host: 1,
-            .sshAccount: 2,
-            .service: 3,
-            .actualNode: 4,
+            .node: 0,
+            .device: 1,
+            .host: 2,
+            .sshAccount: 3,
+            .service: 4,
+            .actualNode: 5,
         ]
         let leftKey = (kindOrder[left.kind, default: 99], left.title.localizedLowercase, left.id.rawValue)
         let rightKey = (kindOrder[right.kind, default: 99], right.title.localizedLowercase, right.id.rawValue)

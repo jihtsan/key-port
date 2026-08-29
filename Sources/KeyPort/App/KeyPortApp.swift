@@ -10,21 +10,11 @@ struct KeyPortApp: App {
     @State private var model: AppModel
 
     init() {
-        let dependencies = KeyPortRuntimeDependencies.production
         let defaults = UserDefaults.standard
-        let currentDeviceID: String
-        if let storedDeviceID = defaults.string(forKey: "KeyPort.deviceID") {
-            currentDeviceID = storedDeviceID
-        } else {
-            currentDeviceID = KeyPortNaming.newDeviceID()
-            defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+        if defaults.string(forKey: "KeyPort.deviceID") == nil {
+            defaults.set(KeyPortNaming.newDeviceID(), forKey: "KeyPort.deviceID")
         }
-        let hostV6Runtime = HostV6RuntimeAssembly.makeIfEnabled(
-            currentDeviceID: currentDeviceID,
-            defaults: defaults,
-            dependencies: dependencies
-        )
-        let appModel = AppModel(hostV6Runtime: hostV6Runtime, defaults: defaults)
+        let appModel = AppModel(defaults: defaults)
         _model = State(initialValue: appModel)
         AppWindowFallback.scheduleIfNeeded(model: appModel)
     }

@@ -88,6 +88,9 @@ public struct TopologyGraphProjector: Sendable {
                 kind: .host,
                 title: host.name.isEmpty ? "未命名主机" : host.name,
                 subtitle: hostSubtitle(host: host, addresses: hostAddresses),
+                endpointSummaries: hostAddresses
+                    .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                    .map { "\($0.originalLabel):\($0.sshPort) · SSH" },
                 status: hostStatuses[host.id] ?? .unknown,
                 source: host.entityReference,
                 supportingReferences: hostAddresses.map(\.entityReference)
@@ -104,6 +107,9 @@ public struct TopologyGraphProjector: Sendable {
                 kind: .service,
                 title: service.name.isEmpty ? "未命名服务" : service.name,
                 subtitle: serviceSubtitle(service, address: service.fixedAddressID.flatMap { addressesByID[$0] }),
+                endpointSummaries: service.fixedAddressID
+                    .flatMap { addressesByID[$0] }
+                    .map { ["\($0.originalLabel):\($0.sshPort)"] } ?? [],
                 status: hostStatus,
                 source: service.entityReference,
                 supportingReferences: [
@@ -122,6 +128,7 @@ public struct TopologyGraphProjector: Sendable {
                     kind: .sshAccount,
                     title: identity.alias.isEmpty ? identity.username : identity.alias,
                     subtitle: "\(identity.username) · \(host.name)",
+                    endpointSummaries: address.map { ["\($0.originalLabel):\($0.sshPort) · SSH"] } ?? [],
                     status: identityStatuses[identity.id] ?? .unknown,
                     source: identity.entityReference,
                     supportingReferences: [
@@ -266,6 +273,316 @@ public struct TopologyGraphProjector: Sendable {
             nodes: nodes,
             edges: edges,
             diagnostics: diagnostics
+        )
+        return complete.applying(query)
+    }
+
+    /// Projects the unified Node/Endpoint/Service model.
+    ///
+    /// This is the runtime Graph seam. The HostV6 overload above remains only
+    /// for decoding and compatibility tests while callers migrate to the
+    /// topology snapshot.
+    public func project(
+        topology: TopologySnapshot,
+        currentDeviceID: String?,
+        query: TopologyGraphQuery = TopologyGraphQuery()
+    ) -> TopologyGraphSnapshot {
+        let activeNodes = topology.nodes.filter { !$0.isDeleted }
+        let activeProfiles = topology.profiles.filter { !$0.isRevoked }
+        let activeEndpoints = topology.endpoints.filter { !$0.isDeleted }
+        let activeServices = topology.services.filter { !$0.isDeleted }
+        let activeAccounts = topology.sshAccounts.filter { !$0.isDeleted }
+        let activeTrusts = topology.hostKeyTrusts.filter { !$0.isDeleted }
+        let activeAuthorizations = topology.authorizations.filter {
+            !$0.isDeleted && $0.relationState == .active
+        }
+        let nodesByID = Dictionary(uniqueKeysWithValues: activeNodes.map { ($0.id, $0) })
+        let endpointsByID = Dictionary(uniqueKeysWithValues: activeEndpoints.map { ($0.id, $0) })
+        let profilesByID = Dictionary(uniqueKeysWithValues: activeProfiles.map { ($0.id, $0) })
+        let keysByID = Dictionary(uniqueKeysWithValues: topology.sshKeys.map { ($0.id, $0) })
+        let accountsByNode = Dictionary(grouping: activeAccounts, by: \.nodeID)
+
+        let currentProfile = currentDeviceID.flatMap { profilesByID[$0] }
+        let primaryNodeID = currentProfile?.nodeID
+
+        func nodeStatus(_ node: Node) -> TopologyGraphStatus {
+            let nodeEndpoints = activeEndpoints.filter { $0.nodeID == node.id && $0.serviceID == nil }
+            let sshEndpoints = nodeEndpoints.filter { $0.protocol == .ssh }
+            let endpointIDs = Set(sshEndpoints.map(\.id))
+            let nodeTrusts = activeTrusts.filter { endpointIDs.contains($0.endpointID) }
+            let trust: TopologyGraphHostTrust
+            if nodeTrusts.contains(where: { $0.state == .replaced }) {
+                trust = .mismatch
+            } else if nodeTrusts.contains(where: { $0.state == .pendingReview }) {
+                trust = .pending
+            } else if nodeTrusts.contains(where: { $0.state == .confirmed }) {
+                trust = .trusted
+            } else if node.isSSHHost {
+                trust = .pending
+            } else {
+                trust = .unknown
+            }
+
+            let route: TopologyGraphRouteStatus = sshEndpoints.isEmpty
+                ? (node.isSSHHost ? .unavailable : .unknown)
+                : .available
+            let observations = topology.reachabilityObservations.filter {
+                $0.observerDeviceID == currentDeviceID && endpointIDs.contains($0.endpointID)
+            }
+            let reachability: TopologyGraphReachability
+            if observations.contains(where: \.wasReachable) {
+                reachability = .reachable
+            } else if observations.isEmpty {
+                reachability = .unknown
+            } else {
+                reachability = .unreachable
+            }
+
+            var reasons: [TopologyGraphReason] = []
+            if trust == .pending { reasons.append(.hostKeyPending) }
+            if trust == .mismatch { reasons.append(.hostKeyMismatch) }
+            if route == .unavailable { reasons.append(.noRoute) }
+            if reachability == .unreachable { reasons.append(.unreachable) }
+            if node.isSSHHost,
+               let currentProfile,
+               !(accountsByNode[node.id] ?? []).contains(where: { account in
+                   activeAuthorizations.contains { authorization in
+                       guard authorization.accountID == account.id,
+                             authorization.remoteState == .authorized else { return false }
+                       return keysByID[authorization.keyID]?.deviceID == currentProfile.id
+                   }
+               }) {
+                reasons.append(.remoteAuthorizationPending)
+            }
+
+            return TopologyGraphStatus(
+                reachability: reachability,
+                hostTrust: trust,
+                route: route,
+                sync: .clean,
+                reasons: reasons
+            )
+        }
+
+        func verificationStatus(for accountID: UUID, deviceID: String) -> TopologyGraphVerificationStatus {
+            switch topology.accessVerifications.first(where: {
+                $0.accountID == accountID && $0.deviceID == deviceID
+            })?.status {
+            case .authorized: .succeeded
+            case .checking, .syncing: .checking
+            case .keyAuthenticationFailed, .passwordAuthenticationFailed: .failed
+            default: .unknown
+            }
+        }
+
+        func accessStatus(
+            node: Node,
+            account: SSHAccount,
+            profile: WorkspaceDeviceProfile,
+            authorized: [SSHAuthorization]
+        ) -> TopologyGraphStatus {
+            let status = nodeStatus(node)
+            var reasons = status.reasons
+            let remoteAuthorization: TopologyGraphRemoteAuthorization
+            if authorized.contains(where: { $0.remoteState == .authorized }) {
+                remoteAuthorization = .authorized
+            } else if authorized.contains(where: { $0.remoteState == .revoked }) {
+                remoteAuthorization = .revoked
+                reasons.append(.remoteAuthorizationRevoked)
+            } else {
+                remoteAuthorization = .unknown
+            }
+
+            let localKeys = authorized.compactMap { keysByID[$0.keyID] }
+                .filter { $0.deviceID == profile.id }
+            let localKey: TopologyGraphLocalKeyStatus
+            if localKeys.contains(where: { $0.isLocallyAvailable }) {
+                localKey = .available
+            } else if localKeys.contains(where: { $0.isInAgent }) {
+                localKey = .agentOnly
+            } else if !localKeys.isEmpty {
+                localKey = .missing
+                reasons.append(.missingLocalKey)
+            } else {
+                localKey = .unknown
+            }
+
+            let verification = verificationStatus(for: account.id, deviceID: profile.id)
+            if verification == .checking { reasons.append(.verificationPending) }
+            if verification == .failed { reasons.append(.verificationFailed) }
+            return TopologyGraphStatus(
+                reachability: status.reachability,
+                hostTrust: status.hostTrust,
+                route: status.route,
+                localKey: localKey,
+                remoteAuthorization: remoteAuthorization,
+                verification: verification,
+                sync: .clean,
+                reasons: reasons
+            )
+        }
+
+        func endpointSummaries(for nodeID: UUID, serviceID: UUID? = nil) -> [String] {
+            activeEndpoints
+                .filter { $0.nodeID == nodeID && $0.serviceID == serviceID }
+                .sorted { ($0.priority, $0.id.uuidString) < ($1.priority, $1.id.uuidString) }
+                .map { endpoint in
+                    "\(endpoint.displayAddress) · \(endpoint.protocol.rawValue.uppercased()) · \(endpoint.networkScope.rawValue)"
+                }
+        }
+
+        var nodes: [TopologyGraphNode] = activeNodes.map { node in
+            let isCurrent = node.id == primaryNodeID
+            let endpoint = activeEndpoints
+                .filter { $0.nodeID == node.id && $0.serviceID == nil }
+                .sorted { ($0.priority, $0.id.uuidString) < ($1.priority, $1.id.uuidString) }
+                .first
+            let subtitle: String?
+            if isCurrent {
+                subtitle = "当前设备"
+            } else if let endpoint {
+                subtitle = endpoint.displayAddress
+            } else if !node.group.isEmpty {
+                subtitle = node.group
+            } else {
+                subtitle = nil
+            }
+            return TopologyGraphNode(
+                id: .node(node.id),
+                kind: .node,
+                title: node.name.isEmpty ? "未命名节点" : node.name,
+                subtitle: subtitle,
+                endpointSummaries: endpointSummaries(for: node.id),
+                status: nodeStatus(node),
+                isWorkspaceDevice: node.isWorkspaceDevice
+            )
+        }
+
+        nodes.append(contentsOf: activeServices.compactMap { service in
+            guard nodesByID[service.nodeID] != nil else { return nil }
+            let endpoint = service.endpointIDs.compactMap { endpointsByID[$0] }.first
+            let subtitle = endpoint.map { "\($0.address):\($0.port) · \(service.protocol.rawValue.uppercased())" }
+                ?? service.protocol.rawValue.uppercased()
+            return TopologyGraphNode(
+                id: .service(service.id),
+                kind: .service,
+                title: service.name.isEmpty ? "未命名服务" : service.name,
+                subtitle: subtitle,
+                endpointSummaries: endpointSummaries(for: service.nodeID, serviceID: service.id),
+                status: nodesByID[service.nodeID].map(nodeStatus) ?? .unknown
+            )
+        })
+
+        if query.includesSupportingNodes {
+            nodes.append(contentsOf: activeAccounts.compactMap { account in
+                guard let node = nodesByID[account.nodeID] else { return nil }
+                let endpoint = endpointsByID[account.endpointID]
+                return TopologyGraphNode(
+                    id: .sshAccount(account.id),
+                    kind: .sshAccount,
+                    title: account.alias.isEmpty ? account.username : account.alias,
+                    subtitle: "\(account.username) · \(node.name) · \(endpoint?.displayAddress ?? "未知地址")",
+                    endpointSummaries: endpoint.map {
+                        ["\($0.displayAddress) · \($0.protocol.rawValue.uppercased()) · \($0.networkScope.rawValue)"]
+                    } ?? [],
+                    status: currentProfile.map {
+                        accessStatus(
+                            node: node,
+                            account: account,
+                            profile: $0,
+                            authorized: activeAuthorizations.filter { $0.accountID == account.id }
+                        )
+                    } ?? nodeStatus(node)
+                )
+            })
+        }
+
+        var edges: [TopologyGraphEdge] = []
+        for profile in activeProfiles {
+            guard nodesByID[profile.nodeID] != nil else { continue }
+            let targetNodes = activeNodes.filter { node in
+                node.isSSHHost && node.id != profile.nodeID && !(accountsByNode[node.id] ?? []).isEmpty
+            }
+            for target in targetNodes {
+                let accounts = accountsByNode[target.id] ?? []
+                let authorizedAccounts = accounts.filter { account in
+                    activeAuthorizations.contains { authorization in
+                        guard authorization.accountID == account.id,
+                              authorization.remoteState == .authorized,
+                              authorization.relationState == .active else { return false }
+                        return keysByID[authorization.keyID]?.deviceID == profile.id
+                    }
+                }
+                let source = TopologyGraphNodeID.node(profile.nodeID)
+                let destination = TopologyGraphNodeID.node(target.id)
+                let label = (authorizedAccounts.isEmpty ? accounts : authorizedAccounts)
+                    .map { $0.alias.isEmpty ? $0.username : $0.alias }
+                    .sorted()
+                    .joined(separator: ", ")
+                if !authorizedAccounts.isEmpty {
+                    let account = authorizedAccounts[0]
+                    edges.append(TopologyGraphEdge(
+                        id: "access:\(profile.id):\(target.id.uuidString.lowercased())",
+                        from: source,
+                        to: destination,
+                        kind: .nodeAccess,
+                        label: label,
+                        status: accessStatus(
+                            node: target,
+                            account: account,
+                            profile: profile,
+                            authorized: activeAuthorizations.filter { $0.accountID == account.id }
+                        )
+                    ))
+                } else if profile.id == currentDeviceID {
+                    var status = nodeStatus(target)
+                    status = TopologyGraphStatus(
+                        reachability: status.reachability,
+                        hostTrust: status.hostTrust,
+                        route: status.route,
+                        localKey: .unknown,
+                        remoteAuthorization: .unknown,
+                        verification: .unknown,
+                        sync: .clean,
+                        reasons: status.reasons + [.candidateAccess]
+                    )
+                    edges.append(TopologyGraphEdge(
+                        id: "candidate:\(profile.id):\(target.id.uuidString.lowercased())",
+                        from: source,
+                        to: destination,
+                        kind: .candidateAccess,
+                        label: accounts.count == 1 ? "待授权 · \(label)" : "待授权账户 \(accounts.count) 个",
+                        isCandidate: true,
+                        status: status
+                    ))
+                }
+            }
+        }
+
+        for service in activeServices {
+            guard nodesByID[service.nodeID] != nil else { continue }
+            edges.append(TopologyGraphEdge(
+                id: "service:\(service.nodeID.uuidString.lowercased()):\(service.id.uuidString.lowercased())",
+                from: .node(service.nodeID),
+                to: .service(service.id),
+                kind: .hostService,
+                label: service.name,
+                status: nodesByID[service.nodeID].map(nodeStatus) ?? .unknown
+            ))
+        }
+
+        let complete = TopologyGraphSnapshot(
+            currentDeviceID: currentDeviceID,
+            primaryNodeID: primaryNodeID.map(TopologyGraphNodeID.node),
+            authorityMode: nil,
+            query: TopologyGraphQuery(
+                viewMode: .allDevices,
+                includesSupportingNodes: true,
+                includesActualNodes: false,
+                showsServices: true
+            ),
+            nodes: nodes,
+            edges: edges
         )
         return complete.applying(query)
     }
