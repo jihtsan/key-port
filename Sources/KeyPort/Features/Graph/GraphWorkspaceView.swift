@@ -6,6 +6,7 @@ struct GraphWorkspaceView: View {
 
     var body: some View {
         @Bindable var workspace = model.graphWorkspace
+        let nodeItems = NodeWorkspacePresentation.items(model: model, workspace: workspace)
 
         VStack(spacing: 0) {
             GraphFilterBar(workspace: workspace)
@@ -14,17 +15,21 @@ struct GraphWorkspaceView: View {
 
             if !workspace.isAvailable {
                 GraphUnavailableView(message: workspace.unavailableMessage)
-            } else if workspace.snapshot.nodes.isEmpty {
-                ContentUnavailableView(
-                    "没有匹配的节点",
-                    systemImage: "magnifyingglass",
-                    description: Text("调整搜索或筛选条件后重试。")
-                )
             } else {
-                GraphCanvasView(
-                    snapshot: workspace.snapshot,
-                    selection: $workspace.selectedNodeID
-                )
+                let visibleSnapshot = NodeWorkspacePresentation.snapshot(model: model, workspace: workspace)
+                if visibleSnapshot.nodes.isEmpty {
+                    ContentUnavailableView(
+                        "没有匹配的节点",
+                        systemImage: "magnifyingglass",
+                        description: Text("调整搜索或筛选条件后重试。")
+                    )
+                } else {
+                    GraphCanvasView(
+                        snapshot: visibleSnapshot,
+                        nodeItems: nodeItems,
+                        selection: $workspace.selectedNodeID
+                    )
+                }
             }
         }
         .navigationTitle("Graph")

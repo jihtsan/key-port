@@ -182,7 +182,7 @@ struct GraphFilterBar: View {
             .frame(maxWidth: 270)
 
             Toggle("仅异常", isOn: $workspace.onlyIssues)
-            Toggle("关系细节", isOn: $workspace.includesSupportingNodes)
+            Toggle("展开关联", isOn: $workspace.includesSupportingNodes)
             Toggle("实际节点", isOn: $workspace.includesActualNodes)
                 .disabled(!workspace.includesSupportingNodes)
             Toggle("服务", isOn: $workspace.showsServices)
@@ -208,7 +208,7 @@ struct GraphAuthorityBanner: View {
                     Text("Graph · \(mode?.displayTitle ?? "V6 Shadow 只读")")
                 }
                 Spacer()
-                Text("图仅展示已记录事实；拖动节点不会产生授权")
+                Text("Graph 只展示已记录事实；授权请在节点属性中操作")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)

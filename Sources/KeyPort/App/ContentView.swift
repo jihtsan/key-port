@@ -37,7 +37,7 @@ struct ContentView: View {
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer) {
             ServerEditorView(
-                title: "添加服务器和用户",
+                title: "添加节点和首个 SSH 账户",
                 initialDraft: model.newServerDraft(),
                 canSynchronize: model.canSynchronizePasswords,
                 onCheck: { draft, password, hostKeys in
@@ -65,7 +65,7 @@ struct ContentView: View {
                let sourceServer = model.snapshot.servers.first(where: { $0.id == sourceServerID && !$0.isDeleted }),
                let draft = model.newAccountDraft(for: sourceServerID) {
                 ServerEditorView(
-                    title: "为 \(sourceServer.name) 添加用户",
+                    title: "为 \(sourceServer.name) 添加 SSH 账户",
                     initialDraft: draft,
                     initialHostKeys: sourceServer.confirmedHostKeys,
                     hasStoredPassword: false,
@@ -135,7 +135,7 @@ struct ContentView: View {
         .sheet(isPresented: $showsEditServer) {
             if let server = model.selectedServer {
                 ServerEditorView(
-                    title: "编辑服务器和用户",
+                    title: "编辑 SSH 账户",
                     existingServerID: server.id,
                     initialDraft: ServerDraft(server: server),
                     initialHostKeys: server.confirmedHostKeys,
@@ -240,7 +240,16 @@ struct ContentView: View {
     private var detailColumn: some View {
         switch model.destination {
         case .graph, .nodes:
-            GraphInspectorView(workspace: model.graphWorkspace)
+            GraphInspectorView(
+                workspace: model.graphWorkspace,
+                model: model,
+                onAddAccount: { sourceAccountID in
+                    addAccount(sourceAccountID: sourceAccountID)
+                },
+                onEditAccount: { serverID in
+                    editAccount(serverID: serverID)
+                }
+            )
         case .activity:
             AuditOverviewView(model: model)
         case .servers:
@@ -270,15 +279,15 @@ struct ContentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        if model.destination == .graph {
+        if model.destination == .graph || model.destination == .nodes {
             ToolbarItem {
                 Button {
                     model.destination = .servers
                     showsAddServer = true
                 } label: {
-                    Label("添加主机", systemImage: "plus")
+                    Label("添加节点", systemImage: "plus")
                 }
-                .help("通过兼容接入流程添加主机；V6 权威模式下不可用")
+                .help("添加节点和首个 SSH 账户；V6 权威模式下不可用")
                 .disabled(model.isMetadataReadOnly || model.isBusy)
             }
         }
@@ -288,14 +297,14 @@ struct ContentView: View {
                 Button {
                     showsAddServer = true
                 } label: {
-                    Label("添加服务器", systemImage: "plus")
+                    Label("添加节点", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
                 Button {
                     accountSourceServerID = model.selectedServerID
                 } label: {
-                    Label("添加用户", systemImage: "person.badge.plus")
+                    Label("添加 SSH 账户", systemImage: "person.badge.plus")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
@@ -344,11 +353,26 @@ struct ContentView: View {
                 Button {
                     Task { await model.synchronizeCloud() }
                 } label: {
-                    Label("同步 CloudKit 元数据", systemImage: "icloud.and.arrow.up")
+                    Label("同步工作区", systemImage: "icloud.and.arrow.up")
                 }
-                .help("通过 CloudKit 同步非敏感元数据；不会同步服务器密码或私钥")
+                .help("同步非敏感工作区元数据；不会同步服务器密码或私钥")
             }
         }
+    }
+
+    private func addAccount(sourceAccountID: UUID?) {
+        if let sourceAccountID {
+            model.selectedServerID = sourceAccountID
+            accountSourceServerID = sourceAccountID
+        } else {
+            model.destination = .servers
+            showsAddServer = true
+        }
+    }
+
+    private func editAccount(serverID: UUID) {
+        model.selectedServerID = serverID
+        showsEditServer = true
     }
 
     private var selectedPasswordlessAction: PasswordlessPrimaryAction {

@@ -6,6 +6,7 @@ struct GraphNodesView: View {
 
     var body: some View {
         @Bindable var workspace = model.graphWorkspace
+        let items = NodeWorkspacePresentation.items(model: model, workspace: workspace)
 
         VStack(spacing: 0) {
             GraphFilterBar(workspace: workspace)
@@ -16,11 +17,23 @@ struct GraphNodesView: View {
                     systemImage: "circle.grid.3x3",
                     description: Text(workspace.unavailableMessage)
                 )
+            } else if items.isEmpty {
+                ContentUnavailableView(
+                    workspace.searchText.isEmpty ? "暂无节点" : "没有匹配的节点",
+                    systemImage: workspace.searchText.isEmpty ? "server.rack" : "magnifyingglass",
+                    description: Text(
+                        workspace.searchText.isEmpty
+                            ? "添加一个节点后，它的端点和 SSH 用户会集中显示在这里。"
+                            : "调整搜索或筛选条件后重试。"
+                    )
+                )
             } else {
+                NodeListSummary(items: items)
+                Divider()
                 List(selection: $workspace.selectedNodeID) {
-                    ForEach(workspace.snapshot.nodes) { node in
-                        GraphNodeRow(node: node)
-                            .tag(node.id)
+                    ForEach(items) { item in
+                        GraphNodeRow(item: item)
+                            .tag(item.id)
                     }
                 }
                 .listStyle(.sidebar)
@@ -35,20 +48,53 @@ struct GraphNodesView: View {
     }
 }
 
+private struct NodeListSummary: View {
+    let items: [NodeWorkspaceItem]
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label("节点", systemImage: "server.rack")
+                .font(.callout.weight(.medium))
+            Text("\(items.count)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Spacer()
+            if issueCount > 0 {
+                Label("\(issueCount) 个需处理", systemImage: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+            } else {
+                Label("状态正常", systemImage: "checkmark.circle")
+                    .foregroundStyle(.green)
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var issueCount: Int {
+        items.filter { $0.node.status.level != .healthy && $0.node.status.level != .unknown }.count
+    }
+}
+
 private struct GraphNodeRow: View {
-    let node: TopologyGraphNode
+    let item: NodeWorkspaceItem
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: node.kind.systemImage)
-                .foregroundStyle(node.status.level.tint)
+            Image(systemName: item.node.kind.systemImage)
+                .foregroundStyle(item.node.status.level.tint)
                 .frame(width: 17)
             VStack(alignment: .leading, spacing: 2) {
-                Text(node.title)
+                Text(item.node.title)
                     .lineLimit(1)
                 HStack(spacing: 5) {
-                    Text(node.kind.displayTitle)
-                    if let subtitle = node.subtitle {
+                    Text(item.node.kind.displayTitle)
+                    if item.isHostNode {
+                        Text("·")
+                        Text(item.accountCount == 1 ? "1 个 SSH 用户" : "\(item.accountCount) 个 SSH 用户")
+                    }
+                    if let subtitle = item.node.subtitle {
                         Text("·")
                         Text(subtitle)
                     }
@@ -59,10 +105,10 @@ private struct GraphNodeRow: View {
             }
             Spacer(minLength: 0)
             Circle()
-                .fill(node.status.level.tint)
+                .fill(item.node.status.level.tint)
                 .frame(width: 7, height: 7)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(node.title)，\(node.kind.displayTitle)，\(node.status.level.displayTitle)")
+        .accessibilityLabel("\(item.node.title)，\(item.node.kind.displayTitle)，\(item.accountCount) 个 SSH 用户，\(item.node.status.level.displayTitle)")
     }
 }
