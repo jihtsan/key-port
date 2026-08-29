@@ -1,6 +1,23 @@
 import KeyPortCore
 import SwiftUI
 
+enum ServerEditorPrimaryAction: Equatable, Sendable {
+    case testConnection
+    case save
+    case saveAndAuthorize
+}
+
+func serverEditorPrimaryAction(
+    offersPasswordlessSetup: Bool,
+    passwordValidationPassed: Bool,
+    metadataOnlySaveAllowed: Bool
+) -> ServerEditorPrimaryAction {
+    if offersPasswordlessSetup {
+        return passwordValidationPassed ? .saveAndAuthorize : .testConnection
+    }
+    return passwordValidationPassed || metadataOnlySaveAllowed ? .save : .testConnection
+}
+
 struct ServerEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -21,7 +38,6 @@ struct ServerEditorView: View {
     @State private var draft: ServerDraft
     @State private var portText: String
     @State private var password = ""
-    @State private var synchronizable = false
     @State private var trustedHostKeys: [HostKeyRecord]
     @State private var validation: ServerEditorValidationResult?
     @State private var logLines: [String] = []
@@ -29,6 +45,7 @@ struct ServerEditorView: View {
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var checkTask: Task<Void, Never>?
+    @State private var pendingSave: PendingServerSave?
 
     init(
         title: String,
@@ -114,35 +131,12 @@ struct ServerEditorView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-
-                    Toggle("允许通过 iCloud Keychain 同步", isOn: $synchronizable)
-                        .disabled(!canSynchronize || (!hasStoredPassword && password.isEmpty) || isChecking || isSaving)
-                    if !canSynchronize {
-                        Label("此版本无法使用 iCloud Keychain 同步", systemImage: "icloud.slash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if hasStoredPassword && password.isEmpty {
-                        Label(
-                            synchronizable
-                                ? "保存后，当前密码将允许通过 iCloud Keychain 同步。"
-                                : "保存后，当前密码将仅保存在此 Mac。",
-                            systemImage: synchronizable ? "checkmark.icloud" : "macbook"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
                 }
 
                 Section("连接测试") {
                     HStack(spacing: 12) {
                         checkStatus
                         Spacer()
-                        Button {
-                            checkConnection()
-                        } label: {
-                            Label("测试连接", systemImage: "checkmark.shield")
-                        }
-                        .disabled(!canCheck || isChecking || isSaving)
                     }
 
                     if validation?.state == .confirmationRequired {
@@ -178,28 +172,34 @@ struct ServerEditorView: View {
                 Spacer()
                 Button("取消", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isChecking || isSaving)
+                    .disabled(isChecking || isSaving || pendingSave != nil)
                 if offersPasswordlessSetup {
-                    Button("仅保存") { save(enablesPasswordless: false) }
-                        .disabled(!validationPassed || isChecking || isSaving)
+                    Button("仅保存") { requestSave(enablesPasswordless: false) }
+                        .disabled(!validationPassed || isChecking || isSaving || pendingSave != nil)
                 }
-                Button(offersPasswordlessSetup ? "保存并启用免密" : primaryActionTitle) {
-                    save(enablesPasswordless: offersPasswordlessSetup)
+                Button(primaryButtonTitle) {
+                    performPrimaryAction()
                 }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!validationPassed || isChecking || isSaving)
+                    .disabled(primaryButtonDisabled)
             }
             .padding()
         }
         .frame(width: 620)
         .frame(minHeight: 650)
-        .onAppear {
-            if hasStoredPassword {
-                synchronizable = storedPasswordSynchronizable
-            } else if canSynchronize {
-                synchronizable = UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
-            }
+        .sheet(item: $pendingSave) { request in
+            PasswordSyncConfirmationView(
+                initialSynchronizable: request.initialSynchronizable,
+                onConfirm: { synchronizable in
+                    pendingSave = nil
+                    save(
+                        enablesPasswordless: request.enablesPasswordless,
+                        synchronizable: synchronizable
+                    )
+                },
+                onCancel: { pendingSave = nil }
+            )
         }
         .onDisappear {
             checkTask?.cancel()
@@ -276,9 +276,12 @@ struct ServerEditorView: View {
         isValidDraft && (!password.isEmpty || hasStoredPassword)
     }
 
+    private var passwordValidationPassed: Bool {
+        validation?.state == .succeeded && validation?.check.state == .succeeded
+    }
+
     private var validationPassed: Bool {
-        (validation?.state == .succeeded && validation?.check.state == .succeeded)
-            || metadataOnlySaveAllowed
+        passwordValidationPassed || metadataOnlySaveAllowed
     }
 
     private var metadataOnlySaveAllowed: Bool {
@@ -300,6 +303,57 @@ struct ServerEditorView: View {
 
     private var shouldShowLog: Bool {
         isChecking || validation?.state == .confirmationRequired || validation?.state == .failed
+    }
+
+    private var currentPrimaryAction: ServerEditorPrimaryAction {
+        serverEditorPrimaryAction(
+            offersPasswordlessSetup: offersPasswordlessSetup,
+            passwordValidationPassed: passwordValidationPassed,
+            metadataOnlySaveAllowed: metadataOnlySaveAllowed
+        )
+    }
+
+    private var primaryButtonTitle: String {
+        switch currentPrimaryAction {
+        case .testConnection:
+            "测试连接"
+        case .save:
+            primaryActionTitle
+        case .saveAndAuthorize:
+            "保存并授权"
+        }
+    }
+
+    private var primaryButtonDisabled: Bool {
+        guard !isChecking, !isSaving, pendingSave == nil else { return true }
+        switch currentPrimaryAction {
+        case .testConnection:
+            return !canCheck
+        case .save, .saveAndAuthorize:
+            return false
+        }
+    }
+
+    private var canOfferPasswordSync: Bool {
+        canSynchronize && (!password.isEmpty || hasStoredPassword)
+    }
+
+    private var initialSynchronizableChoice: Bool {
+        if hasStoredPassword {
+            return storedPasswordSynchronizable
+        }
+        return UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
+    }
+
+    private func performPrimaryAction() {
+        switch currentPrimaryAction {
+        case .testConnection:
+            checkConnection()
+        case .save:
+            requestSave(enablesPasswordless: false)
+        case .saveAndAuthorize:
+            requestSave(enablesPasswordless: true)
+        }
     }
 
     private var isValidDraft: Bool {
@@ -355,8 +409,25 @@ struct ServerEditorView: View {
         checkConnection()
     }
 
-    private func save(enablesPasswordless: Bool) {
-        guard validationPassed, !isSaving else { return }
+    private func requestSave(enablesPasswordless: Bool) {
+        let canSave = enablesPasswordless ? passwordValidationPassed : validationPassed
+        guard canSave, !isSaving, pendingSave == nil else { return }
+        if canOfferPasswordSync {
+            pendingSave = PendingServerSave(
+                enablesPasswordless: enablesPasswordless,
+                initialSynchronizable: initialSynchronizableChoice
+            )
+        } else {
+            save(
+                enablesPasswordless: enablesPasswordless,
+                synchronizable: hasStoredPassword && storedPasswordSynchronizable
+            )
+        }
+    }
+
+    private func save(enablesPasswordless: Bool, synchronizable: Bool) {
+        let canSave = enablesPasswordless ? passwordValidationPassed : validationPassed
+        guard canSave, !isSaving else { return }
         isSaving = true
         saveError = nil
         let submission = ServerEditorSubmission(
@@ -387,4 +458,10 @@ struct ServerEditorView: View {
         saveError = nil
         if resetHostKeys { trustedHostKeys = [] }
     }
+}
+
+private struct PendingServerSave: Identifiable {
+    let id = UUID()
+    let enablesPasswordless: Bool
+    let initialSynchronizable: Bool
 }
