@@ -3,6 +3,7 @@ import SwiftUI
 
 struct GraphCanvasView: View {
     let snapshot: TopologyGraphSnapshot
+    let nodeItems: [NodeWorkspaceItem]
     @Binding var selection: TopologyGraphNodeID?
     @State private var zoom: CGFloat = 1
 
@@ -33,11 +34,13 @@ struct GraphCanvasView: View {
                         .frame(width: canvasSize.width, height: canvasSize.height)
 
                         ForEach(snapshot.nodes) { node in
+                            let selectionID = owningNodeID(for: node.id)
                             GraphNodeCard(
                                 node: node,
-                                isSelected: selection == node.id
+                                item: nodeItems.first { $0.id == node.id },
+                                isSelected: selection == selectionID
                             ) {
-                                selection = node.id
+                                selection = selectionID
                             }
                             .position(positions[node.id] ?? .zero)
                         }
@@ -83,10 +86,21 @@ struct GraphCanvasView: View {
             }
         }
     }
+
+    private func owningNodeID(for nodeID: TopologyGraphNodeID) -> TopologyGraphNodeID {
+        guard nodeID.rawValue.hasPrefix("ssh-account:") || nodeID.rawValue.hasPrefix("service:") else {
+            return nodeID
+        }
+        return nodeItems.first { item in
+            item.accountNodes.contains { $0.id == nodeID }
+                || item.services.contains { $0.id == nodeID }
+        }?.id ?? nodeID
+    }
 }
 
 private struct GraphNodeCard: View {
     let node: TopologyGraphNode
+    let item: NodeWorkspaceItem?
     let isSelected: Bool
     let action: () -> Void
 
@@ -111,7 +125,18 @@ private struct GraphNodeCard: View {
                     Text(node.kind.displayTitle)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    if let subtitle = node.subtitle {
+                    if let item, item.isHostNode {
+                        HStack(spacing: 4) {
+                            Text(item.accountCount == 1 ? "1 个 SSH 用户" : "\(item.accountCount) 个 SSH 用户")
+                            if !item.services.isEmpty {
+                                Text("·")
+                                Text("\(item.services.count) 个服务")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    } else if let subtitle = node.subtitle {
                         Text(subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -120,10 +145,10 @@ private struct GraphNodeCard: View {
                 }
             }
             .padding(12)
-            .frame(width: 196, height: 78, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .frame(width: 214, height: 96, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 14)
                     .stroke(isSelected ? Color.accentColor : node.status.level.tint.opacity(0.35), lineWidth: isSelected ? 2 : 1)
             }
         }
@@ -134,9 +159,10 @@ private struct GraphNodeCard: View {
 }
 
 private enum GraphCanvasLayout {
-    private static let nodeWidth: CGFloat = 196
-    private static let horizontalSpacing: CGFloat = 220
-    private static let verticalSpacing: CGFloat = 112
+    private static let nodeWidth: CGFloat = 214
+    private static let nodeHeight: CGFloat = 96
+    private static let horizontalSpacing: CGFloat = 238
+    private static let verticalSpacing: CGFloat = 130
 
     static func size(
         for snapshot: TopologyGraphSnapshot,
@@ -147,7 +173,7 @@ private enum GraphCanvasLayout {
         let maxColumn = columns.keys.max() ?? 0
         return CGSize(
             width: max(available.width - 20, 120 + CGFloat(maxColumn) * horizontalSpacing + nodeWidth),
-            height: max(available.height - 20, 100 + CGFloat(maxRows - 1) * verticalSpacing + 78)
+            height: max(available.height - 20, 100 + CGFloat(maxRows - 1) * verticalSpacing + nodeHeight)
         )
     }
 
