@@ -16,6 +16,7 @@ struct GraphInspectorView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(node)
                     statusSection(node.status)
+                    tailscaleSection(node)
                     endpointSection(node)
                     relationSection
                     evidenceSection(node)
@@ -75,6 +76,51 @@ struct GraphInspectorView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func tailscaleSection(_ node: TopologyGraphNode) -> some View {
+        if !node.tailscaleIdentities.isEmpty {
+            GroupBox("Tailscale") {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(node.tailscaleIdentities) { identity in
+                        if identity.id != node.tailscaleIdentities.first?.id {
+                            Divider()
+                        }
+                        LabeledContent("Tailnet", value: identity.tailnetKey)
+                        LabeledContent("Node ID", value: identity.tailscaleNodeID)
+                        if let magicDNS = identity.magicDNS {
+                            LabeledContent("MagicDNS", value: magicDNS)
+                        }
+                        if !identity.addresses.isEmpty {
+                            LabeledContent("Tailscale IP") {
+                                Text(identity.addresses.joined(separator: "\n"))
+                                    .monospaced()
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        if let operatingSystem = identity.operatingSystem {
+                            LabeledContent("系统", value: operatingSystem)
+                        }
+                        LabeledContent("本机观测", value: identity.observationState.displayTitle)
+                        if let observedAt = identity.observedAt {
+                            LabeledContent(
+                                "刷新时间",
+                                value: observedAt.formatted(date: .abbreviated, time: .shortened)
+                            )
+                        }
+                        if let lastSeenAt = identity.lastSeenAt {
+                            LabeledContent(
+                                "最近在线",
+                                value: lastSeenAt.formatted(date: .abbreviated, time: .shortened)
+                            )
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
         }
     }
 
@@ -197,6 +243,7 @@ private extension TopologyGraphEdgeKind {
         case .candidateAccess: "候选访问"
         case .hostService: "主机承载服务"
         case .sshAccountActualNode: "账户关联实际节点"
+        case .tailscalePeer: "Tailscale 节点"
         }
     }
 }

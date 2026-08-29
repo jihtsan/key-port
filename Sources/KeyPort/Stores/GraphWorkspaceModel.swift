@@ -106,7 +106,11 @@ final class GraphWorkspaceModel {
         rebuildVisibleSnapshot(selectDefault: true)
     }
 
-    func update(topology: TopologySnapshot, currentDeviceID: String?) {
+    func update(
+        topology: TopologySnapshot,
+        currentDeviceID: String?,
+        tailscaleStatus: TailscaleStatus? = nil
+    ) {
         usesUnifiedTopology = true
         self.currentDeviceID = currentDeviceID
         isAvailable = true
@@ -120,6 +124,7 @@ final class GraphWorkspaceModel {
         sourceSnapshot = projector.project(
             topology: topology,
             currentDeviceID: currentDeviceID,
+            tailscaleStatus: tailscaleStatus,
             query: sourceQuery
         )
         rebuildVisibleSnapshot(selectDefault: true)

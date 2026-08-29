@@ -406,13 +406,15 @@ public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
 }
 
 public struct TopologySnapshot: Codable, Hashable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public var schemaVersion: Int
     public var nodes: [Node]
     public var profiles: [WorkspaceDeviceProfile]
     public var endpoints: [Endpoint]
     public var services: [Service]
+    public var tailscaleNodes: [TailscaleNodeIdentity]
+    public var tailscaleObservations: [TailscaleNodeObservation]
     public var sshAccounts: [SSHAccount]
     public var sshKeys: [SSHKey]
     public var hostKeyTrusts: [SSHHostKeyTrust]
@@ -428,6 +430,8 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         profiles: [WorkspaceDeviceProfile] = [],
         endpoints: [Endpoint] = [],
         services: [Service] = [],
+        tailscaleNodes: [TailscaleNodeIdentity] = [],
+        tailscaleObservations: [TailscaleNodeObservation] = [],
         sshAccounts: [SSHAccount] = [],
         sshKeys: [SSHKey] = [],
         hostKeyTrusts: [SSHHostKeyTrust] = [],
@@ -442,6 +446,8 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         self.profiles = profiles
         self.endpoints = endpoints
         self.services = services
+        self.tailscaleNodes = tailscaleNodes
+        self.tailscaleObservations = tailscaleObservations
         self.sshAccounts = sshAccounts
         self.sshKeys = sshKeys
         self.hostKeyTrusts = hostKeyTrusts
@@ -452,11 +458,63 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         self.auditEvents = auditEvents
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case nodes
+        case profiles
+        case endpoints
+        case services
+        case tailscaleNodes
+        case tailscaleObservations
+        case sshAccounts
+        case sshKeys
+        case hostKeyTrusts
+        case authorizations
+        case reachabilityObservations
+        case accessVerifications
+        case nodeAssociations
+        case auditEvents
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        nodes = try container.decodeIfPresent([Node].self, forKey: .nodes) ?? []
+        profiles = try container.decodeIfPresent([WorkspaceDeviceProfile].self, forKey: .profiles) ?? []
+        endpoints = try container.decodeIfPresent([Endpoint].self, forKey: .endpoints) ?? []
+        services = try container.decodeIfPresent([Service].self, forKey: .services) ?? []
+        tailscaleNodes = try container.decodeIfPresent(
+            [TailscaleNodeIdentity].self,
+            forKey: .tailscaleNodes
+        ) ?? []
+        tailscaleObservations = try container.decodeIfPresent(
+            [TailscaleNodeObservation].self,
+            forKey: .tailscaleObservations
+        ) ?? []
+        sshAccounts = try container.decodeIfPresent([SSHAccount].self, forKey: .sshAccounts) ?? []
+        sshKeys = try container.decodeIfPresent([SSHKey].self, forKey: .sshKeys) ?? []
+        hostKeyTrusts = try container.decodeIfPresent([SSHHostKeyTrust].self, forKey: .hostKeyTrusts) ?? []
+        authorizations = try container.decodeIfPresent([SSHAuthorization].self, forKey: .authorizations) ?? []
+        reachabilityObservations = try container.decodeIfPresent(
+            [ReachabilityObservation].self,
+            forKey: .reachabilityObservations
+        ) ?? []
+        accessVerifications = try container.decodeIfPresent(
+            [AccessVerification].self,
+            forKey: .accessVerifications
+        ) ?? []
+        nodeAssociations = try container.decodeIfPresent([NodeAssociation].self, forKey: .nodeAssociations) ?? []
+        auditEvents = try container.decodeIfPresent([AuditEvent].self, forKey: .auditEvents) ?? []
+    }
+
     public static let empty = Self()
 
     public var activeNodes: [Node] { nodes.filter { !$0.isDeleted } }
     public var activeEndpoints: [Endpoint] { endpoints.filter { !$0.isDeleted } }
     public var activeAccounts: [SSHAccount] { sshAccounts.filter { !$0.isDeleted } }
+    public var activeTailscaleNodes: [TailscaleNodeIdentity] {
+        tailscaleNodes.filter { !$0.isDeleted }
+    }
 
     public func node(id: UUID) -> Node? {
         nodes.first { $0.id == id && !$0.isDeleted }
@@ -497,6 +555,13 @@ public enum TopologyStableID {
 
     public static func node(forDeviceID deviceID: String) -> UUID {
         uuidV5(namespace: namespace, name: "node/device/\(deviceID.trimmingCharacters(in: .whitespacesAndNewlines))")
+    }
+
+    public static func node(forTailscale tailnetKey: String, nodeID: String) -> UUID {
+        uuidV5(
+            namespace: namespace,
+            name: "node/tailscale/\(TailscaleNodeIdentity.normalizeTailnetKey(tailnetKey))/\(nodeID.trimmingCharacters(in: .whitespacesAndNewlines))"
+        )
     }
 
     public static func endpoint(
@@ -757,6 +822,29 @@ public enum TopologySnapshotMigration {
             return value
         }
         result.services = mergeByKey([], existing.services, by: { $0.id.uuidString }) { current, _ in current }
+        result.tailscaleNodes = mergeByKey(
+            migrated.tailscaleNodes,
+            existing.tailscaleNodes,
+            by: \.id
+        ) { current, previous in
+            var value = current
+            if value.displayName.isEmpty { value.displayName = previous.displayName }
+            if value.hostName == nil { value.hostName = previous.hostName }
+            if value.magicDNS == nil { value.magicDNS = previous.magicDNS }
+            if value.addresses.isEmpty { value.addresses = previous.addresses }
+            if value.operatingSystem == nil { value.operatingSystem = previous.operatingSystem }
+            value.updatedAt = max(value.updatedAt, previous.updatedAt)
+            value.isDeleted = current.isDeleted && previous.isDeleted
+            return value
+        }
+        // Tailscale observations are local to each observing device and must
+        // survive legacy projection refreshes without entering the cloud
+        // metadata merge.
+        result.tailscaleObservations = mergeByKey(
+            [],
+            existing.tailscaleObservations,
+            by: \.id
+        ) { current, _ in current }
         result.sshAccounts = mergeByKey(migrated.sshAccounts, existing.sshAccounts, by: { $0.id.uuidString }) { current, _ in current }
         result.sshKeys = mergeByKey(migrated.sshKeys, existing.sshKeys, by: \.id) { current, previous in
             var value = current

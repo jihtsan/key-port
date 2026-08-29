@@ -25,6 +25,18 @@ extension TopologyGraphNodeKind {
     }
 }
 
+extension TopologyGraphTailscaleObservationState {
+    var displayTitle: String {
+        switch self {
+        case .online: "在线"
+        case .offline: "离线"
+        case .stale: "观测已过期"
+        case .notObserved: "当前设备未观测"
+        case .unavailable: "Tailscale 不可用"
+        }
+    }
+}
+
 extension TopologyGraphStatusLevel {
     var displayTitle: String {
         switch self {
