@@ -1,6 +1,15 @@
 import Foundation
 import Security
 
+struct CodeSigningEntitlementReader {
+    let taskValue: (String) -> Any?
+    let legacyValue: (String) -> Any?
+
+    func value(for key: String) -> Any? {
+        taskValue(key) ?? legacyValue(key)
+    }
+}
+
 enum CodeSigningInfo {
     static var teamIdentifier: String? {
         signingInformation?[kSecCodeInfoTeamIdentifier] as? String
@@ -15,6 +24,19 @@ enum CodeSigningInfo {
     }
 
     static func entitlementValue(_ key: String) -> Any? {
+        let reader = CodeSigningEntitlementReader(
+            taskValue: { taskEntitlementValue($0) },
+            legacyValue: { legacyEntitlementValue($0) }
+        )
+        return reader.value(for: key)
+    }
+
+    private static func taskEntitlementValue(_ key: String) -> Any? {
+        guard let task = SecTaskCreateFromSelf(nil) else { return nil }
+        return SecTaskCopyValueForEntitlement(task, key as CFString, nil)
+    }
+
+    private static func legacyEntitlementValue(_ key: String) -> Any? {
         guard let entitlements = signingInformation?[kSecCodeInfoEntitlementsDict] as? NSDictionary else {
             return nil
         }
