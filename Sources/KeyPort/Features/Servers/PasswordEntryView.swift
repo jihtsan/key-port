@@ -1,6 +1,20 @@
 import KeyPortCore
 import SwiftUI
 
+enum PasswordEntryPrimaryAction: Equatable, Sendable {
+    case verifyPassword
+    case save
+    case saveAndAuthorize
+}
+
+func passwordEntryPrimaryAction(
+    canAuthorize: Bool,
+    validationPassed: Bool
+) -> PasswordEntryPrimaryAction {
+    guard validationPassed else { return .verifyPassword }
+    return canAuthorize ? .saveAndAuthorize : .save
+}
+
 struct PasswordEntryView: View {
     let server: ServerConnection
     let canAuthorize: Bool
@@ -13,16 +27,49 @@ struct PasswordEntryView: View {
 
     @State private var username: String
     @State private var password = ""
-    @State private var synchronizable = false
     @State private var validationGate = PasswordSSHValidationGate()
     @State private var isTesting = false
     @State private var testTask: Task<Void, Never>?
+    @State private var pendingSave: PendingPasswordSave?
 
     private var currentPasswordPassed: Bool {
         !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !password.isEmpty &&
             !isTesting &&
             validationGate.canSave
+    }
+
+    private var canTestPassword: Bool {
+        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !password.isEmpty
+    }
+
+    private var currentPrimaryAction: PasswordEntryPrimaryAction {
+        passwordEntryPrimaryAction(
+            canAuthorize: canAuthorize,
+            validationPassed: currentPasswordPassed
+        )
+    }
+
+    private var primaryButtonTitle: String {
+        switch currentPrimaryAction {
+        case .verifyPassword:
+            "验证密码"
+        case .save:
+            "保存"
+        case .saveAndAuthorize:
+            "保存并授权"
+        }
+    }
+
+    private var primaryButtonDisabled: Bool {
+        guard !isSaving, !isTesting, pendingSave == nil else { return true }
+        switch currentPrimaryAction {
+        case .verifyPassword:
+            return !canTestPassword
+        case .save, .saveAndAuthorize:
+            return false
+        }
     }
 
     init(
@@ -67,12 +114,6 @@ struct PasswordEntryView: View {
                     HStack(alignment: .center, spacing: 12) {
                         passwordTestStatus
                         Spacer()
-                        Button {
-                            testPassword()
-                        } label: {
-                            Label("验证密码", systemImage: "lock.open")
-                        }
-                        .disabled(username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty || isSaving || isTesting)
                     }
 
                     if let testCheck = validationGate.check {
@@ -81,19 +122,12 @@ struct PasswordEntryView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("保存到 Keychain 前，请先测试当前用户和密码。")
+                        Text("保存到 Keychain 前，请先验证当前用户和密码。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                Toggle("允许通过 iCloud Keychain 同步", isOn: $synchronizable)
-                    .disabled(!canSynchronize || isSaving || isTesting)
-                if !canSynchronize {
-                    Label("此版本无法使用 iCloud Keychain 同步", systemImage: "icloud.slash")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 if let errorMessage {
                     Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -110,29 +144,34 @@ struct PasswordEntryView: View {
                 Spacer()
                 Button("取消", role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isSaving || isTesting)
+                    .disabled(isSaving || isTesting || pendingSave != nil)
                 if canAuthorize {
-                    Button("保存") { save(authorizeAfterSave: false) }
-                        .disabled(!currentPasswordPassed || isSaving)
-                    Button("保存并启用免密") { save(authorizeAfterSave: true) }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!currentPasswordPassed || isSaving)
-                } else {
-                    Button("保存") { save(authorizeAfterSave: false) }
-                        .keyboardShortcut(.defaultAction)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!currentPasswordPassed || isSaving)
+                    Button("保存") { requestSave(authorizeAfterSave: false) }
+                        .disabled(!currentPasswordPassed || isSaving || pendingSave != nil)
                 }
+                Button(primaryButtonTitle) {
+                    performPrimaryAction()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(primaryButtonDisabled)
             }
         }
         .padding(24)
         .frame(width: 500)
         .frame(minHeight: 430)
-        .onAppear {
-            if canSynchronize {
-                synchronizable = UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
-            }
+        .sheet(item: $pendingSave) { request in
+            PasswordSyncConfirmationView(
+                initialSynchronizable: request.initialSynchronizable,
+                onConfirm: { synchronizable in
+                    pendingSave = nil
+                    save(
+                        authorizeAfterSave: request.authorizeAfterSave,
+                        synchronizable: synchronizable
+                    )
+                },
+                onCancel: { pendingSave = nil }
+            )
         }
         .onChange(of: username) { _, _ in
             validationGate.inputChanged()
@@ -173,8 +212,7 @@ struct PasswordEntryView: View {
     }
 
     private func testPassword() {
-        guard !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !password.isEmpty,
+        guard canTestPassword,
               !isSaving,
               !isTesting else { return }
         let revision = validationGate.beginTest()
@@ -190,8 +228,41 @@ struct PasswordEntryView: View {
         }
     }
 
-    private func save(authorizeAfterSave: Bool) {
+    private func performPrimaryAction() {
+        switch currentPrimaryAction {
+        case .verifyPassword:
+            testPassword()
+        case .save:
+            requestSave(authorizeAfterSave: false)
+        case .saveAndAuthorize:
+            requestSave(authorizeAfterSave: true)
+        }
+    }
+
+    private var initialSynchronizableChoice: Bool {
+        UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
+    }
+
+    private func requestSave(authorizeAfterSave: Bool) {
+        guard currentPasswordPassed, !isSaving, pendingSave == nil else { return }
+        if canSynchronize {
+            pendingSave = PendingPasswordSave(
+                authorizeAfterSave: authorizeAfterSave,
+                initialSynchronizable: initialSynchronizableChoice
+            )
+        } else {
+            save(authorizeAfterSave: authorizeAfterSave, synchronizable: false)
+        }
+    }
+
+    private func save(authorizeAfterSave: Bool, synchronizable: Bool) {
         guard currentPasswordPassed, let testCheck = validationGate.check else { return }
         onSave(username, password, synchronizable, authorizeAfterSave, testCheck)
     }
+}
+
+private struct PendingPasswordSave: Identifiable {
+    let id = UUID()
+    let authorizeAfterSave: Bool
+    let initialSynchronizable: Bool
 }
