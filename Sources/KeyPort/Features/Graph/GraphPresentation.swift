@@ -4,6 +4,7 @@ import SwiftUI
 extension TopologyGraphNodeKind {
     var displayTitle: String {
         switch self {
+        case .node: "节点"
         case .device: "KeyPort 设备"
         case .host: "主机"
         case .sshAccount: "SSH 账户"
@@ -14,6 +15,7 @@ extension TopologyGraphNodeKind {
 
     var systemImage: String {
         switch self {
+        case .node: "server.rack"
         case .device: "laptopcomputer"
         case .host: "server.rack"
         case .sshAccount: "person.crop.circle"
@@ -184,16 +186,21 @@ struct GraphAuthorityBanner: View {
 
     var body: some View {
         if workspace.isAvailable {
-            let mode = workspace.authorityMode
             HStack(spacing: 8) {
-                Image(systemName: mode == .v6Authoritative ? "checkmark.shield" : "lock.shield")
-                Text("Graph · \(mode?.displayTitle ?? "V6 Shadow 只读")")
+                if workspace.usesUnifiedTopology {
+                    Image(systemName: "checkmark.shield")
+                    Text("Graph · 统一拓扑")
+                } else {
+                    let mode = workspace.authorityMode
+                    Image(systemName: mode == .v6Authoritative ? "checkmark.shield" : "lock.shield")
+                    Text("Graph · \(mode?.displayTitle ?? "V6 Shadow 只读")")
+                }
                 Spacer()
                 Text("图仅展示已记录事实；拖动节点不会产生授权")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)
-            .foregroundStyle(mode == .v6Authoritative ? .green : .orange)
+            .foregroundStyle(workspace.usesUnifiedTopology || workspace.authorityMode == .v6Authoritative ? .green : .orange)
             .padding(.horizontal, 14)
             .padding(.vertical, 7)
             .background(.thinMaterial)

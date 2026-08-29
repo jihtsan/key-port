@@ -45,7 +45,7 @@ private struct GraphUnavailableView: View {
         } description: {
             Text(message)
         } actions: {
-            Text("Graph 首版读取 Host v6 Shadow/Authority Graph；现有数据仍可在兼容视图中管理。")
+            Text("Graph 读取统一拓扑快照；SSH 管理继续通过兼容适配器工作。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

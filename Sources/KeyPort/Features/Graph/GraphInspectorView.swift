@@ -16,6 +16,7 @@ struct GraphInspectorView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(node)
                     statusSection(node.status)
+                    endpointSection(node)
                     relationSection
                     evidenceSection(node)
                 }
@@ -74,6 +75,23 @@ struct GraphInspectorView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func endpointSection(_ node: TopologyGraphNode) -> some View {
+        if !node.endpointSummaries.isEmpty {
+            GroupBox("访问端点") {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(node.endpointSummaries, id: \.self) { endpoint in
+                        Label(endpoint, systemImage: "point.3.connected.trianglepath.dotted")
+                            .font(.caption)
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            }
         }
     }
 
@@ -174,6 +192,7 @@ private extension TopologyGraphReason {
 private extension TopologyGraphEdgeKind {
     var displayTitle: String {
         switch self {
+        case .nodeAccess: "节点访问节点"
         case .deviceAccess: "设备访问主机"
         case .candidateAccess: "候选访问"
         case .hostService: "主机承载服务"

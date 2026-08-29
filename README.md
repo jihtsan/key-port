@@ -131,7 +131,8 @@ KeyPort 使用以下路径保存 SSH 文件和非敏感应用状态：
 | `~/.ssh/keyport/config` | KeyPort 生成的 `Host` 配置，文件权限为 `0600`。 |
 | `~/.ssh/keyport/known_hosts` | 已确认的服务器 Host Key，文件权限为 `0600`。 |
 | `~/.ssh/config` | 仅在需要时加入 `Include ~/.ssh/keyport/config`，不会替换用户原有内容。 |
-| `~/Library/Application Support/KeyPort/state-v1.json` | 版本化的本地非敏感状态，目录和文件权限受控。 |
+| `~/Library/Application Support/KeyPort/topology-v1.json` | 统一 Node/Endpoint/Service/SSH 领域快照，Graph 的默认事实源，目录和文件权限受控。 |
+| `~/Library/Application Support/KeyPort/state-v1.json` | SSH、Keychain 和 OpenSSH 配置适配器使用的兼容投影，目录和文件权限受控。 |
 
 CloudKit 上传前会移除本地私钥路径、SSH Agent 状态、当前设备标记、检测状态和审计日志。加密 `.keyport` 归档包含服务器、别名、公钥、设备和授权元数据，但不包含服务器密码、私钥、本地路径或审计日志。
 
