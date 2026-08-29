@@ -45,6 +45,10 @@ struct ServerDraft: Sendable {
     var usesSuggestedAlias = true
     var tailscaleSuggestion: TailscaleSSHServerSuggestion?
     var aliasesToAvoid = Set<String>()
+    /// Temporary Node context carried by the editor when adding a child SSH
+    /// account. It is materialized into `SSHAccount.nodeID` on save.
+    var targetNodeID: UUID?
+    var targetEndpointID: UUID?
 
     init() {}
 
@@ -66,6 +70,23 @@ struct ServerDraft: Sendable {
         group = server.group
         notes = server.notes
         self.aliasesToAvoid = aliasesToAvoid
+        updateSuggestedAlias()
+    }
+
+    init(
+        node: Node,
+        endpoint: Endpoint?,
+        fallbackHost: String?,
+        aliasesToAvoid: Set<String>
+    ) {
+        name = node.name
+        host = endpoint?.address ?? fallbackHost ?? ""
+        port = endpoint.map { Int($0.port) } ?? 22
+        group = node.group
+        notes = node.notes
+        self.aliasesToAvoid = aliasesToAvoid
+        targetNodeID = node.id
+        targetEndpointID = endpoint?.id
         updateSuggestedAlias()
     }
 
@@ -95,6 +116,13 @@ struct ServerDraft: Sendable {
         let base = KeyPortNaming.accountAlias(group: group, name: name, username: username)
         return KeyPortNaming.availableAlias(base, avoiding: aliasesToAvoid)
     }
+}
+
+struct NodeEndpointDraft: Sendable {
+    var address = ""
+    var label = ""
+    var port = 22
+    var networkScope: NetworkScope = .publicNetwork
 }
 
 enum ServerEditorValidationState: Equatable, Sendable {
@@ -652,7 +680,135 @@ final class AppModel {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
             return nil
         }
+        if let account = topology.activeAccounts.first(where: { $0.id == serverID }),
+           let node = topology.node(id: account.nodeID) {
+            if let nodeDraft = newAccountDraft(forNodeID: node.id, endpointID: account.endpointID) {
+                return nodeDraft
+            }
+        }
         return ServerDraft(newAccountFor: server, aliasesToAvoid: managedAliases)
+    }
+
+    func serverEditorDraft(for serverID: UUID) -> ServerDraft? {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
+            return nil
+        }
+        var draft = ServerDraft(server: server)
+        if let account = topology.activeAccounts.first(where: { $0.id == serverID }) {
+            draft.targetNodeID = account.nodeID
+            draft.targetEndpointID = account.endpointID
+        }
+        return draft
+    }
+
+    func newAccountDraft(forNodeID nodeID: UUID, endpointID: UUID? = nil) -> ServerDraft? {
+        guard let node = topology.node(id: nodeID) else { return nil }
+        let endpoints = topology.endpoints(for: nodeID, endpointProtocol: .ssh)
+        let endpoint: Endpoint?
+        if let endpointID {
+            endpoint = endpoints.first { $0.id == endpointID }
+        } else {
+            endpoint = endpoints.first
+        }
+        let isCurrentDevice = topology.profiles.contains {
+            $0.nodeID == nodeID && $0.isCurrent && !$0.isRevoked
+        }
+        guard endpoint != nil || isCurrentDevice else { return nil }
+        return ServerDraft(
+            node: node,
+            endpoint: endpoint,
+            fallbackHost: isCurrentDevice ? "localhost" : nil,
+            aliasesToAvoid: managedAliases
+        )
+    }
+
+    func newEndpointDraft(forNodeID nodeID: UUID) -> NodeEndpointDraft? {
+        guard topology.node(id: nodeID) != nil else { return nil }
+        return NodeEndpointDraft()
+    }
+
+    func confirmedHostKeys(forNodeID nodeID: UUID, endpointID: UUID? = nil) -> [HostKeyRecord] {
+        let endpointIDs: Set<UUID>
+        if let endpointID {
+            endpointIDs = [endpointID]
+        } else {
+            endpointIDs = Set(topology.endpoints(for: nodeID, endpointProtocol: .ssh).map(\.id))
+        }
+        return topology.hostKeyTrusts
+            .filter {
+                endpointIDs.contains($0.endpointID)
+                    && !$0.isDeleted
+                    && $0.state == .confirmed
+            }
+            .map {
+                HostKeyRecord(
+                    algorithm: $0.algorithm,
+                    fingerprint: $0.fingerprint,
+                    knownHostsLine: $0.knownHostsLine,
+                    firstConfirmedAt: $0.firstConfirmedAt,
+                    lastSeenAt: $0.lastSeenAt
+                )
+            }
+            .sorted { ($0.algorithm, $0.fingerprint) < ($1.algorithm, $1.fingerprint) }
+    }
+
+    func saveNodeEndpoint(_ draft: NodeEndpointDraft, forNodeID nodeID: UUID) async throws {
+        try await requireLegacyMutation()
+        let address = draft.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else {
+            throw SSHServiceError.operationFailed("请输入节点地址或 IP。")
+        }
+        guard (1...65_535).contains(draft.port) else {
+            throw SSHServiceError.operationFailed("请输入 1 到 65535 之间的有效端口。")
+        }
+        guard let nodeIndex = topology.nodes.firstIndex(where: { $0.id == nodeID && !$0.isDeleted }) else {
+            throw SSHServiceError.operationFailed("目标节点不存在或已被删除。")
+        }
+
+        let port = UInt16(draft.port)
+        let normalizedAddress = TopologyStableID.normalize(address)
+        let existingEndpointIndex = topology.endpoints.firstIndex { endpoint in
+            endpoint.nodeID == nodeID
+                && endpoint.serviceID == nil
+                && endpoint.protocol == .ssh
+                && endpoint.port == port
+                && TopologyStableID.normalize(endpoint.address) == normalizedAddress
+        }
+        if let existingEndpointIndex {
+            guard topology.endpoints[existingEndpointIndex].source != .tailscale else {
+                throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请直接使用自动发现的网络要求。")
+            }
+            topology.endpoints[existingEndpointIndex].isDeleted = false
+            topology.endpoints[existingEndpointIndex].label = label.isEmpty ? address : label
+            topology.endpoints[existingEndpointIndex].networkScope = draft.networkScope
+            topology.endpoints[existingEndpointIndex].source = .manual
+        } else {
+            let nextPriority = (topology.endpoints(for: nodeID).map(\.priority).max() ?? -1) + 1
+            topology.endpoints.append(Endpoint(
+                id: TopologyStableID.nodeEndpoint(
+                    nodeID: nodeID,
+                    address: address,
+                    port: port,
+                    protocol: .ssh
+                ),
+                nodeID: nodeID,
+                address: address,
+                label: label.isEmpty ? address : label,
+                port: port,
+                protocol: .ssh,
+                networkScope: draft.networkScope,
+                source: .manual,
+                priority: nextPriority
+            ))
+        }
+
+        var node = topology.nodes[nodeIndex]
+        node.roles = Array(Set(node.roles + [.sshHost])).sorted { $0.rawValue < $1.rawValue }
+        node.updatedAt = .now
+        topology.nodes[nodeIndex] = node
+        appendAudit(category: "endpoint", action: "create", targetID: nodeID.uuidString, result: draft.networkScope.rawValue)
+        await persist()
     }
 
     func tailscaleServerDraft(
@@ -668,6 +824,10 @@ final class AppModel {
 
         var draft = ServerDraft(server: existingServer)
         draft.tailscaleSuggestion = suggestion
+        if let account = topology.activeAccounts.first(where: { $0.id == existingServer.id }) {
+            draft.targetNodeID = account.nodeID
+            draft.targetEndpointID = account.endpointID
+        }
         draft.aliasesToAvoid = Set(
             snapshot.servers.lazy
                 .filter { !$0.isDeleted && $0.id != existingServer.id }
@@ -1283,7 +1443,27 @@ final class AppModel {
         ensureAuthorizationRecordForVerifiedServer(serverID: serverID)
         try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
         appendAudit(category: "ssh-config", action: "write", targetID: serverID.uuidString, result: "success")
-        await persist()
+        let accountBindings: [SSHAccountNodeBinding]
+        if let targetNodeID = submission.draft.targetNodeID {
+            let bindingAccountIDs: [UUID]
+            if existingServerID != nil {
+                bindingAccountIDs = Array(Set(peerServerIDs).union([serverID])).sorted {
+                    $0.uuidString < $1.uuidString
+                }
+            } else {
+                bindingAccountIDs = [serverID]
+            }
+            accountBindings = bindingAccountIDs.map { accountID in
+                SSHAccountNodeBinding(
+                    accountID: accountID,
+                    nodeID: targetNodeID,
+                    endpointID: submission.draft.targetEndpointID
+                )
+            }
+        } else {
+            accountBindings = []
+        }
+        await persist(accountBindings: accountBindings)
         return serverID
     }
 
@@ -3093,7 +3273,7 @@ final class AppModel {
         if snapshot.auditEvents.count > 1000 { snapshot.auditEvents.removeLast(snapshot.auditEvents.count - 1000) }
     }
 
-    private func persist() async {
+    private func persist(accountBindings: [SSHAccountNodeBinding] = []) async {
         do {
             if let hostV6Runtime {
                 let envelope = try await hostV6Runtime.saveLegacySnapshot(snapshot, to: store)
@@ -3113,7 +3293,8 @@ final class AppModel {
                     from: snapshot,
                     preserving: topology,
                     currentDeviceID: currentDeviceID,
-                    currentDeviceName: currentDeviceName
+                    currentDeviceName: currentDeviceName,
+                    accountBindings: accountBindings
                 )
                 try await store.save(snapshot)
                 try await topologyStore.save(topology)
