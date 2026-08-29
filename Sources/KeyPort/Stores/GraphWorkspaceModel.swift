@@ -27,8 +27,9 @@ final class GraphWorkspaceModel {
     private(set) var snapshot = TopologyGraphSnapshot.empty
     private(set) var sourceSnapshot = TopologyGraphSnapshot.empty
     private(set) var isAvailable = false
-    private(set) var unavailableMessage = "Host v6 Graph 尚未加载。"
+    private(set) var unavailableMessage = "统一拓扑尚未加载。"
     private(set) var currentDeviceID: String?
+    private(set) var usesUnifiedTopology = false
 
     private let projector: TopologyGraphProjector
 
@@ -77,11 +78,12 @@ final class GraphWorkspaceModel {
     }
 
     func update(envelope: HostV6.MetadataEnvelope?, currentDeviceID: String?) {
+        usesUnifiedTopology = false
         self.currentDeviceID = currentDeviceID
             ?? envelope?.local.deviceStates.first(where: \.isCurrent)?.deviceID
         guard let envelope else {
             isAvailable = false
-            unavailableMessage = "Host v6 Graph 尚未启用；当前仍使用兼容工作区。"
+            unavailableMessage = "统一拓扑未提供；当前仍使用兼容工作区。"
             sourceSnapshot = .empty
             snapshot = .empty
             selectedNodeID = nil
@@ -104,6 +106,25 @@ final class GraphWorkspaceModel {
         rebuildVisibleSnapshot(selectDefault: true)
     }
 
+    func update(topology: TopologySnapshot, currentDeviceID: String?) {
+        usesUnifiedTopology = true
+        self.currentDeviceID = currentDeviceID
+        isAvailable = true
+        unavailableMessage = ""
+        let sourceQuery = TopologyGraphQuery(
+            viewMode: .allDevices,
+            includesSupportingNodes: true,
+            includesActualNodes: false,
+            showsServices: true
+        )
+        sourceSnapshot = projector.project(
+            topology: topology,
+            currentDeviceID: currentDeviceID,
+            query: sourceQuery
+        )
+        rebuildVisibleSnapshot(selectDefault: true)
+    }
+
     func select(_ nodeID: TopologyGraphNodeID?) {
         selectedNodeID = nodeID
     }
@@ -119,7 +140,8 @@ final class GraphWorkspaceModel {
             self.selectedNodeID = nil
         }
         if selectDefault, selectedNodeID == nil {
-            selectedNodeID = snapshot.nodes.first(where: { $0.id == .device(currentDeviceID ?? "") })?.id
+            selectedNodeID = sourceSnapshot.primaryNodeID
+                ?? snapshot.nodes.first(where: { $0.id == .device(currentDeviceID ?? "") })?.id
                 ?? snapshot.nodes.first?.id
         }
     }

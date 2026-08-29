@@ -277,6 +277,9 @@ final class AppModel {
     }
 
     var snapshot = AppSnapshot()
+    /// Unified Node/Endpoint/Service authority. `snapshot` is retained only as
+    /// the SSH/Keychain compatibility projection during this refactor.
+    private(set) var topology = TopologySnapshot.empty
     var destination: SidebarDestination = .graph
     var selectedServerID: UUID?
     var selectedKeyID: String?
@@ -311,6 +314,7 @@ final class AppModel {
     let canSynchronizePasswords = KeychainService.synchronizableItemsAvailable
 
     private let store: SnapshotStore
+    private let topologyStore: TopologyStore
     private let keychain: KeychainService
     private let keyService: SSHKeyService
     private let hostKeyService: HostKeyService
@@ -356,6 +360,7 @@ final class AppModel {
         let helper = FileManager.default.isExecutableFile(atPath: bundledHelper) ? bundledHelper : siblingHelper
 
         self.store = SnapshotStore(paths: paths)
+        self.topologyStore = TopologyStore(paths: paths)
         self.keychain = KeychainService()
         self.keyService = SSHKeyService(runner: runner, paths: paths)
         self.hostKeyService = HostKeyService(runner: runner, paths: paths)
@@ -756,24 +761,90 @@ final class AppModel {
         guard !isLoaded else { return }
         isInitialLoadInProgress = true
         do {
-            let presentation: HostV6Presentation
             if let hostV6Runtime {
-                presentation = try await hostV6Runtime.loadPresentationSnapshot(from: store)
-            } else {
-                presentation = HostV6Presentation(
-                    snapshot: try await store.load(),
-                    mode: .canary,
-                    graphEnvelope: nil
+                let presentation = try await hostV6Runtime.loadPresentationSnapshot(from: store)
+                snapshot = presentation.snapshot
+                isMetadataReadOnly = !presentation.mode.allowsLegacyWrites
+                graphWorkspace.update(
+                    envelope: presentation.graphEnvelope,
+                    currentDeviceID: presentation.graphEnvelope?.local.deviceStates.first(where: \.isCurrent)?.deviceID
+                        ?? snapshot.devices.first(where: \.isCurrent)?.id
                 )
-            }
-            snapshot = presentation.snapshot
-            isMetadataReadOnly = !presentation.mode.allowsLegacyWrites
-            graphWorkspace.update(
-                envelope: presentation.graphEnvelope,
-                currentDeviceID: presentation.graphEnvelope?.local.deviceStates.first(where: \.isCurrent)?.deviceID
-                    ?? snapshot.devices.first(where: \.isCurrent)?.id
-            )
-            if presentation.mode.allowsLegacyWrites {
+                if presentation.mode.allowsLegacyWrites {
+                    _ = try? await configService.adoptExistingManagedConfigBaseline(
+                        servers: snapshot.servers.filter { !$0.isDeleted },
+                        keys: snapshot.keys,
+                        authorizations: snapshot.authorizations
+                    )
+                    normalizeStableMetadataIDs()
+                    ensureCurrentDevice()
+                    try await refreshKeys(recordAudit: false)
+                } else {
+                    discoveredSSHConnections = await configService.discoverConnections()
+                }
+                await refreshPasswordAvailability()
+                if selectedServerID == nil { selectedServerID = activeServers.first?.id }
+                if selectedKeyItemID == nil {
+                    selectedKeyItemID = keyServerRows.first?.id
+                        ?? discoveredSSHConnections.first.map { "config:\($0.alias)" }
+                        ?? snapshot.keys.first.map { "identity:\($0.id)" }
+                }
+                if selectedDeviceItemID == nil {
+                    selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
+                }
+                isLoaded = true
+                if presentation.mode.allowsLegacyWrites {
+                    await refreshTailscale()
+                    appendAudit(category: "app", action: "load", result: "success")
+                    await refreshMissingMachineConfigurations()
+                    await persist()
+                }
+                isInitialLoadInProgress = false
+                if presentation.mode.allowsLegacyWrites {
+                    scheduleCloudSyncIfNeeded()
+                }
+                return
+            } else {
+                snapshot = try await store.load()
+                ensureCurrentDevice()
+                let currentDeviceID = snapshot.devices.first(where: \.isCurrent)?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? KeyPortNaming.newDeviceID()
+                let currentDeviceName = snapshot.devices.first(where: { $0.id == currentDeviceID })?.name
+                    ?? Host.current().localizedName
+                    ?? "此 Mac"
+                let migrated = TopologySnapshotMigration.fromLegacy(
+                    snapshot,
+                    currentDeviceID: currentDeviceID,
+                    currentDeviceName: currentDeviceName
+                )
+                let storedTopology: TopologySnapshot?
+                do {
+                    storedTopology = try await topologyStore.load()
+                } catch {
+                    // A corrupt or partially-written topology must not hide a
+                    // valid legacy SSH snapshot. Rebuild the topology below.
+                    storedTopology = nil
+                }
+                if let storedTopology,
+                   storedTopology.schemaVersion == TopologySnapshot.currentSchemaVersion,
+                   storedTopology.profiles.contains(where: { $0.id == currentDeviceID }) {
+                    topology = TopologySnapshotMigration.refreshed(
+                        from: snapshot,
+                        preserving: storedTopology,
+                        currentDeviceID: currentDeviceID,
+                        currentDeviceName: currentDeviceName
+                    )
+                    snapshot = TopologySnapshotMigration.legacyProjection(
+                        from: topology,
+                        currentDeviceID: currentDeviceID
+                    )
+                } else {
+                    topology = migrated
+                    try await topologyStore.save(topology)
+                }
+                isMetadataReadOnly = false
+                graphWorkspace.update(topology: topology, currentDeviceID: currentDeviceID)
                 _ = try? await configService.adoptExistingManagedConfigBaseline(
                     servers: snapshot.servers.filter { !$0.isDeleted },
                     keys: snapshot.keys,
@@ -782,28 +853,23 @@ final class AppModel {
                 normalizeStableMetadataIDs()
                 ensureCurrentDevice()
                 try await refreshKeys(recordAudit: false)
-            } else {
                 discoveredSSHConnections = await configService.discoverConnections()
-            }
-            await refreshPasswordAvailability()
-            if selectedServerID == nil { selectedServerID = activeServers.first?.id }
-            if selectedKeyItemID == nil {
-                selectedKeyItemID = keyServerRows.first?.id
-                    ?? discoveredSSHConnections.first.map { "config:\($0.alias)" }
-                    ?? snapshot.keys.first.map { "identity:\($0.id)" }
-            }
-            if selectedDeviceItemID == nil {
-                selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
-            }
-            isLoaded = true
-            if presentation.mode.allowsLegacyWrites {
+                await refreshPasswordAvailability()
+                if selectedServerID == nil { selectedServerID = activeServers.first?.id }
+                if selectedKeyItemID == nil {
+                    selectedKeyItemID = keyServerRows.first?.id
+                        ?? discoveredSSHConnections.first.map { "config:\($0.alias)" }
+                        ?? snapshot.keys.first.map { "identity:\($0.id)" }
+                }
+                if selectedDeviceItemID == nil {
+                    selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
+                }
+                isLoaded = true
                 await refreshTailscale()
                 appendAudit(category: "app", action: "load", result: "success")
                 await refreshMissingMachineConfigurations()
                 await persist()
-            }
-            isInitialLoadInProgress = false
-            if presentation.mode.allowsLegacyWrites {
+                isInitialLoadInProgress = false
                 scheduleCloudSyncIfNeeded()
             }
         } catch {
@@ -2994,7 +3060,21 @@ final class AppModel {
                         ?? snapshot.devices.first(where: \.isCurrent)?.id
                 )
             } else {
+                let currentDeviceID = snapshot.devices.first(where: \.isCurrent)?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? KeyPortNaming.newDeviceID()
+                let currentDeviceName = snapshot.devices.first(where: { $0.id == currentDeviceID })?.name
+                    ?? Host.current().localizedName
+                    ?? "此 Mac"
+                topology = TopologySnapshotMigration.refreshed(
+                    from: snapshot,
+                    preserving: topology,
+                    currentDeviceID: currentDeviceID,
+                    currentDeviceName: currentDeviceName
+                )
                 try await store.save(snapshot)
+                try await topologyStore.save(topology)
+                graphWorkspace.update(topology: topology, currentDeviceID: currentDeviceID)
             }
             scheduleCloudSyncIfNeeded()
         }

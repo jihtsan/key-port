@@ -175,6 +175,7 @@ private enum GraphCanvasLayout {
 
     private static func column(for node: TopologyGraphNode) -> Int {
         switch node.kind {
+        case .node: node.isWorkspaceDevice ? 0 : 1
         case .device: 0
         case .sshAccount: 1
         case .host: 2

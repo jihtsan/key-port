@@ -445,14 +445,14 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertTrue(generated.contains("Host upgrade-fixture"))
     }
 
-    func testProductionApplicationEntryCallsHostV6RuntimeAssembly() throws {
+    func testProductionApplicationEntryUsesUnifiedTopologyRuntime() throws {
         let source = try String(
             contentsOf: Self.repositoryRoot.appendingPathComponent("Sources/KeyPort/App/KeyPortApp.swift"),
             encoding: .utf8
         )
 
-        XCTAssertTrue(source.contains("HostV6RuntimeAssembly.makeIfEnabled"))
-        XCTAssertTrue(source.contains("AppModel(hostV6Runtime:"))
+        XCTAssertTrue(source.contains("AppModel(defaults: defaults)"))
+        XCTAssertFalse(source.contains("HostV6RuntimeAssembly.makeIfEnabled"))
     }
 
     @MainActor
