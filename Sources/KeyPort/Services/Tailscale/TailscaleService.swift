@@ -37,7 +37,7 @@ actor TailscaleService {
             throw TailscaleServiceError.invalidStatus
         }
         do {
-            return try TailscaleStatusParser.parse(data)
+            return try TailscaleStatusParser.parse(data, observedAt: .now)
         } catch {
             throw TailscaleServiceError.invalidStatus
         }

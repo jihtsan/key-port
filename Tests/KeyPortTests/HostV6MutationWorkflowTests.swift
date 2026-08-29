@@ -2222,7 +2222,7 @@ private actor RecordingLegacyCloudSync: CloudSyncing {
 
     func availability() async -> CloudSyncAvailability { .available }
 
-    func synchronize(_ local: AppSnapshot) async throws -> AppSnapshot {
+    func synchronize(_ local: TopologySnapshot) async throws -> TopologySnapshot {
         synchronizeCalls += 1
         return local
     }

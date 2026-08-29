@@ -49,6 +49,72 @@ public enum TopologyGraphEdgeKind: String, Codable, CaseIterable, Hashable, Send
     case candidateAccess
     case hostService
     case sshAccountActualNode
+    case tailscalePeer
+}
+
+public enum TopologyGraphTailscaleObservationState: String, Codable, CaseIterable, Hashable, Sendable {
+    case online
+    case offline
+    case stale
+    case notObserved
+    case unavailable
+}
+
+public struct TopologyGraphTailscaleIdentity: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public let tailnetKey: String
+    public let tailscaleNodeID: String
+    public let magicDNS: String?
+    public let addresses: [String]
+    public let operatingSystem: String?
+    public let isExitNode: Bool
+    public let isExitNodeOption: Bool
+    public let observationState: TopologyGraphTailscaleObservationState
+    public let observedAt: Date?
+    public let lastSeenAt: Date?
+    public let relay: String?
+
+    public init(
+        identity: TailscaleNodeIdentity,
+        observation: TailscaleNodeObservation?,
+        status: TailscaleStatus?,
+        now: Date = .now
+    ) {
+        self.id = identity.id
+        self.tailnetKey = identity.tailnetKey
+        self.tailscaleNodeID = identity.tailscaleNodeID
+        self.magicDNS = identity.magicDNS
+        self.addresses = identity.addresses
+        self.operatingSystem = identity.operatingSystem
+        self.isExitNode = identity.isExitNode
+        self.isExitNodeOption = identity.isExitNodeOption
+        if let status,
+           status.backendState.caseInsensitiveCompare("Running") != .orderedSame {
+            self.observationState = .unavailable
+            self.observedAt = observation?.observedAt
+            self.lastSeenAt = observation?.lastSeenAt
+            self.relay = observation?.relay
+        } else if let observation {
+            self.observationState = observation.isFresh(at: now)
+                ? (observation.isOnline ? .online : .offline)
+                : .stale
+            self.observedAt = observation.observedAt
+            self.lastSeenAt = observation.lastSeenAt
+            self.relay = observation.relay
+        } else if let status {
+            self.observationState = status.backendState.caseInsensitiveCompare("Running") == .orderedSame
+                ? .notObserved
+                : .unavailable
+            self.observedAt = nil
+            self.lastSeenAt = nil
+            self.relay = nil
+        } else {
+            self.observationState = .notObserved
+            self.observedAt = nil
+            self.lastSeenAt = nil
+            self.relay = nil
+        }
+    }
 }
 
 public enum TopologyGraphStatusLevel: String, Codable, CaseIterable, Hashable, Sendable {
@@ -239,6 +305,7 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
     public let title: String
     public let subtitle: String?
     public let endpointSummaries: [String]
+    public let tailscaleIdentities: [TopologyGraphTailscaleIdentity]
     public let status: TopologyGraphStatus
     public let isWorkspaceDevice: Bool
     public let source: HostV6.EntityReference?
@@ -250,6 +317,7 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
         title: String,
         subtitle: String? = nil,
         endpointSummaries: [String] = [],
+        tailscaleIdentities: [TopologyGraphTailscaleIdentity] = [],
         status: TopologyGraphStatus = .unknown,
         isWorkspaceDevice: Bool? = nil,
         source: HostV6.EntityReference? = nil,
@@ -260,6 +328,7 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
         self.title = title
         self.subtitle = subtitle
         self.endpointSummaries = endpointSummaries
+        self.tailscaleIdentities = tailscaleIdentities.sorted { $0.id < $1.id }
         self.status = status
         self.isWorkspaceDevice = isWorkspaceDevice ?? (kind == .device)
         self.source = source
@@ -272,6 +341,7 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
         case title
         case subtitle
         case endpointSummaries
+        case tailscaleIdentities
         case status
         case isWorkspaceDevice
         case source
@@ -288,6 +358,10 @@ public struct TopologyGraphNode: Identifiable, Codable, Hashable, Sendable {
             title: try container.decode(String.self, forKey: .title),
             subtitle: try container.decodeIfPresent(String.self, forKey: .subtitle),
             endpointSummaries: try container.decodeIfPresent([String].self, forKey: .endpointSummaries) ?? [],
+            tailscaleIdentities: try container.decodeIfPresent(
+                [TopologyGraphTailscaleIdentity].self,
+                forKey: .tailscaleIdentities
+            ) ?? [],
             status: try container.decodeIfPresent(TopologyGraphStatus.self, forKey: .status) ?? .unknown,
             isWorkspaceDevice: try container.decodeIfPresent(Bool.self, forKey: .isWorkspaceDevice)
                 ?? (kind == .device),
@@ -506,6 +580,12 @@ public struct TopologyGraphSnapshot: Codable, Hashable, Sendable {
             let matches = Set(nodes.filter { node in
                 node.title.localizedLowercase.contains(normalizedSearch)
                     || node.subtitle?.localizedLowercase.contains(normalizedSearch) == true
+                    || node.tailscaleIdentities.contains { identity in
+                        identity.tailnetKey.localizedLowercase.contains(normalizedSearch)
+                            || identity.tailscaleNodeID.localizedLowercase.contains(normalizedSearch)
+                            || identity.magicDNS?.localizedLowercase.contains(normalizedSearch) == true
+                            || identity.addresses.contains { $0.localizedLowercase.contains(normalizedSearch) }
+                    }
             }.map(\.id))
             ids = contextIDs(for: matches, within: ids)
         }

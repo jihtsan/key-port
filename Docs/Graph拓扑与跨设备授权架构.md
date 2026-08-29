@@ -1,7 +1,7 @@
 # KeyPort Graph 拓扑与跨设备授权架构
 
-- 状态：提案
-- 文档版本：V2.1
+- 状态：实施中的统一拓扑方案
+- 文档版本：V2.2
 - 日期：2026-08-28
 - 关联 Issue：[GitHub #26](https://github.com/jihtsan/key-port/issues/26)
 - 领域词汇：[CONTEXT.md](../CONTEXT.md)
@@ -9,24 +9,23 @@
 
 ## 1. 结论
 
-Graph 方向适合作为 KeyPort 的新主界面，而且当前仓库已经具备承载它的数据模型。正确方案不是再造一套 `RemoteResource` 或图数据库，而是把已有 `HostV6.SyncedGraph` 投影成用户可理解的设备、主机、SSH 账户、服务和授权拓扑。
+Graph 方向适合作为 KeyPort 的新主界面。正确方案不是再造一套 `RemoteResource` 或图数据库，而是把统一的 `TopologySnapshot` 投影成用户可理解的节点、端点、SSH 账户、服务、授权和 Tailscale 关系；Host v6 仅作为现有兼容运行时的适配边界。
 
 推荐的新产品核心是：**一个通过 iCloud 同步元数据、由每台 Mac 独立持有私钥的个人 SSH 访问拓扑**。
 
-1. 主机 A、B 在工作区中各只有一个稳定 `Host`，不会为每台 Mac 复制一份。
-2. 每台 KeyPort 设备拥有自己的 `SSHKeyRecord` 和本地私钥。
-3. “设备能访问主机”由 `Device → SSHKeyRecord → Authorization → SSHIdentity → Host` 推导。
-4. 主机上的 HTTP、HTTPS 和 TCP 服务使用已有 `SavedService` 表达。
-5. Tailscale 等真实网络节点与 SSH 账户的映射使用已有 `NodeAssociation`，不能被普通画布连线替代。
-6. Graph 只显示和操作事实，不成为新的授权真源，也不表示物理路由或任意命令执行能力。
+1. 服务器、电脑、虚拟机和网络设备在工作区中都只有一个稳定 `Node`，不会为每台 Mac 复制一份。
+2. `Endpoint` 是 Node 或 Service 的访问坐标；一个 Node 可以有多个 IP、域名、端口和网络范围。
+3. 每台 KeyPort 设备拥有自己的 `WorkspaceDeviceProfile`、SSH 密钥和本地私钥。
+4. Tailscale 使用 `Tailnet + Node ID` 绑定到一个 `Node`；MagicDNS、IP、在线状态和 Last Seen 是可更新元数据或本地观测。
+5. Graph 只显示和操作事实，不成为新的授权真源，也不表示物理路由或任意命令执行能力。
 
 ## 2. 当前基线
 
 在本文之前，仓库已经完成了比早期 MVP 更深的 Host v6 承重层：
 
-- V5 `AppSnapshot` 和列表式 SwiftUI 仍是默认用户界面与兼容写路径。
-- `HostV6.SyncedGraph` 已规范化保存 Host、Address、SSH Account、Device、Key、Host Key Pin、Service、Authorization、Node Association 和 Merge Review。
-- `MetadataEnvelope` 已把同步事实、本机状态和迁移来源分开。
+- `TopologySnapshot` 已规范化保存 Node、Endpoint、Service、Workspace Device Profile、SSH Account、SSH Key、Host Key Trust 和 Authorization。
+- `TailscaleNodeIdentity` 保存可跨设备同步的稳定外部身份与最后已知元数据；`TailscaleNodeObservation` 保存当前 Mac 的本地观测。
+- 默认 Graph 读取统一拓扑快照；V5 `AppSnapshot` 和 Host v6 仍作为 SSH 操作与历史数据的兼容适配边界。
 - v5 → v6 确定性影子迁移、CloudKit v2、向量时钟、墓碑、冲突保留、authority manifest 和恢复 journal 已实现。
 - 服务发现、直连/隧道决策、`KeyPortTunnelBroker` 和精确隧道清理已实现，但相关功能仍受开关和验收门禁控制。
 - 当前 UI 已有状态感知的 `PasswordlessPrimaryAction`，能够在“验证、启用、生成密钥、输入密码、核对 Host Key”之间选择。
@@ -38,41 +37,52 @@ Graph 方向适合作为 KeyPort 的新主界面，而且当前仓库已经具�
 
 ```mermaid
 flowchart LR
-    D[Device\nKeyPort 设备] -->|owns| K[SSHKeyRecord\n设备公钥]
-    K -->|Authorization| I[SSHIdentity\nSSH 账户]
-    I -->|belongs to| H[Host\n稳定主机]
-    H -->|has| A[AccessAddress\n访问地址]
-    A -->|trusted by| P[HostKeyPin\n主机信任]
-    H -->|hosts| S[SavedService\n已保存服务]
-    I -->|NodeAssociation| N[Actual Node\n实际网络节点]
+    D[WorkspaceDeviceProfile\nKeyPort 设备档案] -->|owns| K[SSHKey\n设备公钥]
+    K -->|SSHAuthorization| A[SSHAccount\nSSH 账户]
+    A -->|belongs to| N[Node\n稳定节点]
+    N -->|has| E[Endpoint\n访问端点]
+    E -->|trusted by| P[SSHHostKeyTrust\n主机信任]
+    N -->|hosts| S[Service\n已保存服务]
+    N -->|bound by| T[TailscaleNodeIdentity\nTailnet + Node ID]
+    T -.->|本机观测| O[Tailscale Observation\n在线/Last Seen/刷新时间]
 ```
 
 ### 3.1 代码实体与界面语言
 
-| Host v6 实体 | 界面名称 | Graph 角色 |
+| 统一实体 | 界面名称 | Graph 角色 |
 | --- | --- | --- |
-| `HostV6.Host` | 主机 | 稳定的主节点 |
-| `HostV6.AccessAddress` | 访问地址 | 主机 Inspector 中的路由候选，默认不单独占节点 |
-| `HostV6.SSHIdentity` | SSH 账户 | 主机内部账号或访问边详情；它不是设备密钥 |
-| `HostV6.Device` | KeyPort 设备 | 当前 Mac 和其他已注册 Mac 的节点 |
-| `HostV6.SSHKeyRecord` | SSH 密钥 | 设备安全详情，默认折叠 |
-| `HostV6.HostKeyPin` | 主机信任 | 地址安全状态和阻断证据 |
-| `HostV6.SavedService` | 已保存服务 | 主机的子节点，可直接访问或通过受控隧道访问 |
-| `HostV6.Authorization` | 账户授权 | 设备到主机访问边的事实链 |
-| `HostV6.NodeAssociation` | 节点关联 | SSH 账户到 Tailscale 等实际节点的稳定映射 |
-| `HostV6.MergeReview` | 待解决冲突 | 阻断对应节点动作的同步冲突 |
+| `Node` | 节点/主机 | 稳定的机器或网络参与者主节点 |
+| `Endpoint` | 访问端点 | Node 或 Service 的地址、端口和协议；默认在 Inspector 展开 |
+| `Service` | 已保存服务 | Node 的逻辑能力或子节点 |
+| `WorkspaceDeviceProfile` | KeyPort 设备 | 当前 Mac 和其他已注册 Mac 的工作区档案 |
+| `SSHAccount` | SSH 账户 | Node 上的 SSH 登录入口；不是设备密钥 |
+| `SSHKey` | SSH 密钥 | 设备安全详情，默认折叠 |
+| `SSHHostKeyTrust` | 主机信任 | Endpoint 的安全状态和阻断证据 |
+| `SSHAuthorization` | 账户授权 | 设备密钥到目标 SSH 账户的事实链 |
+| `TailscaleNodeIdentity` | Tailscale 节点身份 | `Tailnet + Node ID` 到 Node 的稳定绑定 |
+| `TailscaleNodeObservation` | Tailscale 本机观测 | 当前 Mac 对身份的在线、Last Seen 和刷新证据 |
+
+Host v6 的 `Host`、`AccessAddress`、`SSHIdentity` 等名称仍由兼容适配器使用，但不再是 Graph 的第二套事实源。
 
 ### 3.2 本机证据
 
-以下内容来自 `HostV6.LocalState`，只影响当前 Mac 的 Graph 状态：
+以下内容来自当前 Mac 的本地拓扑快照或适配器，只影响当前 Mac 的 Graph 状态：
 
-- `LocalDeviceState`：哪一个 Device 是当前设备。
-- `LocalSSHKeyState`：私钥路径、Agent 和本机可用性。
-- `LocalSSHIdentityState`：账号检查结果和最近检查时间。
-- `ReachabilityEvidence`：某地址在当前网络 epoch 下是否可达。
+- `WorkspaceDeviceProfile.isCurrent`：哪一个工作区设备档案是当前设备。
+- SSHKey 本地字段：私钥路径、Agent 和本机可用性。
+- `AccessVerification`：账号检查结果和最近检查时间。
+- `ReachabilityObservation`：某地址在当前网络 epoch 下是否可达。
+- `TailscaleNodeObservation`：Tailscale 在线状态、Last Seen、Relay 和刷新时间。
 - 本机审计事件和备注。
 
 这些状态不能被另一台 Mac 的成功结果覆盖，也不能因为 CloudKit 中存在 Authorization 就直接显示“当前 Mac 可用”。
+
+### 3.3 Tailscale 节点身份与观测
+
+- `TailscaleNodeIdentity` 的稳定键是 `tailnetKey + tailscaleNodeID`，并通过 `keyPortNodeID` 绑定到统一 `Node`。
+- 新 Mac 读取本机 `tailscale status --json` 后，只在 Node ID 精确匹配时复用已有 Node；MagicDNS、地址和名称只用于展示或辅助匹配已保存 Endpoint。
+- `TailscaleNodeObservation` 记录观察设备、BackendState、在线状态、Last Seen、Relay 和 `observedAt`。它不上传到 CloudKit，也不会覆盖另一台 Mac 的观测；默认超过 90 秒没有新观测就显示为过期。
+- Graph 即使当前 Mac 暂时没有 Tailscale，也保留云端同步的 Node 和最后已知配置，并在 Inspector 中显示“当前设备未观测”。
 
 ## 4. Graph 投影语义
 
@@ -209,7 +219,7 @@ Host v6 当前 `ModelCommand` 主要覆盖删除、撤销和冲突解决。新 U
 
 ### 8.2 Mac 2 登录同一 iCloud 工作区
 
-1. CloudKit v2 恢复 Host、Address、SSH Account、Host Key Pin、Device、公开密钥、Authorization、Service 和 Node Association。
+1. 统一 CloudKit 恢复 Node、Endpoint、SSH Account、Host Key Trust、Workspace Device Profile、公开密钥、Authorization、Service 和 Tailscale Node Identity。
 2. Mac 2 注册自己的 Device 并生成 K2；不会下载 K1 私钥。
 3. Graph 仍可显示 Mac 1 到 A、B 的最近已知授权；Mac 2 到 A、B 是待检查候选边。
 4. 如果用户曾允许账号密码通过 iCloud Keychain 同步，Mac 2 可在一次本机身份验证后批量为 K2 建立授权。
@@ -225,22 +235,22 @@ Mac 2 创建 Host C、SSH Account 和 Saved Service。CloudKit 同步后，Mac 1
 
 Graph 首版不另建 CloudKit Zone 或每实体记录。继续使用：
 
-- 本机 `state-v6.json` 的 `MetadataEnvelope`。
-- CloudKit 私有数据库中的 `KPMetadataV2/keyport-metadata-v2` 单记录 payload。
-- 每实体 SyncStamp、向量时钟、墓碑和 Merge Review 完成逻辑级合并。
-- 800 KiB payload 硬门禁；达到门禁后再立项迁移为每实体 CloudKit 记录。
-- V1 payload 只作为兼容期单向输入，不接收 V6 无法反写的 Host/Service 数据。
-- authority manifest 和 C3 证据控制 v5 → v6 写权切换。
+- 本机 `topology-v1.json` 的 `TopologySnapshot`；`state-v1.json` 只作为 SSH/Keychain/OpenSSH 的兼容投影。
+- CloudKit 私有数据库中的 `KPTopologyMetadata/keyport-topology-v1` 单记录 payload。
+- `TopologyCloudMetadataSnapshotPolicy` 只上传共享拓扑元数据；本机观测、当前设备标记、访问验证、可达性、审计和本地密钥路径均在上传前移除。
+- Tailscale Node Identity 可以跨设备合并；Tailscale Observation 始终在合并后从本机快照恢复。
+- 旧的 `KPMetadata/keyport-metadata-v1` 不再作为默认同步源，避免旧 `AppSnapshot` 与统一拓扑重复写入。
 
-Graph 展示不能绕过 canary、`v6Authoritative` 或 `compatibilityRollback` 模式。Canary 阶段可读取影子图并深链到旧操作界面，但不得直接修改 V6。
+默认 Graph 直接读取统一拓扑快照，不再等待 HostV6 feature flag；仍处于 HostV6 兼容运行时的场景继续遵守其 canary、authority 和只读回退契约。
 
 ### 9.2 密码、私钥和远端事实
 
-| 数据 | 位置 | 是否随 CloudKit v2 同步 |
+| 数据 | 位置 | 是否随统一 CloudKit 同步 |
 | --- | --- | --- |
-| Host、Address、SSH Account、Service、公开 Key、Authorization、Node Association | Host v6 synced graph | 是 |
+| Node、Endpoint、SSH Account、Service、公开 Key、Authorization、TailscaleNodeIdentity | 统一 `TopologySnapshot` | 是 |
+| TailscaleNodeObservation、Reachability、Access Verification、审计 | 当前 Mac 本地拓扑快照 | 否 |
 | Graph 当前筛选、选择和自动布局 | 当前 Mac | 否 |
-| 私钥路径、Agent、本机可用性、Reachability、审计 | Host v6 local state | 否 |
+| 私钥路径、Agent、本机可用性 | 当前 Mac 本地适配器 | 否 |
 | 账号密码 | Keychain；用户可选 iCloud Keychain | 不进入 CloudKit |
 | 真实远端公钥授权 | 远端 `authorized_keys` | Cloud 只保存最近已知 Authorization |
 
@@ -252,7 +262,7 @@ Graph 展示不能绕过 canary、`v6Authoritative` 或 `compatibilityRollback` 
 
 | 模块 | 对外能力 | 隐藏的复杂度 |
 | --- | --- | --- |
-| `TopologyGraphProjector` | 输入 MetadataEnvelope 和查询，输出 `TopologyGraphSnapshot` | 实体连接、候选边、状态优先级、过滤和证据摘要 |
+| `TopologyGraphProjector` | 输入 `TopologySnapshot`、当前 Tailscale 观测和查询，输出 `TopologyGraphSnapshot` | 实体连接、Tailscale 边、状态优先级、过滤和证据摘要 |
 | `EnrollmentCoordinator` | 开始、推进、恢复、取消接入会话 | Host Key、账号证明、临时文件和原子提交 |
 | `AccessCoordinator` | 确保、验证、撤销当前设备的账号授权 | 密钥、Keychain、OpenSSH、远端写入、复验和 Config |
 | `GraphWorkspaceModel` | 选择、搜索、视图模式和任务展示 | SwiftUI 状态，不拥有领域事实 |
