@@ -92,6 +92,26 @@ public struct TailscaleNodeIdentity: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+public extension TailscaleNodeIdentity {
+    /// Matches only the stable address facts reported for this Tailscale node.
+    /// Hostnames and IPs are useful evidence, but they do not replace the
+    /// `tailnetKey + tailscaleNodeID` identity.
+    func addressMatch(for host: String) -> DeviceAddressMatch? {
+        let candidate = TailscaleHostIdentity.normalize(host)
+        guard !candidate.isEmpty else { return nil }
+        if TailscaleHostIdentity.normalize(magicDNS ?? "") == candidate {
+            return .tailscaleMagicDNS
+        }
+        return addresses.contains { TailscaleHostIdentity.normalize($0) == candidate }
+            ? .tailscaleIP
+            : nil
+    }
+
+    func matches(host: String) -> Bool {
+        addressMatch(for: host) != nil
+    }
+}
+
 /// A local observation of one Tailscale identity.
 ///
 /// Observations are intentionally scoped to the observing Mac and are not

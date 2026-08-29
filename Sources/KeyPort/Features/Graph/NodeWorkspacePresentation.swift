@@ -10,6 +10,7 @@ struct NodeWorkspaceItem: Identifiable {
     let node: TopologyGraphNode
     let accounts: [ServerConnection]
     let accountNodes: [TopologyGraphNode]
+    let endpoints: [Endpoint]
     let services: [TopologyGraphNode]
     let machineConfiguration: RemoteMachineConfiguration?
 
@@ -24,7 +25,7 @@ struct NodeWorkspaceItem: Identifiable {
     }
 
     var endpointCount: Int {
-        node.endpointSummaries.count
+        max(endpoints.count, node.endpointSummaries.count)
     }
 }
 
@@ -47,6 +48,7 @@ enum NodeWorkspacePresentation {
                 node: node,
                 accounts: nodeAccounts,
                 accountNodes: accountNodes,
+                endpoints: endpoints(for: node, model: model),
                 services: services,
                 machineConfiguration: machineConfiguration(
                     for: node,
@@ -278,6 +280,19 @@ enum NodeWorkspacePresentation {
             return configuration
         }
         return accounts.compactMap(\.machineConfiguration).first
+    }
+
+    private static func endpoints(
+        for node: TopologyGraphNode,
+        model: AppModel
+    ) -> [Endpoint] {
+        guard let nodeID = node.id.uuid else { return [] }
+        return model.topology.activeEndpoints
+            .filter { $0.nodeID == nodeID && $0.serviceID == nil }
+            .sorted {
+                ($0.priority, $0.networkScope.rawValue, $0.displayAddress, $0.id.uuidString)
+                    < ($1.priority, $1.networkScope.rawValue, $1.displayAddress, $1.id.uuidString)
+            }
     }
 
     private static func accountID(from node: TopologyGraphNode) -> UUID? {
