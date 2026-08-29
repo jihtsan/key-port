@@ -207,6 +207,46 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertTrue(refreshed.node(id: remoteNode.id)?.roles.contains(.serviceHost) == true)
     }
 
+    func testLegacyProjectionKeepsEndpointAddressSeparateFromDisplayLabel() throws {
+        let currentDeviceID = "device-current"
+        let nodeID = UUID(uuidString: "20000000-0000-4000-8000-000000000021")!
+        let endpointID = TopologyStableID.nodeEndpoint(
+            nodeID: nodeID,
+            address: "203.0.113.21",
+            port: 22,
+            protocol: .ssh
+        )
+        let accountID = UUID(uuidString: "20000000-0000-4000-8000-000000000022")!
+        let topology = TopologySnapshot(
+            nodes: [Node(id: nodeID, name: "公网节点", roles: [.sshHost])],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: nodeID,
+                address: "203.0.113.21",
+                label: "办公出口",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .manual
+            )],
+            sshAccounts: [SSHAccount(
+                id: accountID,
+                nodeID: nodeID,
+                endpointID: endpointID,
+                username: "root",
+                alias: "public-root"
+            )]
+        )
+
+        let projected = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDeviceID
+        )
+
+        XCTAssertEqual(projected.servers.first?.host, "203.0.113.21")
+        XCTAssertEqual(projected.servers.first?.name, "公网节点")
+    }
+
     func testLegacyRefreshReattachesExactTailscaleAddressAndPreservesMultipleAccounts() throws {
         let currentDeviceID = "device-current"
         let targetNodeID = TopologyStableID.node(forTailscale: "acme.example", nodeID: "ts-node-1")
@@ -324,5 +364,99 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertEqual(refreshed.activeNodes.filter(\.isSSHHost).count, 2)
         XCTAssertEqual(refreshed.activeAccounts.first?.nodeID, publicNodeID)
         XCTAssertEqual(refreshed.activeEndpoints.first?.networkScope, .publicNetwork)
+    }
+
+    func testExplicitNodeBindingKeepsPublicAccountsGroupedAcrossRefreshes() throws {
+        let currentDeviceID = "device-current"
+        let targetNodeID = UUID(uuidString: "20000000-0000-4000-8000-000000000001")!
+        let endpointID = TopologyStableID.nodeEndpoint(
+            nodeID: targetNodeID,
+            address: "203.0.113.20",
+            port: 22,
+            protocol: .ssh
+        )
+        let existingAccountID = UUID(uuidString: "20000000-0000-4000-8000-000000000011")!
+        let newAccountID = UUID(uuidString: "20000000-0000-4000-8000-000000000012")!
+        let publicHost = "203.0.113.20"
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [
+            ServerConnection(
+                id: existingAccountID,
+                name: "公网节点",
+                host: publicHost,
+                username: "root",
+                alias: "public-root"
+            ),
+            ServerConnection(
+                id: newAccountID,
+                name: "公网节点",
+                host: publicHost,
+                username: "deploy",
+                alias: "public-deploy"
+            ),
+        ]
+
+        let currentNodeID = TopologyStableID.node(forDeviceID: currentDeviceID)
+        let existing = TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "我的 Mac", roles: [.clientDevice]),
+                Node(id: targetNodeID, name: "公网节点", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "我的 Mac",
+                isCurrent: true
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: targetNodeID,
+                address: publicHost,
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .manual
+            )],
+            sshAccounts: [SSHAccount(
+                id: existingAccountID,
+                nodeID: targetNodeID,
+                endpointID: endpointID,
+                username: "root",
+                alias: "public-root"
+            )]
+        )
+
+        let firstRefresh = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: existing,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac",
+            accountBindings: [SSHAccountNodeBinding(
+                accountID: newAccountID,
+                nodeID: targetNodeID,
+                endpointID: endpointID
+            )]
+        )
+
+        XCTAssertEqual(firstRefresh.accounts(for: targetNodeID).count, 2)
+        XCTAssertTrue(firstRefresh.accounts(for: targetNodeID).contains { $0.id == existingAccountID })
+        XCTAssertTrue(firstRefresh.accounts(for: targetNodeID).contains { $0.id == newAccountID })
+        XCTAssertEqual(firstRefresh.endpoints(for: targetNodeID).map(\.id), [endpointID])
+        let sourceNodeID = TopologyStableID.node(forHost: publicHost)
+        XCTAssertTrue(firstRefresh.nodes.first(where: { $0.id == sourceNodeID })?.isDeleted == true)
+
+        let secondRefresh = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: firstRefresh,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        XCTAssertEqual(secondRefresh.accounts(for: targetNodeID).count, 2)
+        XCTAssertTrue(secondRefresh.accounts(for: targetNodeID).allSatisfy { $0.endpointID == endpointID })
+        XCTAssertEqual(secondRefresh.endpoints(for: targetNodeID).count, 1)
+        XCTAssertTrue(secondRefresh.nodes.first(where: { $0.id == sourceNodeID })?.isDeleted == true)
     }
 }

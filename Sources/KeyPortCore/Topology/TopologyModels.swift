@@ -67,6 +67,18 @@ public enum NetworkScope: String, Codable, CaseIterable, Hashable, Sendable {
     case tailnet
     case vpn
     case unknown
+
+    /// The network condition a user should satisfy before trying this endpoint.
+    /// This is a stable requirement label, not a live reachability result.
+    public var requirementTitle: String {
+        switch self {
+        case .lan: "需要同一局域网"
+        case .publicNetwork: "需要公网可达"
+        case .tailnet: "需要 Tailscale 在线"
+        case .vpn: "需要 VPN 通道"
+        case .unknown: "网络要求未声明"
+        }
+    }
 }
 
 public enum EndpointSource: String, Codable, CaseIterable, Hashable, Sendable {
@@ -216,6 +228,21 @@ public struct SSHAccount: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
         self.version = version
+    }
+}
+
+/// A transient command used when a new SSH account is created from a Node.
+/// The binding is applied to the unified topology and is not a second account
+/// classification or a replacement for `SSHAccount.nodeID`.
+public struct SSHAccountNodeBinding: Hashable, Sendable {
+    public let accountID: UUID
+    public let nodeID: UUID
+    public let endpointID: UUID?
+
+    public init(accountID: UUID, nodeID: UUID, endpointID: UUID? = nil) {
+        self.accountID = accountID
+        self.nodeID = nodeID
+        self.endpointID = endpointID
     }
 }
 
@@ -516,6 +543,40 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         tailscaleNodes.filter { !$0.isDeleted }
     }
 
+    /// Active node-level endpoints owned by a Node.
+    public func endpoints(
+        for nodeID: UUID,
+        endpointProtocol: EndpointProtocol? = nil
+    ) -> [Endpoint] {
+        activeEndpoints
+            .filter {
+                $0.nodeID == nodeID
+                    && $0.serviceID == nil
+                    && (endpointProtocol == nil || $0.protocol == endpointProtocol)
+            }
+            .sorted {
+                ($0.priority, $0.networkScope.rawValue, $0.displayAddress, $0.id.uuidString)
+                    < ($1.priority, $1.networkScope.rawValue, $1.displayAddress, $1.id.uuidString)
+            }
+    }
+
+    /// Active SSH accounts that belong to a Node.
+    public func accounts(for nodeID: UUID) -> [SSHAccount] {
+        activeAccounts
+            .filter { $0.nodeID == nodeID }
+            .sorted {
+                ($0.alias.localizedLowercase, $0.username.localizedLowercase, $0.id.uuidString)
+                    < ($1.alias.localizedLowercase, $1.username.localizedLowercase, $1.id.uuidString)
+            }
+    }
+
+    /// Active external identities currently bound to a Node.
+    public func tailscaleIdentities(for nodeID: UUID) -> [TailscaleNodeIdentity] {
+        activeTailscaleNodes
+            .filter { $0.keyPortNodeID == nodeID }
+            .sorted { $0.id < $1.id }
+    }
+
     public func node(id: UUID) -> Node? {
         nodes.first { $0.id == id && !$0.isDeleted }
     }
@@ -804,7 +865,8 @@ public enum TopologySnapshotMigration {
         preserving existing: TopologySnapshot?,
         currentDeviceID: String,
         currentDeviceName: String,
-        now: Date = .now
+        now: Date = .now,
+        accountBindings: [SSHAccountNodeBinding] = []
     ) -> TopologySnapshot {
         let migrated = fromLegacy(
             legacy,
@@ -862,7 +924,14 @@ public enum TopologySnapshotMigration {
             existing.tailscaleObservations,
             by: \.id
         ) { current, _ in current }
-        result.sshAccounts = mergeByKey(migrated.sshAccounts, existing.sshAccounts, by: { $0.id.uuidString }) { current, _ in current }
+        result.sshAccounts = mergeByKey(migrated.sshAccounts, existing.sshAccounts, by: { $0.id.uuidString }) { current, previous in
+            mergedAccount(
+                current: current,
+                previous: previous,
+                migratedEndpoints: migrated.endpoints,
+                existingEndpoints: existing.endpoints
+            )
+        }
         result.sshKeys = mergeByKey(migrated.sshKeys, existing.sshKeys, by: \.id) { current, previous in
             var value = current
             if value.privateKeyPath == nil { value.privateKeyPath = previous.privateKeyPath }
@@ -877,7 +946,196 @@ public enum TopologySnapshotMigration {
         result.nodeAssociations = mergeByKey(migrated.nodeAssociations, existing.nodeAssociations, by: \.id) { current, _ in current }
         result.auditEvents = mergeByKey(migrated.auditEvents, existing.auditEvents, by: { $0.id.uuidString }) { current, _ in current }
         reattachLegacyAccountsToTailscaleNodes(in: &result, preserving: existing)
+        applyExplicitAccountBindings(accountBindings, in: &result)
+        removeOrphanedMigratedRecords(from: migrated, in: &result)
         return result
+    }
+
+    private static func mergedAccount(
+        current: SSHAccount,
+        previous: SSHAccount,
+        migratedEndpoints: [Endpoint],
+        existingEndpoints: [Endpoint]
+    ) -> SSHAccount {
+        guard let currentEndpoint = migratedEndpoints.first(where: { $0.id == current.endpointID }),
+              let previousEndpoint = existingEndpoints.first(where: { $0.id == previous.endpointID }),
+              sameEndpointCoordinate(currentEndpoint, previousEndpoint) else {
+            return current
+        }
+
+        var value = current
+        value.nodeID = previous.nodeID
+        value.endpointID = previous.endpointID
+        return value
+    }
+
+    private static func sameEndpointCoordinate(_ lhs: Endpoint, _ rhs: Endpoint) -> Bool {
+        lhs.serviceID == rhs.serviceID
+            && lhs.port == rhs.port
+            && lhs.protocol == rhs.protocol
+            && TopologyStableID.normalize(lhs.address) == TopologyStableID.normalize(rhs.address)
+    }
+
+    /// Applies the Node selected by the account editor after legacy records
+    /// have been projected. This lets a public or LAN endpoint join an
+    /// existing Tailscale Node without treating the address as identity.
+    private static func applyExplicitAccountBindings(
+        _ bindings: [SSHAccountNodeBinding],
+        in topology: inout TopologySnapshot
+    ) {
+        for binding in bindings {
+            guard let accountIndex = topology.sshAccounts.firstIndex(where: { $0.id == binding.accountID }),
+                  let targetNodeIndex = topology.nodes.firstIndex(where: { $0.id == binding.nodeID && !$0.isDeleted }),
+                  let sourceEndpoint = topology.endpoints.first(where: {
+                      $0.id == topology.sshAccounts[accountIndex].endpointID
+                  }) else {
+                continue
+            }
+
+            let requestedEndpoint = binding.endpointID.flatMap { endpointID in
+                topology.endpoints.first {
+                    $0.id == endpointID
+                        && !$0.isDeleted
+                        && $0.nodeID == binding.nodeID
+                        && $0.serviceID == nil
+                        && $0.protocol == .ssh
+                        && sameEndpointCoordinate($0, sourceEndpoint)
+                }
+            }
+            let matchingEndpoint = requestedEndpoint ?? topology.endpoints.first { endpoint in
+                !endpoint.isDeleted
+                    && endpoint.nodeID == binding.nodeID
+                    && endpoint.serviceID == nil
+                    && endpoint.protocol == sourceEndpoint.protocol
+                    && endpoint.port == sourceEndpoint.port
+                    && TopologyStableID.normalize(endpoint.address)
+                        == TopologyStableID.normalize(sourceEndpoint.address)
+            }
+
+            let targetEndpointID: UUID
+            if let matchingEndpoint {
+                targetEndpointID = matchingEndpoint.id
+            } else {
+                targetEndpointID = TopologyStableID.nodeEndpoint(
+                    nodeID: binding.nodeID,
+                    address: sourceEndpoint.address,
+                    port: sourceEndpoint.port,
+                    protocol: sourceEndpoint.protocol
+                )
+                var movedEndpoint = sourceEndpoint
+                movedEndpoint.id = targetEndpointID
+                movedEndpoint.nodeID = binding.nodeID
+                movedEndpoint.serviceID = nil
+                movedEndpoint.isDeleted = false
+                if movedEndpoint.source == .migrated {
+                    movedEndpoint.source = .manual
+                }
+                if let existingEndpointIndex = topology.endpoints.firstIndex(where: { $0.id == targetEndpointID }) {
+                    topology.endpoints[existingEndpointIndex] = movedEndpoint
+                } else {
+                    topology.endpoints.append(movedEndpoint)
+                }
+            }
+
+            if let targetEndpointIndex = topology.endpoints.firstIndex(where: { $0.id == targetEndpointID }) {
+                topology.endpoints[targetEndpointIndex].isDeleted = false
+                topology.endpoints[targetEndpointIndex].nodeID = binding.nodeID
+                topology.endpoints[targetEndpointIndex].serviceID = nil
+            }
+
+            let sourceNodeID = topology.sshAccounts[accountIndex].nodeID
+            let sourceEndpointID = topology.sshAccounts[accountIndex].endpointID
+            topology.sshAccounts[accountIndex].nodeID = binding.nodeID
+            topology.sshAccounts[accountIndex].endpointID = targetEndpointID
+
+            if sourceEndpointID != targetEndpointID {
+                moveHostKeyTrusts(
+                    from: sourceEndpointID,
+                    to: targetEndpointID,
+                    in: &topology
+                )
+            }
+
+            var targetNode = topology.nodes[targetNodeIndex]
+            targetNode.roles = Array(Set(targetNode.roles + [.sshHost])).sorted { $0.rawValue < $1.rawValue }
+            if sourceNodeID != binding.nodeID,
+               let sourceNode = topology.nodes.first(where: { $0.id == sourceNodeID }) {
+                if targetNode.name.isEmpty { targetNode.name = sourceNode.name }
+                if targetNode.group.isEmpty { targetNode.group = sourceNode.group }
+                if targetNode.notes.isEmpty { targetNode.notes = sourceNode.notes }
+                if targetNode.machineConfiguration == nil {
+                    targetNode.machineConfiguration = sourceNode.machineConfiguration
+                }
+                targetNode.createdAt = min(targetNode.createdAt, sourceNode.createdAt)
+                targetNode.updatedAt = max(targetNode.updatedAt, sourceNode.updatedAt)
+            }
+            targetNode.isDeleted = false
+            topology.nodes[targetNodeIndex] = targetNode
+        }
+    }
+
+    private static func moveHostKeyTrusts(
+        from sourceEndpointID: UUID,
+        to targetEndpointID: UUID,
+        in topology: inout TopologySnapshot
+    ) {
+        for trustIndex in topology.hostKeyTrusts.indices where topology.hostKeyTrusts[trustIndex].endpointID == sourceEndpointID {
+            let trust = topology.hostKeyTrusts[trustIndex]
+            let duplicate = topology.hostKeyTrusts.indices.contains { index in
+                index != trustIndex
+                    && topology.hostKeyTrusts[index].endpointID == targetEndpointID
+                    && topology.hostKeyTrusts[index].algorithm == trust.algorithm
+                    && topology.hostKeyTrusts[index].fingerprint == trust.fingerprint
+                    && !topology.hostKeyTrusts[index].isDeleted
+            }
+            if duplicate {
+                topology.hostKeyTrusts[trustIndex].isDeleted = true
+            } else {
+                topology.hostKeyTrusts[trustIndex].endpointID = targetEndpointID
+                topology.hostKeyTrusts[trustIndex].id = TopologyStableID.hostKeyTrust(
+                    endpointID: targetEndpointID,
+                    algorithm: trust.algorithm,
+                    fingerprint: trust.fingerprint
+                )
+            }
+        }
+    }
+
+    /// A legacy projection can temporarily recreate the old address-owned
+    /// Node after an account has already been attached to a Node. Tombstone
+    /// that generated shell only when no active fact still depends on it.
+    private static func removeOrphanedMigratedRecords(
+        from migrated: TopologySnapshot,
+        in topology: inout TopologySnapshot
+    ) {
+        let migratedAccountsByID = Dictionary(uniqueKeysWithValues: migrated.sshAccounts.map { ($0.id, $0) })
+        let reboundAccounts = topology.activeAccounts.filter { account in
+            guard let migratedAccount = migratedAccountsByID[account.id] else { return false }
+            return account.nodeID != migratedAccount.nodeID || account.endpointID != migratedAccount.endpointID
+        }
+
+        for account in reboundAccounts {
+            guard let migratedAccount = migratedAccountsByID[account.id] else { continue }
+            let sourceEndpointIDs = Set(migrated.sshAccounts
+                .filter { $0.nodeID == migratedAccount.nodeID }
+                .map(\.endpointID))
+            for endpointIndex in topology.endpoints.indices where sourceEndpointIDs.contains(topology.endpoints[endpointIndex].id) {
+                let endpointID = topology.endpoints[endpointIndex].id
+                let stillUsed = topology.activeAccounts.contains { $0.endpointID == endpointID }
+                if !stillUsed {
+                    topology.endpoints[endpointIndex].isDeleted = true
+                }
+            }
+
+            let sourceNodeID = migratedAccount.nodeID
+            let hasAccounts = topology.activeAccounts.contains { $0.nodeID == sourceNodeID }
+            let hasServices = topology.services.contains { $0.nodeID == sourceNodeID && !$0.isDeleted }
+            let hasEndpoints = topology.activeEndpoints.contains { $0.nodeID == sourceNodeID }
+            if !hasAccounts && !hasServices && !hasEndpoints,
+               let nodeIndex = topology.nodes.firstIndex(where: { $0.id == sourceNodeID }) {
+                topology.nodes[nodeIndex].isDeleted = true
+            }
+        }
     }
 
     /// Reconnects a legacy SSH account to a Tailscale-backed Node when the
@@ -1092,7 +1350,7 @@ public enum TopologySnapshotMigration {
             return ServerConnection(
                 id: account.id,
                 name: node.name,
-                host: endpoint.label.isEmpty ? endpoint.address : endpoint.label,
+                host: endpoint.address,
                 port: Int(endpoint.port),
                 username: account.username,
                 alias: account.alias,

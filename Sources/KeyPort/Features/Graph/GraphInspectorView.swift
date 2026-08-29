@@ -4,7 +4,8 @@ import SwiftUI
 struct GraphInspectorView: View {
     let workspace: GraphWorkspaceModel
     let model: AppModel
-    let onAddAccount: (UUID?) -> Void
+    let onAddAccount: (UUID, UUID?) -> Void
+    let onAddEndpoint: (UUID) -> Void
     let onEditAccount: (UUID) -> Void
 
     var body: some View {
@@ -120,14 +121,14 @@ struct GraphInspectorView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if let sourceAccountID = item.accounts.first?.id {
+                    if let nodeID = item.node.id.uuid {
                         Button {
-                            onAddAccount(sourceAccountID)
+                            onAddAccount(nodeID, nil)
                         } label: {
                             Label("添加账户", systemImage: "person.badge.plus")
                         }
                         .buttonStyle(.borderless)
-                        .disabled(model.isBusy)
+                        .disabled(model.isBusy || model.isMetadataReadOnly)
                     }
                 }
 
@@ -147,7 +148,11 @@ struct GraphInspectorView: View {
                             model: model,
                             isSelected: model.selectedServerID == account.id,
                             onSelect: { model.selectedServerID = account.id },
-                            onAddAccount: { onAddAccount(account.id) },
+                            onAddAccount: {
+                                if let nodeID = item.node.id.uuid {
+                                    onAddAccount(nodeID, nil)
+                                }
+                            },
                             onEdit: { onEditAccount(account.id) },
                             onCopyAlias: { model.copyAlias(serverID: account.id) },
                             onAuthorize: { onAuthorize(account) }
@@ -190,28 +195,49 @@ struct GraphInspectorView: View {
 
     @ViewBuilder
     private func endpointsSection(_ item: NodeWorkspaceItem) -> some View {
-        if !item.endpoints.isEmpty {
-            GroupBox("访问端点") {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(item.endpoints) { endpoint in
-                        NodeEndpointRow(endpoint: endpoint)
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("访问端点")
+                        .font(.headline)
+                    Spacer()
+                    if let nodeID = item.node.id.uuid {
+                        Button {
+                            onAddEndpoint(nodeID)
+                        } label: {
+                            Label("添加地址", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(model.isBusy || model.isMetadataReadOnly)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
-            }
-        } else if !item.node.endpointSummaries.isEmpty {
-            GroupBox("访问端点") {
-                VStack(alignment: .leading, spacing: 8) {
+
+                if !item.endpoints.isEmpty {
+                    ForEach(item.endpoints) { endpoint in
+                        NodeEndpointRow(
+                            endpoint: endpoint,
+                            onAddAccount: endpoint.protocol == .ssh
+                                ? {
+                                    if let nodeID = item.node.id.uuid {
+                                        onAddAccount(nodeID, endpoint.id)
+                                    }
+                                }
+                                : nil
+                        )
+                    }
+                } else if !item.node.endpointSummaries.isEmpty {
                     ForEach(item.node.endpointSummaries, id: \.self) { endpoint in
                         Label(endpoint, systemImage: "point.3.connected.trianglepath.dotted")
                             .font(.callout)
                             .textSelection(.enabled)
                     }
+                } else {
+                    Label("还没有记录访问地址", systemImage: "point.3.connected.trianglepath.dotted")
+                        .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 4)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
         }
     }
 
@@ -409,6 +435,7 @@ private struct NodeStatusFact: View {
 
 private struct NodeEndpointRow: View {
     let endpoint: Endpoint
+    let onAddAccount: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -433,6 +460,10 @@ private struct NodeEndpointRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+                Text(endpoint.networkScope.requirementTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 if endpoint.label != endpoint.address {
                     Text(endpoint.label)
                         .font(.caption)
@@ -441,6 +472,13 @@ private struct NodeEndpointRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if let onAddAccount {
+                Button(action: onAddAccount) {
+                    Image(systemName: "person.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .help("为此端点添加 SSH 账户")
+            }
         }
         .padding(.vertical, 3)
     }
@@ -592,6 +630,13 @@ private extension TopologyGraphReason {
         case .readOnly: "只读模式"
         case .compatibilityRollback: "兼容回滚"
         }
+    }
+}
+
+private extension TopologyGraphNodeID {
+    var uuid: UUID? {
+        guard let separator = rawValue.firstIndex(of: ":") else { return nil }
+        return UUID(uuidString: String(rawValue[rawValue.index(after: separator)...]))
     }
 }
 
