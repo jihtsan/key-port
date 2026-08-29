@@ -166,11 +166,7 @@ enum NodeWorkspacePresentation {
         // keeps the node/account boundary independent from address changes.
         if let nodeID = node.id.uuid,
            model.topology.nodes.contains(where: { $0.id == nodeID }) {
-            let accountIDs = Set(
-                model.topology.sshAccounts
-                    .filter { $0.nodeID == nodeID && !$0.isDeleted }
-                    .map(\.id)
-            )
+            let accountIDs = Set(model.topology.accounts(for: nodeID).map(\.id))
             return sorted(activeServers.filter { accountIDs.contains($0.id) })
         }
 
@@ -287,12 +283,7 @@ enum NodeWorkspacePresentation {
         model: AppModel
     ) -> [Endpoint] {
         guard let nodeID = node.id.uuid else { return [] }
-        return model.topology.activeEndpoints
-            .filter { $0.nodeID == nodeID && $0.serviceID == nil }
-            .sorted {
-                ($0.priority, $0.networkScope.rawValue, $0.displayAddress, $0.id.uuidString)
-                    < ($1.priority, $1.networkScope.rawValue, $1.displayAddress, $1.id.uuidString)
-            }
+        return model.topology.endpoints(for: nodeID)
     }
 
     private static func accountID(from node: TopologyGraphNode) -> UUID? {

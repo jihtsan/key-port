@@ -32,6 +32,14 @@ _Avoid_: IP、Host、Access Address、SSH 账户
 Endpoint 所属的网络语境，例如局域网、公共网络、Tailnet 或 VPN 内部网络；它帮助选择访问路径，但不改变节点身份。
 _Avoid_: 可达性状态、VPN 授权、IP 地址
 
+**Network Requirement（网络要求）**：
+Endpoint 对访问环境的稳定要求：局域网表示需要同一局域网，公共网络表示需要公网可达，Tailnet 表示需要 Tailscale 在线，VPN 表示需要 VPN 通道；未声明时不能推断访问条件。它是 Endpoint 的说明，不是当前是否可达的实时结论。
+_Avoid_: 在线状态、Ping 结果、Tailscale 节点身份
+
+**Node-owned Access Facts（节点访问事实）**：
+Node 是访问事实的归属中心；Endpoint、SSH Account 和 Service 都是 Node 下的子事实。新增或修改其中一个事实只改变该 Node 的访问信息，不应按账户、地址或协议再创建或分类出一个 Node。
+_Avoid_: 一个账户一个节点、按公网地址分组、按 SSH 用户分类
+
 Endpoint 可以记录稳定的网络范围标签，但 Wi‑Fi 名称、网卡、信号强度和当前网络切换属于 Reachability Observation 的环境上下文，不属于 Node 或 Endpoint 的身份。
 
 **Automatic Endpoint Matching（自动端点匹配）**：
@@ -75,6 +83,10 @@ _Avoid_: 授权本身、可达性状态、节点角色
 **SSH Account（SSH 账户）**：
 某个 Node 上的 SSH 登录入口，由用户名和稳定别名表达；一个 Node 可以有多个 SSH 账户。账户凭据和授权属于账户级访问关系，不属于 Node 的通用元数据。
 _Avoid_: SSH Identity、Host、Workspace Device Profile
+
+**Local SSH Account（本机 SSH 账户）**：
+当前设备对应 Node 上的 SSH Account，例如通过 localhost 或本机地址登录的用户。它仍然是 Node 的子账户，可以独立保存密码或密钥引用，不会因为“本机”属性变成另一个 Node 或特殊的账户分类。
+_Avoid_: 本机节点分类、共享密码、设备级账户
 
 **SSH Key（SSH 密钥）**：
 归属于一个 Workspace Device Profile、由公钥指纹识别的密钥身份；私钥只由持有它的本地设备保管。
