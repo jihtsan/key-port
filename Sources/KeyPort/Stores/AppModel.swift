@@ -827,7 +827,7 @@ final class AppModel {
                     storedTopology = nil
                 }
                 if let storedTopology,
-                   storedTopology.schemaVersion == TopologySnapshot.currentSchemaVersion,
+                   storedTopology.schemaVersion <= TopologySnapshot.currentSchemaVersion,
                    storedTopology.profiles.contains(where: { $0.id == currentDeviceID }) {
                     topology = TopologySnapshotMigration.refreshed(
                         from: snapshot,
@@ -844,7 +844,11 @@ final class AppModel {
                     try await topologyStore.save(topology)
                 }
                 isMetadataReadOnly = false
-                graphWorkspace.update(topology: topology, currentDeviceID: currentDeviceID)
+                graphWorkspace.update(
+                    topology: topology,
+                    currentDeviceID: currentDeviceID,
+                    tailscaleStatus: tailscaleStatus
+                )
                 _ = try? await configService.adoptExistingManagedConfigBaseline(
                     servers: snapshot.servers.filter { !$0.isDeleted },
                     keys: snapshot.keys,
@@ -1840,7 +1844,14 @@ final class AppModel {
                     result[server.id] = attemptedAt
                 }
             }
-            snapshot = try await cloudSync.synchronize(snapshot)
+            let currentDeviceID = snapshot.devices.first(where: \.isCurrent)?.id
+                ?? defaults.string(forKey: "KeyPort.deviceID")
+                ?? KeyPortNaming.newDeviceID()
+            topology = try await cloudSync.synchronize(topology)
+            snapshot = TopologySnapshotMigration.legacyProjection(
+                from: topology,
+                currentDeviceID: currentDeviceID
+            )
             for index in snapshot.servers.indices {
                 guard let localAttempt = localMachineConfigurationRefreshAttempts[snapshot.servers[index].id] else { continue }
                 let mergedAttempt = snapshot.servers[index].machineConfigurationRefreshAttemptedAt ?? .distantPast
@@ -1889,14 +1900,35 @@ final class AppModel {
                     ? .available
                     : .unavailable("Tailscale 状态不完整，已保留现有节点关联。")
             } else if status.isCompleteAssociationSnapshot {
-                await recordCurrentDeviceIdentity(from: status)
-                await discoverLogicalNameAssociations(using: status)
-                await revalidateNodeAssociations(status: status, sourceState: .complete)
+                let observerDeviceID = currentDevice?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? KeyPortNaming.newDeviceID()
+                topology = TailscaleTopologySynchronizer.apply(
+                    status: status,
+                    to: topology,
+                    observerDeviceID: observerDeviceID,
+                    observedAt: status.observedAt
+                )
+                recordCurrentDeviceIdentity(from: status)
+                discoverLogicalNameAssociations(using: status)
+                revalidateNodeAssociations(status: status, sourceState: .complete)
                 tailscaleDiscoveryState = .available
             } else {
-                await recordCurrentDeviceIdentity(from: status)
-                await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+                let observerDeviceID = currentDevice?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? KeyPortNaming.newDeviceID()
+                topology = TailscaleTopologySynchronizer.apply(
+                    status: status,
+                    to: topology,
+                    observerDeviceID: observerDeviceID,
+                    observedAt: status.observedAt
+                )
+                recordCurrentDeviceIdentity(from: status)
+                revalidateNodeAssociations(status: nil, sourceState: .unavailable)
                 tailscaleDiscoveryState = .unavailable("Tailscale 状态不完整，已保留现有节点关联。")
+            }
+            if !readOnlyPresentation {
+                await persist()
             }
             if selectedDeviceItem == nil {
                 selectedDeviceItemID = deviceListItems.first(where: \.isCurrent)?.id ?? deviceListItems.first?.id
@@ -1904,7 +1936,21 @@ final class AppModel {
         } catch {
             tailscaleStatus = nil
             if !readOnlyPresentation {
-                await revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+                revalidateNodeAssociations(status: nil, sourceState: .unavailable)
+            }
+            if !readOnlyPresentation {
+                let currentDeviceID = currentDevice?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                graphWorkspace.update(
+                    topology: topology,
+                    currentDeviceID: currentDeviceID,
+                    tailscaleStatus: TailscaleStatus(
+                        backendState: "Unavailable",
+                        tailnetName: nil,
+                        magicDNSSuffix: nil,
+                        nodes: []
+                    )
+                )
             }
             tailscaleDiscoveryState = .unavailable(error.localizedDescription)
         }
@@ -2578,19 +2624,18 @@ final class AppModel {
         }
     }
 
-    private func recordCurrentDeviceIdentity(from status: TailscaleStatus) async {
+    private func recordCurrentDeviceIdentity(from status: TailscaleStatus) {
         guard let node = status.nodes.first(where: \.isCurrent),
               let identity = TailscaleDeviceIdentity(node: node),
               let index = snapshot.devices.firstIndex(where: \.isCurrent) else { return }
         snapshot.devices[index].tailscaleIdentity = identity
         snapshot.devices[index].lastActiveAt = .now
-        await persist()
     }
 
     private func revalidateNodeAssociations(
         status: TailscaleStatus?,
         sourceState: NodeAssociationSourceState
-    ) async {
+    ) {
         let associations = snapshot.nodeAssociations
         for association in associations {
             guard let server = snapshot.servers.first(where: { $0.id == association.serverID && !$0.isDeleted }) else {
@@ -2609,7 +2654,6 @@ final class AppModel {
             nodeAssociationCandidates[evaluation.association.testCaseNodeID] = evaluation.candidates
             upsertNodeAssociation(evaluation.association)
         }
-        await persist()
     }
 
     private func effectiveSSHRoute(for server: ServerConnection) -> EffectiveSSHRoute {
@@ -2634,7 +2678,7 @@ final class AppModel {
         )
     }
 
-    private func discoverLogicalNameAssociations(using status: TailscaleStatus) async {
+    private func discoverLogicalNameAssociations(using status: TailscaleStatus) {
         let associatedServerIDs = Set(snapshot.nodeAssociations.map(\.serverID))
         for server in activeServers where !associatedServerIDs.contains(server.id) {
             let logicalID = LogicalNodeName.normalize(server.name)
@@ -2652,7 +2696,6 @@ final class AppModel {
             nodeAssociationCandidates[logicalID] = evaluation.candidates
             upsertNodeAssociation(evaluation.association)
         }
-        await persist()
     }
 
     private func upsertNodeAssociation(_ association: NodeAssociation) {
@@ -3074,7 +3117,11 @@ final class AppModel {
                 )
                 try await store.save(snapshot)
                 try await topologyStore.save(topology)
-                graphWorkspace.update(topology: topology, currentDeviceID: currentDeviceID)
+                graphWorkspace.update(
+                    topology: topology,
+                    currentDeviceID: currentDeviceID,
+                    tailscaleStatus: tailscaleStatus
+                )
             }
             scheduleCloudSyncIfNeeded()
         }

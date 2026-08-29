@@ -285,6 +285,8 @@ public struct TopologyGraphProjector: Sendable {
     public func project(
         topology: TopologySnapshot,
         currentDeviceID: String?,
+        tailscaleStatus: TailscaleStatus? = nil,
+        now: Date = .now,
         query: TopologyGraphQuery = TopologyGraphQuery()
     ) -> TopologyGraphSnapshot {
         let activeNodes = topology.nodes.filter { !$0.isDeleted }
@@ -293,6 +295,7 @@ public struct TopologyGraphProjector: Sendable {
         let activeServices = topology.services.filter { !$0.isDeleted }
         let activeAccounts = topology.sshAccounts.filter { !$0.isDeleted }
         let activeTrusts = topology.hostKeyTrusts.filter { !$0.isDeleted }
+        let activeTailscaleIdentities = topology.tailscaleNodes.filter { !$0.isDeleted }
         let activeAuthorizations = topology.authorizations.filter {
             !$0.isDeleted && $0.relationState == .active
         }
@@ -301,9 +304,51 @@ public struct TopologyGraphProjector: Sendable {
         let profilesByID = Dictionary(uniqueKeysWithValues: activeProfiles.map { ($0.id, $0) })
         let keysByID = Dictionary(uniqueKeysWithValues: topology.sshKeys.map { ($0.id, $0) })
         let accountsByNode = Dictionary(grouping: activeAccounts, by: \.nodeID)
+        let tailscaleIdentitiesByNode = Dictionary(grouping: activeTailscaleIdentities, by: \.keyPortNodeID)
 
         let currentProfile = currentDeviceID.flatMap { profilesByID[$0] }
         let primaryNodeID = currentProfile?.nodeID
+
+        var localTailscaleObservations: [String: TailscaleNodeObservation] = [:]
+        if tailscaleStatus == nil {
+            localTailscaleObservations = Dictionary(
+                topology.tailscaleObservations
+                    .filter { $0.observerDeviceID == currentDeviceID }
+                    .map { ($0.identityID, $0) },
+                uniquingKeysWith: { first, second in
+                    first.observedAt >= second.observedAt ? first : second
+                }
+            )
+        } else if let tailscaleStatus,
+                  tailscaleStatus.backendState.caseInsensitiveCompare("Running") == .orderedSame,
+                  let currentDeviceID,
+                  let tailnetKey = tailscaleStatus.tailnetKey {
+            for tailscaleNode in tailscaleStatus.nodes {
+                guard let tailscaleNodeID = tailscaleNode.stableNodeID,
+                      let observation = TailscaleNodeObservation(
+                          tailnetKey: tailnetKey,
+                          tailscaleNodeID: tailscaleNodeID,
+                          observerDeviceID: currentDeviceID,
+                          backendState: tailscaleStatus.backendState,
+                          observedAt: tailscaleStatus.observedAt,
+                          isOnline: tailscaleNode.isOnline,
+                          lastSeenAt: tailscaleNode.lastSeen,
+                          relay: tailscaleNode.relay
+                      ) else { continue }
+                localTailscaleObservations[observation.identityID] = observation
+            }
+        }
+
+        func graphTailscaleIdentities(for nodeID: UUID) -> [TopologyGraphTailscaleIdentity] {
+            (tailscaleIdentitiesByNode[nodeID] ?? []).map { identity in
+                TopologyGraphTailscaleIdentity(
+                    identity: identity,
+                    observation: localTailscaleObservations[identity.id],
+                    status: tailscaleStatus,
+                    now: now
+                )
+            }
+        }
 
         func nodeStatus(_ node: Node) -> TopologyGraphStatus {
             let nodeEndpoints = activeEndpoints.filter { $0.nodeID == node.id && $0.serviceID == nil }
@@ -442,6 +487,8 @@ public struct TopologyGraphProjector: Sendable {
                 subtitle = "当前设备"
             } else if let endpoint {
                 subtitle = endpoint.displayAddress
+            } else if let tailscale = graphTailscaleIdentities(for: node.id).first {
+                subtitle = tailscale.magicDNS ?? tailscale.addresses.first ?? "Tailscale"
             } else if !node.group.isEmpty {
                 subtitle = node.group
             } else {
@@ -453,6 +500,7 @@ public struct TopologyGraphProjector: Sendable {
                 title: node.name.isEmpty ? "未命名节点" : node.name,
                 subtitle: subtitle,
                 endpointSummaries: endpointSummaries(for: node.id),
+                tailscaleIdentities: graphTailscaleIdentities(for: node.id),
                 status: nodeStatus(node),
                 isWorkspaceDevice: node.isWorkspaceDevice
             )
@@ -569,6 +617,22 @@ public struct TopologyGraphProjector: Sendable {
                 label: service.name,
                 status: nodesByID[service.nodeID].map(nodeStatus) ?? .unknown
             ))
+        }
+
+        if let currentProfile {
+            let source = TopologyGraphNodeID.node(currentProfile.nodeID)
+            for identity in activeTailscaleIdentities where identity.keyPortNodeID != currentProfile.nodeID {
+                guard nodesByID[identity.keyPortNodeID] != nil,
+                      localTailscaleObservations[identity.id] != nil else { continue }
+                edges.append(TopologyGraphEdge(
+                    id: "tailscale:\(currentProfile.nodeID.uuidString.lowercased()):\(identity.id)",
+                    from: source,
+                    to: .node(identity.keyPortNodeID),
+                    kind: .tailscalePeer,
+                    label: "Tailscale",
+                    status: TopologyGraphStatus(sync: .clean)
+                ))
+            }
         }
 
         let complete = TopologyGraphSnapshot(

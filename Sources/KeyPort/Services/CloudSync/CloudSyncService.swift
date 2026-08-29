@@ -61,7 +61,7 @@ enum CloudSyncState: Equatable, Sendable {
 
 protocol CloudSyncing: Sendable {
     func availability() async -> CloudSyncAvailability
-    func synchronize(_ local: AppSnapshot) async throws -> AppSnapshot
+    func synchronize(_ local: TopologySnapshot) async throws -> TopologySnapshot
 }
 
 enum CloudSyncAvailability: Sendable {
@@ -130,8 +130,8 @@ enum CloudSyncError: LocalizedError, Sendable, Equatable {
 }
 
 actor CloudKitSyncService: CloudSyncing {
-    private static let recordType = "KPMetadata"
-    private static let recordName = "keyport-metadata-v1"
+    private static let recordType = "KPTopologyMetadata"
+    private static let recordName = "keyport-topology-v1"
 
     private let containerIdentifier: String
     private let encoder = JSONEncoder()
@@ -169,7 +169,7 @@ actor CloudKitSyncService: CloudSyncing {
         }
     }
 
-    func synchronize(_ local: AppSnapshot) async throws -> AppSnapshot {
+    func synchronize(_ local: TopologySnapshot) async throws -> TopologySnapshot {
         switch await availability() {
         case .available:
             break
@@ -178,7 +178,7 @@ actor CloudKitSyncService: CloudSyncing {
         }
 
         let database = CKContainer(identifier: containerIdentifier).privateCloudDatabase
-        let sanitizedLocal = CloudMetadataSnapshotPolicy.sanitized(local)
+        let sanitizedLocal = TopologyCloudMetadataSnapshotPolicy.sanitized(local)
         var conflictAttempts = 0
         var transientAttempts = 0
 
@@ -186,7 +186,7 @@ actor CloudKitSyncService: CloudSyncing {
             try Task.checkCancellation()
             do {
                 let (record, remote, isNewRecord) = try await fetchRecord(from: database)
-                let merged = CloudMetadataSnapshotPolicy.merge(local: sanitizedLocal, remote: remote)
+                let merged = TopologyCloudMetadataSnapshotPolicy.merge(local: sanitizedLocal, remote: remote)
                 let payload = try encoder.encode(merged)
                 let storedSchemaVersion = (record["schemaVersion"] as? NSNumber)?.intValue
                 let payloadIsCurrent = !isNewRecord
@@ -200,7 +200,7 @@ actor CloudKitSyncService: CloudSyncing {
                     try await save(record, to: database)
                 }
 
-                return CloudMetadataSnapshotPolicy.restoringLocalState(in: merged, from: local)
+                return TopologyCloudMetadataSnapshotPolicy.restoringLocalState(in: merged, from: local)
             } catch is CancellationError {
                 throw CloudSyncError.cancelled
             } catch {
@@ -219,20 +219,20 @@ actor CloudKitSyncService: CloudSyncing {
         }
     }
 
-    private func fetchRecord(from database: CKDatabase) async throws -> (CKRecord, AppSnapshot, Bool) {
+    private func fetchRecord(from database: CKDatabase) async throws -> (CKRecord, TopologySnapshot, Bool) {
         let record: CKRecord
         do {
             record = try await database.record(for: recordID)
         } catch let error as CKError where error.code == .unknownItem {
-            return (CKRecord(recordType: Self.recordType, recordID: recordID), AppSnapshot(), true)
+            return (CKRecord(recordType: Self.recordType, recordID: recordID), TopologySnapshot.empty, true)
         }
 
         guard let data = record["payload"] as? Data else {
             throw CloudSyncError.malformedRecord
         }
         do {
-            let decoded = try decoder.decode(AppSnapshot.self, from: data)
-            return (record, CloudMetadataSnapshotPolicy.sanitized(decoded), false)
+            let decoded = try decoder.decode(TopologySnapshot.self, from: data)
+            return (record, TopologyCloudMetadataSnapshotPolicy.sanitized(decoded), false)
         } catch {
             throw CloudSyncError.malformedRecord
         }
@@ -316,13 +316,13 @@ actor CloudKitSyncService: CloudSyncing {
 }
 
 actor InMemoryCloudSyncService: CloudSyncing {
-    private var remote = AppSnapshot()
+    private var remote = TopologySnapshot.empty
 
     func availability() async -> CloudSyncAvailability { .available }
 
-    func synchronize(_ local: AppSnapshot) async throws -> AppSnapshot {
-        let merged = CloudMetadataSnapshotPolicy.merge(local: local, remote: remote)
+    func synchronize(_ local: TopologySnapshot) async throws -> TopologySnapshot {
+        let merged = TopologyCloudMetadataSnapshotPolicy.merge(local: local, remote: remote)
         remote = merged
-        return CloudMetadataSnapshotPolicy.restoringLocalState(in: merged, from: local)
+        return TopologyCloudMetadataSnapshotPolicy.restoringLocalState(in: merged, from: local)
     }
 }

@@ -5,12 +5,20 @@ public struct TailscaleStatus: Hashable, Sendable {
     public let tailnetName: String?
     public let magicDNSSuffix: String?
     public let nodes: [TailscaleNode]
+    public let observedAt: Date
 
-    public init(backendState: String, tailnetName: String?, magicDNSSuffix: String?, nodes: [TailscaleNode]) {
+    public init(
+        backendState: String,
+        tailnetName: String?,
+        magicDNSSuffix: String?,
+        nodes: [TailscaleNode],
+        observedAt: Date = .now
+    ) {
         self.backendState = backendState
         self.tailnetName = tailnetName
         self.magicDNSSuffix = magicDNSSuffix
         self.nodes = nodes
+        self.observedAt = observedAt
     }
 
     public var tailnetKey: String? {
@@ -82,11 +90,11 @@ public enum TailscaleStatusParsingError: LocalizedError, Equatable, Sendable {
 }
 
 public enum TailscaleStatusParser {
-    public static func parse(_ text: String) throws -> TailscaleStatus {
-        try parse(Data(text.utf8))
+    public static func parse(_ text: String, observedAt: Date = .now) throws -> TailscaleStatus {
+        try parse(Data(text.utf8), observedAt: observedAt)
     }
 
-    public static func parse(_ data: Data) throws -> TailscaleStatus {
+    public static func parse(_ data: Data, observedAt: Date = .now) throws -> TailscaleStatus {
         let rawStatus: RawStatus
         do {
             rawStatus = try JSONDecoder().decode(RawStatus.self, from: data)
@@ -112,7 +120,8 @@ public enum TailscaleStatusParser {
             backendState: rawStatus.backendState ?? "Unknown",
             tailnetName: nonEmpty(rawStatus.currentTailnet?.name),
             magicDNSSuffix: nonEmpty(rawStatus.currentTailnet?.magicDNSSuffix) ?? nonEmpty(rawStatus.magicDNSSuffix),
-            nodes: nodes
+            nodes: nodes,
+            observedAt: observedAt
         )
     }
 

@@ -27,11 +27,13 @@ KeyPort 当前是 macOS 14+ 应用，不是 iOS target。iOS 的 provisioning pr
    当前这台 Mac 的值是 `00006032-0012705E119A401C`。
 5. 保存 App ID 后，在 Profiles > Development 中创建或编辑 `macOS App Development` profile，选择团队、`com.jihtsan.KeyPort` App ID、`Apple Development` 证书和当前 Mac 设备，然后下载 `.provisionprofile` 文件。
 6. 也可以先回到 Xcode > Settings > Apple Accounts > Tianwei Technology (Changzhou) Co., Ltd.，点击 `Download Manual Profiles`。
-7. 在 CloudKit Dashboard 的 Development 环境中确认私有数据库允许使用 `KPMetadata` record type。首次运行可以创建这个 record type；字段为：
+7. 在 CloudKit Dashboard 的 Development 环境中确认私有数据库允许使用 `KPTopologyMetadata` record type。统一拓扑同步使用单条记录 `keyport-topology-v1`；首次运行可以创建这个 record type。字段为：
 
    - `payload`: Bytes
    - `schemaVersion`: Int64
    - `updatedAt`: Date/Time
+
+   旧的 `KPMetadata/keyport-metadata-v1` 属于迁移前的兼容记录，新版本不会继续读写它，避免旧的 `AppSnapshot` 云端表示和统一 `TopologySnapshot` 并行合并。
 
 8. 发布前在 CloudKit Dashboard 将 Development schema 部署到 Production，并将构建脚本的 `KEYPORT_CLOUDKIT_ENVIRONMENT` 改为 `Production`。
 

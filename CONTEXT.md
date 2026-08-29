@@ -39,8 +39,12 @@ Endpoint 可以记录稳定的网络范围标签，但 Wi‑Fi 名称、网卡�
 _Avoid_: Host、端口、数据库节点
 
 **External Node Identity（外部节点身份）**：
-由 Tailscale 等外部网络系统报告的节点标识；只有存在强证据或用户确认时，才与 KeyPort Node 建立关联。
+由 Tailscale 等外部网络系统报告的节点标识；在 Tailscale 中由 `Tailnet + Node ID` 唯一表达，并绑定到一个 KeyPort Node。MagicDNS、Tailscale IP、主机名和操作系统是可更新的最后已知元数据，不是节点身份本身。
 _Avoid_: SSH 账户、访问授权、自动发现到的相似名称
+
+**Tailscale Observation（Tailscale 本机观测）**：
+某台运行 KeyPort 的 Mac 在某个时间从本机 Tailscale 状态读取到的在线状态、Last Seen、Relay 和刷新时间。它属于观察设备的本地证据，不能覆盖其他 Mac 的状态，也不能删除云端已保存的 Node。
+_Avoid_: 全局在线状态、Node 身份、CloudKit 共享事实
 
 **Topology Graph（拓扑图）**：
 由工作区事实和当前设备的本地观测推导出的节点、服务及访问关系的可视化投影。Graph 展示事实，不创建新的授权、路由或物理连接事实。
