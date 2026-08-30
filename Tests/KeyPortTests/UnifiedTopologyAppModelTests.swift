@@ -93,8 +93,7 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
             profileID: nil,
             accountID: account.id,
             endpointID: lanEndpoint.id,
-            sshAlias: "studio-lan",
-            sshInput: "ssh sw-jooder@192.168.1.20"
+            sshAlias: "studio-lan"
         ))
 
         XCTAssertEqual(model.topology.activeAccounts.count, 1)
@@ -110,6 +109,60 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         let stored = try XCTUnwrap(loaded)
         XCTAssertEqual(stored.activeConnectionProfiles.count, 2)
         XCTAssertEqual(stored.connectionProfile(id: profileID)?.accountID, account.id)
+    }
+
+    func testConnectionProfileSaveRejectsAliasAddedToSSHConfigAfterLoad() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-connection-alias-conflict-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-connection-alias-conflict"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            id: UUID(uuidString: "31500000-0000-4000-8000-000000000001")!,
+            name: "测试服务器",
+            host: "server.example.com",
+            username: "deploy",
+            alias: "existing-profile"
+        )]
+        let paths = KeyPortPaths(home: home)
+        try await SnapshotStore(paths: paths).save(legacy)
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        let account = try XCTUnwrap(model.topology.activeAccounts.first)
+        let endpointID = try XCTUnwrap(
+            model.topology.connectionProfile(id: legacy.servers[0].id)?.routePolicy.fixedEndpointID
+        )
+        let profileCount = model.topology.activeConnectionProfiles.count
+
+        try paths.prepareDirectories()
+        try "Host late-conflict\n    HostName other.example.com\n"
+            .write(to: paths.userConfig, atomically: true, encoding: .utf8)
+
+        do {
+            _ = try await model.saveSSHConnectionProfile(SSHAccessSetupDraft(
+                nodeID: account.nodeID,
+                profileID: nil,
+                accountID: account.id,
+                endpointID: endpointID,
+                sshAlias: "late-conflict"
+            ))
+            XCTFail("An alias added to SSH Config after load was accepted")
+        } catch SSHConfigError.aliasConflict(let alias) {
+            XCTAssertEqual(alias, "late-conflict")
+        }
+
+        XCTAssertEqual(model.topology.activeConnectionProfiles.count, profileCount)
+        XCTAssertFalse(model.topology.activeConnectionProfiles.contains {
+            $0.sshAlias == "late-conflict"
+        })
     }
 
     func testAccountCanBeAddedWithoutEndpointOrConnectionProfile() async throws {
