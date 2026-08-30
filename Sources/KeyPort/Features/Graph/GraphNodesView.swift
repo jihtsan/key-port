@@ -3,13 +3,38 @@ import SwiftUI
 
 struct GraphNodesView: View {
     let model: AppModel
+    let onAddNode: () -> Void
 
     var body: some View {
         @Bindable var workspace = model.graphWorkspace
         let items = NodeWorkspacePresentation.items(model: model, workspace: workspace)
 
         VStack(spacing: 0) {
-            GraphFilterBar(workspace: workspace)
+            HStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索节点", text: $workspace.searchText)
+                    .textFieldStyle(.plain)
+                if !workspace.searchText.isEmpty {
+                    Button {
+                        workspace.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清除搜索")
+                }
+                Button(action: onAddNode) {
+                    Image(systemName: "plus")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+                .help("添加节点")
+                .disabled(model.isMetadataReadOnly || model.isBusy)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             Divider()
             if !workspace.isAvailable {
                 ContentUnavailableView(
@@ -38,11 +63,34 @@ struct GraphNodesView: View {
             }
         }
         .navigationTitle("节点")
-        .searchable(
-            text: $workspace.searchText,
-            placement: .toolbar,
-            prompt: "搜索节点、地址、账户或服务"
-        )
+        .navigationSplitViewColumnWidth(min: 310, ideal: 340, max: 390)
+        .onAppear {
+            if workspace.viewMode != .allDevices {
+                workspace.viewMode = .allDevices
+            }
+            selectPreferredNodeIfNeeded(workspace: workspace)
+        }
+        .onChange(of: workspace.isAvailable) { _, isAvailable in
+            guard isAvailable else { return }
+            selectPreferredNodeIfNeeded(workspace: workspace)
+        }
+        .task(id: model.isLoaded) {
+            guard model.isLoaded else { return }
+            selectPreferredNodeIfNeeded(workspace: workspace)
+        }
+    }
+
+    private func selectPreferredNodeIfNeeded(workspace: GraphWorkspaceModel) {
+        let items = NodeWorkspacePresentation.items(model: model, workspace: workspace)
+        if let selectedNodeID = workspace.selectedNodeID,
+           let selected = items.first(where: { $0.id == selectedNodeID }),
+           selected.isHostNode,
+           selected.accountCount > 0 {
+            return
+        }
+        workspace.selectedNodeID = items.first(where: { $0.isHostNode && $0.accountCount > 0 })?.id
+            ?? items.first(where: \.isHostNode)?.id
+            ?? items.first?.id
     }
 }
 
@@ -59,7 +107,7 @@ private struct GraphNodeRow: View {
                 Text(item.node.title)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
-                Text("\(item.endpointCount) 条路径 · \(item.accountCount) 个 SSH 账户")
+                Text("\(item.routeSummary) · \(item.accountCount) 个账户")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -75,5 +123,28 @@ private struct GraphNodeRow: View {
         .accessibilityLabel(
             "\(item.node.title)，\(item.endpointCount) 条路径，\(item.accountCount) 个 SSH 账户，\(item.node.status.level.displayTitle)"
         )
+    }
+}
+
+private extension NodeWorkspaceItem {
+    var routeSummary: String {
+        guard let endpoint = endpoints
+            .filter({ !$0.isDeleted && $0.protocol == .ssh })
+            .sorted(by: { $0.priority == $1.priority
+                ? $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+                : $0.priority < $1.priority
+            })
+            .first
+        else {
+            return endpointCount == 0 ? "暂无网络路径" : "\(endpointCount) 条网络路径"
+        }
+
+        switch endpoint.networkScope {
+        case .lan: return "局域网"
+        case .publicNetwork: return "公网"
+        case .tailnet: return "Tailscale"
+        case .vpn: return "VPN"
+        case .unknown: return endpoint.label
+        }
     }
 }

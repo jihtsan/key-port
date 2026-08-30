@@ -22,10 +22,10 @@ struct KeyPortApp: App {
     var body: some Scene {
         WindowGroup("SSH KeyPort", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 980, minHeight: 620)
+                .frame(minWidth: 1180, minHeight: 700)
                 .task { await model.load() }
         }
-        .defaultSize(width: 1180, height: 760)
+        .defaultSize(width: 1440, height: 900)
         .commands { KeyPortCommands(model: model) }
 
         MenuBarExtra {
@@ -177,13 +177,13 @@ private enum AppWindowFallback {
             let hasVisibleContentWindow = NSApp.windows.contains { $0.isVisible && $0.contentViewController != nil }
             guard !hasVisibleContentWindow else { return }
             let rootView = ContentView(model: model)
-                .frame(minWidth: 980, minHeight: 620)
+                .frame(minWidth: 1180, minHeight: 700)
                 .task { await model.load() }
             let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
             window.title = "SSH KeyPort"
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-            window.setContentSize(NSSize(width: 1180, height: 760))
-            window.minSize = NSSize(width: 980, height: 620)
+            window.setContentSize(NSSize(width: 1440, height: 900))
+            window.minSize = NSSize(width: 1180, height: 700)
             window.center()
             window.isReleasedWhenClosed = false
             retainedWindow = window

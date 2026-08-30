@@ -15,12 +15,45 @@ extension TopologyGraphNodeKind {
 
     var systemImage: String {
         switch self {
-        case .node: "server.rack"
+        case .node: "desktopcomputer"
         case .device: "laptopcomputer"
-        case .host: "server.rack"
+        case .host: "desktopcomputer"
         case .sshAccount: "person.crop.circle"
         case .service: "shippingbox"
         case .actualNode: "point.3.connected.trianglepath.dotted"
+        }
+    }
+}
+
+extension NetworkScope {
+    var displayTitle: String {
+        switch self {
+        case .lan: "局域网"
+        case .publicNetwork: "公网"
+        case .tailnet: "Tailnet"
+        case .vpn: "VPN"
+        case .unknown: "范围未知"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .lan: "wifi"
+        case .publicNetwork: "globe"
+        case .tailnet: "network"
+        case .vpn: "lock.shield"
+        case .unknown: "questionmark.circle"
+        }
+    }
+}
+
+extension EndpointSource {
+    var displayTitle: String {
+        switch self {
+        case .migrated: "已迁移"
+        case .manual: "手动"
+        case .discovered: "自动发现"
+        case .tailscale: "Tailscale 自动"
         }
     }
 }

@@ -308,7 +308,7 @@ final class AppModel {
     /// Unified Node/Endpoint/Service authority. `snapshot` is retained only as
     /// the SSH/Keychain compatibility projection during this refactor.
     private(set) var topology = TopologySnapshot.empty
-    var destination: SidebarDestination = .graph
+    var destination: SidebarDestination = .nodes
     var selectedServerID: UUID?
     var selectedKeyID: String?
     var selectedKeyItemID: String?
@@ -359,6 +359,7 @@ final class AppModel {
     private let archiveService = MetadataArchiveService()
     private let audit = AuditLogService()
     private let clipboard = ClipboardService()
+    private let terminal = TerminalService()
     private let fileSelection = FileSelectionService()
     private var scheduledCloudSync: Task<Void, Never>?
     private var isSynchronizingCloud = false
@@ -1571,6 +1572,10 @@ final class AppModel {
         await check(serverID: serverID, kind: .key)
     }
 
+    func checkKey(serverID: UUID, endpoint: Endpoint?) async {
+        await check(serverID: serverID, kind: .key, endpointOverride: endpoint)
+    }
+
     func passwordlessPrimaryAction(for server: ServerConnection) -> PasswordlessPrimaryAction {
         if server.status == .checking || server.status == .syncing {
             return .checking
@@ -2155,8 +2160,40 @@ final class AppModel {
 
     func copySSHCommand(serverID: UUID) {
         guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy("ssh \(server.alias)")
+        clipboard.copy(SSHCommandPresentation.command(server: server))
         appendAudit(category: "server", action: "copy-ssh-command", targetID: serverID.uuidString, result: "success")
+    }
+
+    func copySSHCommand(serverID: UUID, endpoint: Endpoint?) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        clipboard.copy(SSHCommandPresentation.command(server: server, endpoint: endpoint))
+        appendAudit(
+            category: "server",
+            action: "copy-ssh-command",
+            targetID: serverID.uuidString,
+            result: endpoint == nil ? "alias" : "selected-route"
+        )
+    }
+
+    func openTerminal(serverID: UUID, endpoint: Endpoint?) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        guard terminal.open(server: server, endpoint: endpoint) else {
+            errorMessage = "无法打开系统默认的 SSH 终端。请先确认 macOS 已为 ssh:// 链接配置可用的终端应用。"
+            appendAudit(
+                category: "server",
+                action: "open-terminal",
+                targetID: serverID.uuidString,
+                result: "unavailable",
+                level: .warning
+            )
+            return
+        }
+        appendAudit(
+            category: "server",
+            action: "open-terminal",
+            targetID: serverID.uuidString,
+            result: endpoint == nil ? "alias" : "selected-route"
+        )
     }
 
     func clearAuditLog() async {
@@ -2575,18 +2612,24 @@ final class AppModel {
         appendSSHCheckLog(detail, serverID: serverID)
     }
 
-    private func check(serverID: UUID, kind: ServerCheckKind, ownsBusyState: Bool = true) async {
+    private func check(
+        serverID: UUID,
+        kind: ServerCheckKind,
+        ownsBusyState: Bool = true,
+        endpointOverride: Endpoint? = nil
+    ) async {
         guard await authorizeLegacyMutation() else { return }
         guard let initial = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        guard let routeServer = sshOperationServer(for: initial) else {
+        guard let compatibleRouteServer = sshOperationServer(for: initial) else {
             markSSHRouteUnavailable(serverID: serverID, kind: kind)
             return
         }
+        let routeServer = server(compatibleRouteServer, using: endpointOverride)
         if ownsBusyState { isBusy = true }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
             title: kind == .password ? "密码登录验证" : "免密检测",
-            lines: ["正在连接 \(initial.username)@\(initial.endpoint)...", "正在扫描服务器主机密钥..."]
+            lines: ["正在连接 \(initial.username)@\(routeServer.endpoint)...", "正在扫描服务器主机密钥..."]
         )
         updateAuthenticationCheck(id: serverID, kind: kind, state: .checking, detail: kind.checkingDetail, checkedAt: nil)
         if kind == .key {
@@ -2641,6 +2684,14 @@ final class AppModel {
         } else if let detail = finalCheck?.detail {
             appendSSHCheckLog(detail, serverID: serverID)
         }
+    }
+
+    private func server(_ server: ServerConnection, using endpoint: Endpoint?) -> ServerConnection {
+        guard let endpoint, !endpoint.isDeleted, endpoint.protocol == .ssh else { return server }
+        var routed = server
+        routed.host = endpoint.address
+        routed.port = Int(endpoint.port)
+        return routed
     }
 
     private func serverUsingCredentialUsername(_ server: ServerConnection, credential: ServerCredential) -> ServerConnection {
