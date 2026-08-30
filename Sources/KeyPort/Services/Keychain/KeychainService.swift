@@ -244,7 +244,14 @@ actor KeychainService {
 
         let obsoleteQuery = passwordQuery(serverID: serverID, synchronizable: !synchronizable)
         let deleteStatus = itemAPI.delete(obsoleteQuery)
-        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+        // An unsigned development build can save a local item but cannot even
+        // query the synchronizable namespace. The requested local write has
+        // already succeeded, so that best-effort cleanup must not roll it back.
+        let unavailableSynchronizableCleanup = !synchronizable
+            && (deleteStatus == errSecMissingEntitlement || deleteStatus == errSecNotAvailable)
+        guard deleteStatus == errSecSuccess
+                || deleteStatus == errSecItemNotFound
+                || unavailableSynchronizableCleanup else {
             resetAuthenticationContextIfNeeded(for: deleteStatus)
             throw KeychainError.status(deleteStatus)
         }
