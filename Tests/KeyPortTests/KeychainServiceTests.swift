@@ -5,6 +5,28 @@ import Security
 import XCTest
 
 final class KeychainServiceTests: XCTestCase {
+    func testLocalCredentialSaveSurvivesUnavailableSynchronizableCleanup() async throws {
+        let itemAPI = KeychainItemAPISpy(
+            updateStatus: errSecItemNotFound,
+            addStatus: errSecSuccess,
+            deleteStatus: errSecMissingEntitlement
+        )
+        let service = KeychainService(
+            itemAPI: itemAPI,
+            authenticationContext: LAContext()
+        )
+
+        try await service.saveServerCredential(
+            username: "fixture-user",
+            passwordData: Data("fixture-password".utf8),
+            serverID: UUID(),
+            synchronizable: false
+        )
+
+        XCTAssertEqual(itemAPI.addCallCount(), 1)
+        XCTAssertEqual(itemAPI.deleteCallCount(), 1)
+    }
+
     func testPasswordReadsReuseOneAuthenticationContext() async throws {
         let itemAPI = KeychainItemAPISpy()
         let authenticationContext = LAContext()
@@ -48,17 +70,33 @@ private final class KeychainItemAPISpy: KeychainItemAPI, @unchecked Sendable {
     private let lock = NSLock()
     private var authenticationContexts: [LAContext?] = []
     private var dataStatuses: [OSStatus]
+    private let updateStatus: OSStatus
+    private let addStatus: OSStatus
+    private let deleteStatus: OSStatus
+    private var addCalls = 0
+    private var deleteCalls = 0
 
-    init(dataStatuses: [OSStatus] = []) {
+    init(
+        dataStatuses: [OSStatus] = [],
+        updateStatus: OSStatus = errSecUnimplemented,
+        addStatus: OSStatus = errSecUnimplemented,
+        deleteStatus: OSStatus = errSecUnimplemented
+    ) {
         self.dataStatuses = dataStatuses
+        self.updateStatus = updateStatus
+        self.addStatus = addStatus
+        self.deleteStatus = deleteStatus
     }
 
     func update(_ query: [CFString: Any], attributes: [CFString: Any]) -> OSStatus {
-        errSecUnimplemented
+        updateStatus
     }
 
     func add(_ attributes: [CFString: Any], result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
-        errSecUnimplemented
+        lock.lock()
+        addCalls += 1
+        lock.unlock()
+        return addStatus
     }
 
     func copyMatching(_ query: [CFString: Any], result: UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus {
@@ -78,12 +116,27 @@ private final class KeychainItemAPISpy: KeychainItemAPI, @unchecked Sendable {
     }
 
     func delete(_ query: [CFString: Any]) -> OSStatus {
-        errSecUnimplemented
+        lock.lock()
+        deleteCalls += 1
+        lock.unlock()
+        return deleteStatus
     }
 
     func capturedAuthenticationContexts() -> [LAContext?] {
         lock.lock()
         defer { lock.unlock() }
         return authenticationContexts
+    }
+
+    func addCallCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return addCalls
+    }
+
+    func deleteCallCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return deleteCalls
     }
 }
