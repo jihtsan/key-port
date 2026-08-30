@@ -24,7 +24,7 @@ struct NodeWorkspaceAccountsSection: View {
                 }
                 Spacer()
                 Button(action: onAdd) {
-                    Label("账户", systemImage: "plus")
+                    Label("新增配置", systemImage: "plus")
                 }
                 .disabled(isReadOnly || isBusy)
             }

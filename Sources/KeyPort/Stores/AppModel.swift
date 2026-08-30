@@ -125,6 +125,33 @@ struct NodeEndpointDraft: Sendable {
     var networkScope: NetworkScope = .publicNetwork
 }
 
+/// Account-only editor state. Network coordinates and SSH aliases belong to
+/// `SSHAccessSetupDraft`, never to this value.
+struct SSHAccountDraft: Sendable {
+    let nodeID: UUID
+    var accountID: UUID?
+    var label: String
+    var username: String
+
+    init(
+        nodeID: UUID,
+        accountID: UUID? = nil,
+        label: String = "",
+        username: String = ""
+    ) {
+        self.nodeID = nodeID
+        self.accountID = accountID
+        self.label = label
+        self.username = username
+    }
+}
+
+struct SSHAccountEditorSubmission: Sendable {
+    let draft: SSHAccountDraft
+    let password: String
+    let synchronizable: Bool
+}
+
 /// One editable connection profile for the passwordless setup flow. The
 /// selected account is stable; the endpoint and alias describe how to reach it.
 struct SSHAccessSetupDraft: Sendable {
@@ -754,8 +781,55 @@ final class AppModel {
         return NodeEndpointDraft()
     }
 
+    func sshAccountDraft(
+        forNodeID nodeID: UUID,
+        accountID: UUID? = nil
+    ) -> SSHAccountDraft? {
+        guard topology.node(id: nodeID) != nil else { return nil }
+        guard let accountID else {
+            return SSHAccountDraft(nodeID: nodeID)
+        }
+        guard let account = topology.activeAccounts.first(where: {
+            $0.id == accountID && $0.nodeID == nodeID
+        }) else { return nil }
+        return SSHAccountDraft(
+            nodeID: nodeID,
+            accountID: account.id,
+            label: account.label,
+            username: account.username
+        )
+    }
+
     func sshAccounts(forNodeID nodeID: UUID) -> [SSHAccount] {
         topology.accounts(for: nodeID)
+    }
+
+    func sshAccount(id accountID: UUID) -> SSHAccount? {
+        topology.activeAccounts.first { $0.id == accountID }
+    }
+
+    func sshAccountID(forConnectionProfileID profileID: UUID) -> UUID? {
+        topology.connectionProfile(id: profileID)?.accountID
+    }
+
+    func keyPortNodeID(for suggestion: TailscaleSSHServerSuggestion) -> UUID? {
+        let identityNodeIDs = Set(topology.activeTailscaleNodes.compactMap { identity -> UUID? in
+            guard identity.tailscaleNodeID == suggestion.nodeID
+                    || identity.matches(host: suggestion.host) else { return nil }
+            return identity.keyPortNodeID
+        })
+        if !identityNodeIDs.isEmpty {
+            return identityNodeIDs.count == 1 ? identityNodeIDs.first : nil
+        }
+
+        let endpointNodeIDs = Set(topology.activeEndpoints.compactMap { endpoint -> UUID? in
+            guard endpoint.serviceID == nil,
+                  endpoint.protocol == .ssh,
+                  TopologyStableID.normalize(endpoint.address)
+                    == TopologyStableID.normalize(suggestion.host) else { return nil }
+            return endpoint.nodeID
+        })
+        return endpointNodeIDs.count == 1 ? endpointNodeIDs.first : nil
     }
 
     func sshConnectionProfiles(forNodeID nodeID: UUID) -> [SSHConnectionProfile] {
@@ -877,6 +951,192 @@ final class AppModel {
             endpointID: plan.endpointID,
             sshAlias: plan.sshAlias
         )
+    }
+
+    @discardableResult
+    func saveSSHAccount(_ submission: SSHAccountEditorSubmission) async throws -> UUID {
+        try await requireLegacyMutation()
+        guard hostV6Runtime == nil else {
+            throw SSHServiceError.operationFailed("当前 V6 兼容模式暂不支持编辑 SSH 账户。")
+        }
+
+        let draft = submission.draft
+        let username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !username.isEmpty else {
+            throw SSHServiceError.operationFailed("请输入 SSH 用户名。")
+        }
+        guard let nodeIndex = topology.nodes.firstIndex(where: {
+            $0.id == draft.nodeID && !$0.isDeleted
+        }) else {
+            throw SSHServiceError.operationFailed("目标节点不存在或已被删除。")
+        }
+
+        let previousAccount: SSHAccount?
+        if let accountID = draft.accountID {
+            guard let account = topology.activeAccounts.first(where: {
+                $0.id == accountID && $0.nodeID == draft.nodeID
+            }) else {
+                throw SSHServiceError.operationFailed("要编辑的 SSH 账户已不存在。")
+            }
+            previousAccount = account
+        } else {
+            previousAccount = nil
+        }
+
+        let accountID = TopologyStableID.sshAccount(
+            nodeID: draft.nodeID,
+            username: username
+        )
+        guard !topology.activeAccounts.contains(where: {
+            $0.id == accountID && $0.id != previousAccount?.id
+        }) else {
+            throw SSHServiceError.operationFailed("这个节点已经存在同名 SSH 用户。")
+        }
+
+        var credentialData: Data?
+        var previousCredentialOwnerID: UUID?
+        var previousStorage: ServerPasswordStorage?
+        if let previousAccount {
+            let ownerID = await storedCredentialOwnerID(forAccountID: previousAccount.id)
+            if let ownerID {
+                previousCredentialOwnerID = ownerID
+                previousStorage = await keychain.serverPasswordStorage(serverID: ownerID)
+                let shouldCopyCredential = !submission.password.isEmpty
+                    || ownerID != accountID
+                    || previousAccount.id != accountID
+                    || previousStorage?.isSynchronizable != submission.synchronizable
+                if shouldCopyCredential && submission.password.isEmpty {
+                    var credential = try await keychain.serverCredential(serverID: ownerID)
+                    credentialData = credential.passwordData
+                    credential.passwordData.resetBytes(in: credential.passwordData.indices)
+                }
+            }
+        }
+        if !submission.password.isEmpty {
+            credentialData = Data(submission.password.utf8)
+        }
+        defer {
+            if credentialData != nil {
+                credentialData!.resetBytes(in: credentialData!.indices)
+            }
+        }
+
+        if let credentialData {
+            try await keychain.saveServerCredential(
+                username: username,
+                passwordData: credentialData,
+                serverID: accountID,
+                synchronizable: submission.synchronizable
+            )
+        }
+
+        let now = Date()
+        let relatedProfileIDs = previousAccount.map {
+            topology.connectionProfiles(for: $0.id).map(\.id)
+        } ?? []
+        if let previousAccount, previousAccount.id != accountID {
+            if let oldIndex = topology.sshAccounts.firstIndex(where: { $0.id == previousAccount.id }) {
+                topology.sshAccounts[oldIndex].isDeleted = true
+                topology.sshAccounts[oldIndex].updatedAt = now
+                topology.sshAccounts[oldIndex].version += 1
+            }
+            topology.sshAccounts.append(SSHAccount(
+                id: accountID,
+                nodeID: draft.nodeID,
+                username: username,
+                label: label,
+                createdAt: previousAccount.createdAt,
+                updatedAt: now,
+                version: previousAccount.version + 1
+            ))
+            for index in topology.sshConnectionProfiles.indices
+                where topology.sshConnectionProfiles[index].accountID == previousAccount.id {
+                topology.sshConnectionProfiles[index].accountID = accountID
+                topology.sshConnectionProfiles[index].updatedAt = now
+                topology.sshConnectionProfiles[index].version += 1
+            }
+            for index in topology.authorizations.indices
+                where topology.authorizations[index].accountID == previousAccount.id {
+                topology.authorizations[index].accountID = accountID
+                topology.authorizations[index].updatedAt = now
+            }
+            for index in topology.accessVerifications.indices
+                where topology.accessVerifications[index].accountID == previousAccount.id {
+                topology.accessVerifications[index].accountID = accountID
+            }
+        } else if let index = topology.sshAccounts.firstIndex(where: { $0.id == accountID }) {
+            topology.sshAccounts[index].username = username
+            topology.sshAccounts[index].label = label
+            topology.sshAccounts[index].updatedAt = now
+            topology.sshAccounts[index].isDeleted = false
+            topology.sshAccounts[index].version += 1
+        } else {
+            topology.sshAccounts.append(SSHAccount(
+                id: accountID,
+                nodeID: draft.nodeID,
+                username: username,
+                label: label,
+                createdAt: now,
+                updatedAt: now
+            ))
+        }
+
+        var node = topology.nodes[nodeIndex]
+        node.roles = Array(Set(node.roles + [.sshHost])).sorted { $0.rawValue < $1.rawValue }
+        node.updatedAt = now
+        topology.nodes[nodeIndex] = node
+
+        let currentDeviceID = currentDevice?.id
+            ?? defaults.string(forKey: "KeyPort.deviceID")
+            ?? "local"
+        snapshot = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDeviceID
+        )
+        appendAudit(
+            category: "ssh-account",
+            action: previousAccount == nil ? "create" : "update",
+            targetID: accountID.uuidString,
+            result: relatedProfileIDs.isEmpty ? "account-only" : "profiles-preserved"
+        )
+        await persist()
+
+        if let previousAccount, previousAccount.id != accountID {
+            let obsoleteCredentialIDs = Set(
+                [previousAccount.id, previousCredentialOwnerID].compactMap { $0 }
+            ).subtracting([accountID])
+            for credentialID in obsoleteCredentialIDs {
+                try? await keychain.deleteServerCredential(serverID: credentialID)
+                serverIDsWithStoredPassword.remove(credentialID)
+                serverIDsWithSynchronizablePassword.remove(credentialID)
+            }
+        }
+        if credentialData != nil {
+            cacheCredentialAvailability(
+                ownerID: accountID,
+                accountID: accountID,
+                synchronizable: submission.synchronizable
+            )
+        } else if previousStorage != nil {
+            await refreshPasswordAvailability()
+        }
+
+        if !relatedProfileIDs.isEmpty {
+            try await configService.write(
+                servers: activeServers,
+                keys: snapshot.keys,
+                authorizations: snapshot.authorizations
+            )
+            appendAudit(
+                category: "ssh-config",
+                action: "write",
+                targetID: accountID.uuidString,
+                result: "account-updated"
+            )
+            await persist()
+        }
+        return accountID
     }
 
     @discardableResult
@@ -2611,8 +2871,20 @@ final class AppModel {
         }
     }
 
+    func hasStoredPassword(accountID: UUID) -> Bool {
+        credentialOwnerIDs(forAccountID: accountID).contains {
+            serverIDsWithStoredPassword.contains($0)
+        }
+    }
+
     func isPasswordSynchronizable(serverID: UUID) -> Bool {
         credentialOwnerIDs(forProfileID: serverID).contains {
+            serverIDsWithSynchronizablePassword.contains($0)
+        }
+    }
+
+    func isPasswordSynchronizable(accountID: UUID) -> Bool {
+        credentialOwnerIDs(forAccountID: accountID).contains {
             serverIDsWithSynchronizablePassword.contains($0)
         }
     }
@@ -2637,10 +2909,16 @@ final class AppModel {
         topology.connectionProfiles(for: accountID).map(\.id)
     }
 
-    private func credentialOwnerIDs(forProfileID profileID: UUID) -> [UUID] {
-        guard let accountID = accountID(forProfileID: profileID) else { return [profileID] }
+    private func credentialOwnerIDs(forAccountID accountID: UUID) -> [UUID] {
         var values = [accountID]
         values.append(contentsOf: profileIDs(forAccountID: accountID))
+        var seen = Set<UUID>()
+        return values.filter { seen.insert($0).inserted }
+    }
+
+    private func credentialOwnerIDs(forProfileID profileID: UUID) -> [UUID] {
+        guard let accountID = accountID(forProfileID: profileID) else { return [profileID] }
+        var values = credentialOwnerIDs(forAccountID: accountID)
         if !values.contains(profileID) { values.append(profileID) }
         var seen = Set<UUID>()
         return values.filter { seen.insert($0).inserted }
@@ -2664,6 +2942,13 @@ final class AppModel {
         return nil
     }
 
+    private func storedCredentialOwnerID(forAccountID accountID: UUID) async -> UUID? {
+        for ownerID in credentialOwnerIDs(forAccountID: accountID) {
+            if await keychain.hasServerCredential(serverID: ownerID) { return ownerID }
+        }
+        return nil
+    }
+
     private func serverCredential(forProfileID profileID: UUID) async throws -> ServerCredential {
         guard let ownerID = await storedCredentialOwnerID(forProfileID: profileID) else {
             throw SSHServiceError.missingPassword
@@ -2677,6 +2962,18 @@ final class AppModel {
         synchronizable: Bool
     ) {
         let relatedIDs = Set(credentialOwnerIDs(forProfileID: profileID) + [ownerID, profileID])
+        serverIDsWithStoredPassword.formUnion(relatedIDs)
+        for id in relatedIDs {
+            updatePasswordStorageCache(serverID: id, synchronizable: synchronizable)
+        }
+    }
+
+    private func cacheCredentialAvailability(
+        ownerID: UUID,
+        accountID: UUID,
+        synchronizable: Bool
+    ) {
+        let relatedIDs = Set(credentialOwnerIDs(forAccountID: accountID) + [ownerID, accountID])
         serverIDsWithStoredPassword.formUnion(relatedIDs)
         for id in relatedIDs {
             updatePasswordStorageCache(serverID: id, synchronizable: synchronizable)
@@ -3484,8 +3781,14 @@ final class AppModel {
     private func refreshPasswordAvailability() async {
         var available = Set<UUID>()
         var synchronizable = Set<UUID>()
-        for server in activeServers {
-            let relatedIDs = credentialOwnerIDs(forProfileID: server.id)
+        var credentialGroups = topology.activeAccounts.map {
+            credentialOwnerIDs(forAccountID: $0.id)
+        }
+        credentialGroups.append(contentsOf: activeServers.compactMap { server in
+            guard topology.connectionProfile(id: server.id) == nil else { return nil }
+            return [server.id]
+        })
+        for relatedIDs in credentialGroups {
             for ownerID in relatedIDs {
                 if let storage = await keychain.serverPasswordStorage(serverID: ownerID) {
                     available.formUnion(relatedIDs)

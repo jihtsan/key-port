@@ -4,11 +4,8 @@ import SwiftUI
 struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
-    @State private var showsEditServer = false
-    @State private var accountSourceServerID: UUID?
-    @State private var nodeAccountEditorRequest: NodeAccountEditorRequest?
+    @State private var sshAccountEditorRequest: SSHAccountEditorRequest?
     @State private var endpointNodeID: UUID?
-    @State private var tailscaleAccountEditorRequest: TailscaleAccountEditorRequest?
     @State private var sshAccessSetupRequest: SSHAccessSetupRequest?
 
     var body: some View {
@@ -44,79 +41,33 @@ struct ContentView: View {
                 }
             )
         }
-        .sheet(isPresented: Binding(
-            get: { accountSourceServerID != nil },
-            set: { if !$0 { accountSourceServerID = nil } }
-        )) {
-            if let sourceServerID = accountSourceServerID,
-               let sourceServer = model.snapshot.servers.first(where: { $0.id == sourceServerID && !$0.isDeleted }),
-               let draft = model.newAccountDraft(for: sourceServerID) {
-                ServerEditorView(
-                    title: "为 \(sourceServer.name) 添加 SSH 账户",
-                    initialDraft: draft,
-                    initialHostKeys: draft.targetNodeID.flatMap { nodeID in
-                        let keys = model.confirmedHostKeys(
-                            forNodeID: nodeID,
-                            endpointID: draft.targetEndpointID
-                        )
-                        return keys.isEmpty ? nil : keys
-                    } ?? sourceServer.confirmedHostKeys,
-                    hasStoredPassword: false,
-                    canSynchronize: model.canSynchronizePasswords,
-                    showsNotes: false,
-                    locksServerFields: true,
-                    onCheck: { draft, password, hostKeys in
-                        await model.validateServerEditor(
-                            draft: draft,
-                            password: password,
-                            existingServerID: nil,
-                            trustedHostKeys: hostKeys
-                        )
-                    },
-                    onSave: { submission, enablesPasswordless in
-                        try await saveServer(
-                            submission,
-                            existingServerID: nil,
-                            enablesPasswordless: enablesPasswordless
-                        )
-                    }
-                )
-            }
-        }
-        .sheet(item: $nodeAccountEditorRequest) { request in
+        .sheet(item: $sshAccountEditorRequest) { request in
             if let node = model.topology.node(id: request.nodeID),
-               let draft = model.newAccountDraft(
+               let draft = model.sshAccountDraft(
                    forNodeID: request.nodeID,
-                   endpointID: request.endpointID
+                   accountID: request.accountID
                ) {
-                ServerEditorView(
-                    title: "为 \(node.name) 添加 SSH 账户",
+                SSHAccountEditorView(
+                    nodeName: node.name,
                     initialDraft: draft,
-                    initialHostKeys: model.confirmedHostKeys(
-                        forNodeID: request.nodeID,
-                        endpointID: draft.targetEndpointID
-                    ),
-                    hasStoredPassword: false,
+                    hasStoredPassword: request.accountID.map {
+                        model.hasStoredPassword(accountID: $0)
+                    } ?? false,
+                    storedPasswordSynchronizable: request.accountID.map {
+                        model.isPasswordSynchronizable(accountID: $0)
+                    } ?? false,
                     canSynchronize: model.canSynchronizePasswords,
-                    primaryActionTitle: "保存账户",
-                    showsNotes: false,
-                    locksServerFields: true,
-                    onCheck: { draft, password, hostKeys in
-                        await model.validateServerEditor(
-                            draft: draft,
-                            password: password,
-                            existingServerID: nil,
-                            trustedHostKeys: hostKeys
-                        )
-                    },
-                    onSave: { submission, enablesPasswordless in
-                        try await saveServer(
-                            submission,
-                            existingServerID: nil,
-                            enablesPasswordless: enablesPasswordless
-                        )
+                    onSave: { submission in
+                        try await model.saveSSHAccount(submission)
                     }
                 )
+            } else {
+                ContentUnavailableView(
+                    "无法编辑 SSH 账户",
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text("目标节点或账户已经不存在。")
+                )
+                .frame(minWidth: 480, minHeight: 280)
             }
         }
         .sheet(item: $sshAccessSetupRequest) { request in
@@ -149,77 +100,6 @@ struct ContentView: View {
                     initialDraft: draft,
                     onSave: { draft in
                         try await model.saveNodeEndpoint(draft, forNodeID: nodeID)
-                    }
-                )
-            }
-        }
-        .sheet(item: $tailscaleAccountEditorRequest) { request in
-            let suggestion = request.suggestion
-            let existingServer = request.serverID.flatMap { serverID in
-                model.snapshot.servers.first { $0.id == serverID && !$0.isDeleted }
-            }
-            ServerEditorView(
-                title: existingServer == nil ? "添加 SSH 账户" : "编辑 SSH 账户",
-                existingServerID: existingServer?.id,
-                initialDraft: model.tailscaleServerDraft(
-                    for: suggestion,
-                    existingServer: existingServer
-                ),
-                initialHostKeys: existingServer?.confirmedHostKeys ?? [],
-                hasStoredPassword: existingServer.map { model.hasStoredPassword(serverID: $0.id) } ?? false,
-                storedPasswordSynchronizable: existingServer.map {
-                    model.isPasswordSynchronizable(serverID: $0.id)
-                } ?? false,
-                canSynchronize: model.canSynchronizePasswords,
-                primaryActionTitle: "保存账户",
-                offersPasswordlessSetup: existingServer?.status != .authorized,
-                showsNotes: false,
-                onCheck: { draft, password, hostKeys in
-                    let existingServerID = request.serverID
-                        ?? model.existingTailscaleServerID(for: suggestion, draft: draft)
-                    return await model.validateServerEditor(
-                        draft: draft,
-                        password: password,
-                        existingServerID: existingServerID,
-                        trustedHostKeys: hostKeys
-                    )
-                },
-                onSave: { submission, enablesPasswordless in
-                    let existingServerID = request.serverID
-                        ?? model.existingTailscaleServerID(for: suggestion, draft: submission.draft)
-                    try await saveServer(
-                        submission,
-                        existingServerID: existingServerID,
-                        enablesPasswordless: enablesPasswordless
-                    )
-                }
-            )
-        }
-        .sheet(isPresented: $showsEditServer) {
-            if let server = model.selectedServer {
-                ServerEditorView(
-                    title: "编辑 SSH 账户",
-                    existingServerID: server.id,
-                    initialDraft: model.serverEditorDraft(for: server.id) ?? ServerDraft(server: server),
-                    initialHostKeys: server.confirmedHostKeys,
-                    hasStoredPassword: model.hasStoredPassword(serverID: server.id),
-                    storedPasswordSynchronizable: model.isPasswordSynchronizable(serverID: server.id),
-                    canSynchronize: model.canSynchronizePasswords,
-                    offersPasswordlessSetup: server.status != .authorized,
-                    onCheck: { draft, password, hostKeys in
-                        await model.validateServerEditor(
-                            draft: draft,
-                            password: password,
-                            existingServerID: server.id,
-                            trustedHostKeys: hostKeys
-                        )
-                    },
-                    onSave: { submission, enablesPasswordless in
-                        try await saveServer(
-                            submission,
-                            existingServerID: server.id,
-                            enablesPasswordless: enablesPasswordless
-                        )
                     }
                 )
             }
@@ -287,10 +167,10 @@ struct ContentView: View {
         case .servers:
             ServerListView(model: model) { serverID in
                 model.selectedServerID = serverID
-                accountSourceServerID = serverID
+                addAccount(forConnectionProfileID: serverID)
             } onEdit: { serverID in
                 model.selectedServerID = serverID
-                showsEditServer = true
+                configureAccess(connectionProfileID: serverID)
             }
         case .keys:
             KeyListView(model: model)
@@ -308,14 +188,14 @@ struct ContentView: View {
             GraphInspectorView(
                 workspace: model.graphWorkspace,
                 model: model,
-                onAddAccount: { nodeID, endpointID in
-                    addAccount(nodeID: nodeID, endpointID: endpointID)
+                onAddAccount: { nodeID in
+                    addAccount(nodeID: nodeID)
                 },
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
                 },
-                onEditAccount: { serverID in
-                    editAccount(serverID: serverID)
+                onEditAccount: { accountID in
+                    editAccount(accountID: accountID)
                 },
                 onConfigureAccess: { nodeID, profileID, endpointID in
                     configureAccess(
@@ -328,14 +208,14 @@ struct ContentView: View {
         case .nodes:
             NodeWorkspaceDetailView(
                 model: model,
-                onAddAccount: { nodeID, endpointID in
-                    addAccount(nodeID: nodeID, endpointID: endpointID)
+                onAddAccount: { nodeID in
+                    addAccount(nodeID: nodeID)
                 },
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
                 },
-                onEditAccount: { serverID in
-                    editAccount(serverID: serverID)
+                onEditAccount: { accountID in
+                    editAccount(accountID: accountID)
                 },
                 onConfigureAccess: { nodeID, profileID, endpointID in
                     configureAccess(
@@ -364,9 +244,13 @@ struct ContentView: View {
                 ContentUnavailableView("未选择服务器密钥", systemImage: "key", description: Text("请选择服务器连接或本地身份密钥。"))
             }
         case .devices:
-            DeviceOverviewView(model: model) { request in
-                tailscaleAccountEditorRequest = request
-            }
+            DeviceOverviewView(
+                model: model,
+                onManageAccount: manageTailscaleAccount,
+                onConfigureAccess: { profileID in
+                    configureAccess(connectionProfileID: profileID)
+                }
+            )
         case .logs:
             AuditOverviewView(model: model)
         }
@@ -396,7 +280,8 @@ struct ContentView: View {
                 .keyboardShortcut("n", modifiers: .command)
 
                 Button {
-                    accountSourceServerID = model.selectedServerID
+                    guard let profileID = model.selectedServerID else { return }
+                    addAccount(forConnectionProfileID: profileID)
                 } label: {
                     Label("添加 SSH 账户", systemImage: "person.badge.plus")
                 }
@@ -419,9 +304,10 @@ struct ContentView: View {
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
                 Button {
-                    showsEditServer = true
+                    guard let profileID = model.selectedServerID else { return }
+                    configureAccess(connectionProfileID: profileID)
                 } label: {
-                    Label("编辑用户", systemImage: "pencil")
+                    Label("编辑连接配置", systemImage: "pencil")
                 }
                 .disabled(model.selectedServerID == nil || model.isBusy)
 
@@ -454,13 +340,22 @@ struct ContentView: View {
         }
     }
 
-    private func addAccount(nodeID: UUID, endpointID: UUID?) {
+    private func addAccount(nodeID: UUID) {
         guard !model.isBusy, !model.isMetadataReadOnly else { return }
-        guard model.newAccountDraft(forNodeID: nodeID, endpointID: endpointID) != nil else {
-            model.errorMessage = "这个节点还没有可用的 SSH 端点，先添加地址后再添加 SSH 账户。"
+        guard model.sshAccountDraft(forNodeID: nodeID) != nil else {
+            model.errorMessage = "目标节点不存在或已被删除。"
             return
         }
-        nodeAccountEditorRequest = NodeAccountEditorRequest(nodeID: nodeID, endpointID: endpointID)
+        sshAccountEditorRequest = SSHAccountEditorRequest(nodeID: nodeID)
+    }
+
+    private func addAccount(forConnectionProfileID profileID: UUID) {
+        guard let accountID = model.sshAccountID(forConnectionProfileID: profileID),
+              let account = model.sshAccount(id: accountID) else {
+            model.errorMessage = "无法确定这个连接配置所属的节点。"
+            return
+        }
+        addAccount(nodeID: account.nodeID)
     }
 
     private func addEndpoint(nodeID: UUID) {
@@ -472,9 +367,41 @@ struct ContentView: View {
         endpointNodeID = nodeID
     }
 
-    private func editAccount(serverID: UUID) {
-        model.selectedServerID = serverID
-        showsEditServer = true
+    private func editAccount(accountID: UUID) {
+        guard !model.isBusy, !model.isMetadataReadOnly else { return }
+        guard let account = model.sshAccount(id: accountID) else {
+            model.errorMessage = "目标 SSH 账户不存在或已被删除。"
+            return
+        }
+        sshAccountEditorRequest = SSHAccountEditorRequest(
+            nodeID: account.nodeID,
+            accountID: account.id
+        )
+    }
+
+    private func configureAccess(connectionProfileID profileID: UUID) {
+        guard let profile = model.topology.connectionProfile(id: profileID),
+              let account = model.sshAccount(id: profile.accountID) else {
+            model.errorMessage = "目标 SSH 连接配置不存在或已被删除。"
+            return
+        }
+        configureAccess(
+            nodeID: account.nodeID,
+            profileID: profile.id,
+            endpointID: profile.routePolicy.fixedEndpointID
+        )
+    }
+
+    private func manageTailscaleAccount(_ request: TailscaleAccountEditorRequest) {
+        if let accountID = request.accountID {
+            editAccount(accountID: accountID)
+            return
+        }
+        guard let nodeID = model.keyPortNodeID(for: request.suggestion) else {
+            model.errorMessage = "尚未找到这个 Tailscale 设备对应的 KeyPort 节点，请先刷新 Tailscale。"
+            return
+        }
+        addAccount(nodeID: nodeID)
     }
 
     private func configureAccess(nodeID: UUID, profileID: UUID?, endpointID: UUID?) {
@@ -511,12 +438,17 @@ struct ContentView: View {
     }
 }
 
-private struct NodeAccountEditorRequest: Identifiable {
+private struct SSHAccountEditorRequest: Identifiable {
     let nodeID: UUID
-    let endpointID: UUID?
+    let accountID: UUID?
+
+    init(nodeID: UUID, accountID: UUID? = nil) {
+        self.nodeID = nodeID
+        self.accountID = accountID
+    }
 
     var id: String {
-        "\(nodeID.uuidString.lowercased()):\(endpointID?.uuidString.lowercased() ?? "default")"
+        "\(nodeID.uuidString.lowercased()):\(accountID?.uuidString.lowercased() ?? "new")"
     }
 }
 

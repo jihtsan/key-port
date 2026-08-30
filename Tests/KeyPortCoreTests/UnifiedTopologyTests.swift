@@ -207,6 +207,46 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertTrue(refreshed.node(id: remoteNode.id)?.roles.contains(.serviceHost) == true)
     }
 
+    func testLegacyRefreshPreservesAccountWithoutConnectionProfile() throws {
+        let currentDeviceID = "device-current"
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            name: "构建服务器",
+            host: "builder.example.com",
+            username: "root",
+            alias: "builder-root"
+        )]
+
+        var existing = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+        let nodeID = try XCTUnwrap(existing.activeAccounts.first?.nodeID)
+        let standaloneAccountID = TopologyStableID.sshAccount(
+            nodeID: nodeID,
+            username: "deploy"
+        )
+        existing.sshAccounts.append(SSHAccount(
+            id: standaloneAccountID,
+            nodeID: nodeID,
+            username: "deploy",
+            label: "部署用户"
+        ))
+
+        let refreshed = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: existing,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        XCTAssertEqual(refreshed.accounts(for: nodeID).map(\.username).sorted(), ["deploy", "root"])
+        XCTAssertEqual(refreshed.connectionProfiles(forNodeID: nodeID).count, 1)
+        XCTAssertEqual(refreshed.sshAccounts.first(where: { $0.id == standaloneAccountID })?.label, "部署用户")
+    }
+
     func testLegacyProjectionKeepsEndpointAddressSeparateFromDisplayLabel() throws {
         let currentDeviceID = "device-current"
         let nodeID = UUID(uuidString: "20000000-0000-4000-8000-000000000021")!

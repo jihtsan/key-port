@@ -80,7 +80,7 @@ private struct ServerGroupHeader: View {
                         HStack(spacing: 8) {
                             Text("\(group.host):\(group.port)")
                                 .monospaced()
-                            Text("\(group.accounts.count) 个用户")
+                            Text("\(group.accounts.count) 个连接配置")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -99,7 +99,7 @@ private struct ServerGroupHeader: View {
                 Button {
                     onEdit(group.representative.id)
                 } label: {
-                    Label("编辑服务器和用户", systemImage: "pencil")
+                    Label("编辑连接配置", systemImage: "pencil")
                 }
             }
             Button {
@@ -108,7 +108,7 @@ private struct ServerGroupHeader: View {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.borderless)
-            .help("编辑服务器和用户")
+            .help("编辑连接配置")
             Button(action: onAddAccount) {
                 Image(systemName: "person.badge.plus")
             }
@@ -166,7 +166,7 @@ private struct ServerAccountRow: View {
             Button {
                 onEdit(account.id)
             } label: {
-                Label("编辑用户", systemImage: "pencil")
+                Label("编辑连接配置", systemImage: "pencil")
             }
             Button {
                 onAddAccount(account.id)
@@ -182,7 +182,7 @@ private struct ServerAccountRow: View {
             Button(role: .destructive) {
                 onDelete(account.id)
             } label: {
-                Label("删除用户", systemImage: "trash")
+                Label("删除连接配置", systemImage: "trash")
             }
         }
     }
