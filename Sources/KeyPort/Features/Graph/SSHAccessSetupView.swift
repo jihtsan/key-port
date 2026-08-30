@@ -11,7 +11,7 @@ struct SSHAccessSetupView: View {
     @State private var usesSuggestedAlias: Bool
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var inputMessage: String?
+    @State private var saveAliasError: String?
 
     init(model: AppModel, initialDraft: SSHAccessSetupDraft) {
         self.model = model
@@ -22,28 +22,6 @@ struct SSHAccessSetupView: View {
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section {
-                    TextField("ssh user@host 或 SSH 别名", text: $draft.sshInput)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(parseInput)
-
-                    HStack {
-                        Button("解析并填写", action: parseInput)
-                        Button("按当前选择自动填写", action: autofillInput)
-                        Spacer()
-                    }
-
-                    if let inputMessage {
-                        Label(inputMessage, systemImage: "info.circle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("SSH 输入")
-                } footer: {
-                    Text("这里只解析安全的 ssh、-p 和 -l 参数，不会执行粘贴的命令。")
-                }
-
                 Section("账户与网络") {
                     Picker("SSH 用户", selection: $draft.accountID) {
                         ForEach(accounts) { account in
@@ -72,6 +50,8 @@ struct SSHAccessSetupView: View {
                         .onChange(of: draft.sshAlias) { _, newValue in
                             let suggested = suggestedAlias
                             usesSuggestedAlias = newValue.isEmpty || newValue == suggested
+                            saveAliasError = nil
+                            errorMessage = nil
                         }
 
                     HStack {
@@ -80,7 +60,7 @@ struct SSHAccessSetupView: View {
                             draft.sshAlias = suggestedAlias
                         }
                         Spacer()
-                        Text("可完全自定义，但必须全局唯一")
+                        Text("保存时检查 KeyPort 与 ~/.ssh/config")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -118,7 +98,7 @@ struct SSHAccessSetupView: View {
             }
             .padding(16)
         }
-        .frame(minWidth: 600, minHeight: 570)
+        .frame(minWidth: 600, minHeight: 460)
         .navigationTitle(draft.profileID == nil ? "配置 SSH 访问" : "编辑 SSH 连接配置")
     }
 
@@ -147,7 +127,7 @@ struct SSHAccessSetupView: View {
         model.sshAliasValidationMessage(
             draft.sshAlias,
             excludingProfileID: draft.profileID
-        )
+        ) ?? saveAliasError
     }
 
     private var canSave: Bool {
@@ -161,44 +141,11 @@ struct SSHAccessSetupView: View {
     }
 
     private func selectionChanged() {
-        autofillInput()
         if usesSuggestedAlias {
             draft.sshAlias = suggestedAlias
         }
-        inputMessage = nil
+        saveAliasError = nil
         errorMessage = nil
-    }
-
-    private func autofillInput() {
-        if let command = model.sshCommand(
-            accountID: draft.accountID,
-            endpointID: draft.endpointID
-        ) {
-            draft.sshInput = command
-        }
-    }
-
-    private func parseInput() {
-        do {
-            let resolution = try model.resolveSSHAccessInput(
-                draft.sshInput,
-                forNodeID: draft.nodeID
-            )
-            draft.profileID = resolution.profileID ?? draft.profileID
-            draft.accountID = resolution.accountID
-            draft.endpointID = resolution.endpointID
-            if let alias = resolution.sshAlias {
-                draft.sshAlias = alias
-                usesSuggestedAlias = false
-            } else if usesSuggestedAlias {
-                draft.sshAlias = suggestedAlias
-            }
-            inputMessage = "已匹配到所选节点上的用户和网络路径。"
-            errorMessage = nil
-        } catch {
-            inputMessage = nil
-            errorMessage = UserFacingText.localizedError(error)
-        }
     }
 
     private func save(authorizes: Bool) {
@@ -217,7 +164,13 @@ struct SSHAccessSetupView: View {
                 }
                 dismiss()
             } catch {
-                errorMessage = UserFacingText.localizedError(error)
+                if let configError = error as? SSHConfigError,
+                   case .aliasConflict = configError {
+                    saveAliasError = UserFacingText.localizedError(configError)
+                    errorMessage = nil
+                } else {
+                    errorMessage = UserFacingText.localizedError(error)
+                }
                 isSaving = false
             }
         }

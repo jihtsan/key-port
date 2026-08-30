@@ -160,14 +160,6 @@ struct SSHAccessSetupDraft: Sendable {
     var accountID: UUID
     var endpointID: UUID
     var sshAlias: String
-    var sshInput: String
-}
-
-struct SSHAccessInputResolution: Sendable {
-    let profileID: UUID?
-    let accountID: UUID
-    let endpointID: UUID
-    let sshAlias: String?
 }
 
 enum ServerEditorValidationState: Equatable, Sendable {
@@ -866,18 +858,8 @@ final class AppModel {
             profileID: profile?.id,
             accountID: account.id,
             endpointID: endpoint.id,
-            sshAlias: alias,
-            sshInput: sshCommand(account: account, endpoint: endpoint)
+            sshAlias: alias
         )
-    }
-
-    func sshCommand(accountID: UUID, endpointID: UUID) -> String? {
-        guard let account = topology.activeAccounts.first(where: { $0.id == accountID }),
-              let endpoint = topology.endpoint(id: endpointID),
-              !endpoint.isDeleted,
-              endpoint.nodeID == account.nodeID,
-              endpoint.protocol == .ssh else { return nil }
-        return sshCommand(account: account, endpoint: endpoint)
     }
 
     func suggestedSSHAlias(
@@ -928,29 +910,6 @@ final class AppModel {
             return "这个 SSH 别名已经存在于 ~/.ssh/config 中。"
         }
         return nil
-    }
-
-    func resolveSSHAccessInput(
-        _ input: String,
-        forNodeID nodeID: UUID
-    ) throws -> SSHAccessInputResolution {
-        var intent = try SSHConnectionIntentParser.parse(input)
-        intent.nodeID = nodeID
-        let currentDeviceID = currentDevice?.id
-            ?? defaults.string(forKey: "KeyPort.deviceID")
-            ?? "local"
-        let plan = try SSHConnectionPlanner().plan(
-            for: intent,
-            in: topology,
-            currentDeviceID: currentDeviceID,
-            networkEpoch: 0
-        )
-        return SSHAccessInputResolution(
-            profileID: plan.profileID,
-            accountID: plan.accountID,
-            endpointID: plan.endpointID,
-            sshAlias: plan.sshAlias
-        )
     }
 
     @discardableResult
@@ -1213,11 +1172,6 @@ final class AppModel {
         appendAudit(category: "ssh-config", action: "write", targetID: profileID.uuidString, result: "success")
         await persist()
         return profileID
-    }
-
-    private func sshCommand(account: SSHAccount, endpoint: Endpoint) -> String {
-        let port = endpoint.port == 22 ? "" : "-p \(endpoint.port) "
-        return "ssh \(port)\(account.username)@\(endpoint.address)"
     }
 
     func confirmedHostKeys(forNodeID nodeID: UUID, endpointID: UUID? = nil) -> [HostKeyRecord] {
