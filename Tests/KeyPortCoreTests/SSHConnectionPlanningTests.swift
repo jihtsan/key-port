@@ -43,6 +43,37 @@ final class SSHConnectionPlanningTests: XCTestCase {
         XCTAssertEqual(plan.reason, .explicitEndpoint)
     }
 
+    func testAutomaticTailnetProfileUsesTailscaleCLITransport() throws {
+        let plan = try SSHConnectionPlanner().plan(
+            for: SSHConnectionIntent(profileID: profileID),
+            in: makeTopology(routePolicy: .fixed(endpointID: tailnetEndpointID)),
+            currentDeviceID: "device-current",
+            networkEpoch: 0
+        )
+
+        XCTAssertEqual(plan.transport, .tailscaleCLI)
+    }
+
+    func testManagedConfigIncludesProxyCommandForTailscaleTransport() {
+        let server = ServerConnection(
+            id: profileID,
+            name: "Studio",
+            host: "100.117.174.75",
+            username: "root",
+            alias: "studio-tailnet-root"
+        )
+
+        let config = SSHConfigGenerator.managedConfig(entries: [SSHConfigEntry(
+            server: server,
+            identityPath: "~/.ssh/id_ed25519",
+            proxyCommand: "/Applications/Tailscale.app/Contents/MacOS/Tailscale nc %h %p"
+        )])
+
+        XCTAssertTrue(config.contains(
+            "ProxyCommand /Applications/Tailscale.app/Contents/MacOS/Tailscale nc %h %p"
+        ))
+    }
+
     func testAutomaticProfilePrefersReachabilityEvidenceFromCurrentNetworkEpoch() throws {
         var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
         topology.reachabilityObservations = [ReachabilityObservation(

@@ -42,10 +42,16 @@ actor SSHConfigService {
 
     private let runner: ProcessRunner
     private let paths: KeyPortPaths
+    private let transportAdapter: SSHTransportAdapter
 
-    init(runner: ProcessRunner = ProcessRunner(), paths: KeyPortPaths = KeyPortPaths()) {
+    init(
+        runner: ProcessRunner = ProcessRunner(),
+        paths: KeyPortPaths = KeyPortPaths(),
+        transportAdapter: SSHTransportAdapter = SSHTransportAdapter()
+    ) {
         self.runner = runner
         self.paths = paths
+        self.transportAdapter = transportAdapter
     }
 
     func discoverConnections() async -> [DiscoveredSSHConnection] {
@@ -72,15 +78,21 @@ actor SSHConfigService {
         }
     }
 
-    func write(servers: [ServerConnection], keys: [SSHKeyRecord], authorizations: [Authorization]) throws {
+    func write(
+        servers: [ServerConnection],
+        keys: [SSHKeyRecord],
+        authorizations: [Authorization],
+        transports: [UUID: SSHConnectionTransport] = [:]
+    ) throws {
         try paths.prepareDirectories()
         let existing = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
         let existingAliases = SSHConfigGenerator.aliases(in: existing)
-        let entries = managedEntries(
+        let entries = try managedEntries(
             servers: servers,
             keys: keys,
             authorizations: authorizations,
-            excludingAliases: existingAliases
+            excludingAliases: existingAliases,
+            transports: transports
         )
         let managedConfig = SSHConfigGenerator.managedConfig(entries: entries)
         try writeManagedConfigFailingClosed(managedConfig)
@@ -95,15 +107,17 @@ actor SSHConfigService {
     func adoptExistingManagedConfigBaseline(
         servers: [ServerConnection],
         keys: [SSHKeyRecord],
-        authorizations: [Authorization]
+        authorizations: [Authorization],
+        transports: [UUID: SSHConnectionTransport] = [:]
     ) throws -> Bool {
         try paths.prepareDirectories()
         let existingUserConfig = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
-        let desiredConfig = SSHConfigGenerator.managedConfig(entries: managedEntries(
+        let desiredConfig = SSHConfigGenerator.managedConfig(entries: try managedEntries(
             servers: servers,
             keys: keys,
             authorizations: authorizations,
-            excludingAliases: SSHConfigGenerator.aliases(in: existingUserConfig)
+            excludingAliases: SSHConfigGenerator.aliases(in: existingUserConfig),
+            transports: transports
         ))
         let desiredData = Data(desiredConfig.utf8)
         guard FileManager.default.fileExists(atPath: paths.managedConfig.path) else {
@@ -169,20 +183,25 @@ actor SSHConfigService {
         servers: [ServerConnection],
         keys: [SSHKeyRecord],
         authorizations: [Authorization],
-        excludingAliases existingAliases: Set<String>
-    ) -> [SSHConfigEntry] {
+        excludingAliases existingAliases: Set<String>,
+        transports: [UUID: SSHConnectionTransport]
+    ) throws -> [SSHConfigEntry] {
         let keyByID = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
             key.privateKeyPath.map { (key.id, $0) }
         })
         let serverByID = Dictionary(uniqueKeysWithValues: servers.map { ($0.id, $0) })
-        return authorizations.compactMap { authorization -> SSHConfigEntry? in
+        return try authorizations.compactMap { authorization -> SSHConfigEntry? in
             guard authorization.status == .authorized,
                   let server = serverByID[authorization.serverID],
                   !existingAliases.contains(server.alias),
                   let identity = keyByID[authorization.keyID] else { return nil }
+            let transport = try transportAdapter.configuration(
+                for: transports[server.id] ?? .direct
+            )
             return SSHConfigEntry(
                 server: server,
-                identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~")
+                identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~"),
+                proxyCommand: transport.proxyCommand
             )
         }
     }

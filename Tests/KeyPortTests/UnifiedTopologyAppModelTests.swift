@@ -111,6 +111,52 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         XCTAssertEqual(stored.connectionProfile(id: profileID)?.accountID, account.id)
     }
 
+    func testNewConnectionDraftRecordsPersistedProfileBeforeFurtherValidation() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-connection-draft-persistence-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-connection-draft-persistence"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            name: "Mac Studio",
+            host: "100.117.174.75",
+            username: "sw-jooder",
+            alias: "existing-profile"
+        )]
+        let paths = KeyPortPaths(home: home)
+        try await SnapshotStore(paths: paths).save(legacy)
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        let account = try XCTUnwrap(model.topology.activeAccounts.first)
+        let endpointID = try XCTUnwrap(
+            model.topology.connectionProfile(id: legacy.servers[0].id)?.routePolicy.fixedEndpointID
+        )
+        var draft = SSHAccessSetupDraft(
+            nodeID: account.nodeID,
+            profileID: nil,
+            accountID: account.id,
+            endpointID: endpointID,
+            sshAlias: "new-tailnet-profile"
+        )
+
+        let profileID = try await model.saveSSHConnectionProfile(draft)
+        draft.recordPersistedProfile(profileID)
+
+        XCTAssertEqual(draft.profileID, profileID)
+        XCTAssertNil(model.sshAliasValidationMessage(
+            draft.sshAlias,
+            excludingProfileID: draft.profileID
+        ))
+    }
+
     func testConnectionProfileSaveRejectsAliasAddedToSSHConfigAfterLoad() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("keyport-connection-alias-conflict-\(UUID().uuidString)", isDirectory: true)
