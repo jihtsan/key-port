@@ -501,39 +501,6 @@ private struct NodeEndpointRow: View {
     }
 }
 
-private extension NetworkScope {
-    var displayTitle: String {
-        switch self {
-        case .lan: "局域网"
-        case .publicNetwork: "公网"
-        case .tailnet: "Tailnet"
-        case .vpn: "VPN"
-        case .unknown: "范围未知"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .lan: "wifi"
-        case .publicNetwork: "globe"
-        case .tailnet: "network"
-        case .vpn: "lock.shield"
-        case .unknown: "questionmark.circle"
-        }
-    }
-}
-
-private extension EndpointSource {
-    var displayTitle: String {
-        switch self {
-        case .migrated: "已迁移"
-        case .manual: "手动"
-        case .discovered: "自动发现"
-        case .tailscale: "Tailscale 自动"
-        }
-    }
-}
-
 private struct NodeAccountRow: View {
     let account: ServerConnection
     let model: AppModel

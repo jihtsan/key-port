@@ -13,23 +13,7 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         NavigationSplitView {
-            List(selection: $model.destination) {
-                Section("工作区") {
-                    ForEach(SidebarDestination.workspaceCases) { destination in
-                        Label(destination.title, systemImage: destination.systemImage)
-                            .tag(destination)
-                    }
-                }
-                Section("兼容视图") {
-                    ForEach(SidebarDestination.compatibilityCases) { destination in
-                        Label(destination.title, systemImage: destination.systemImage)
-                            .tag(destination)
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("KeyPort")
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+            AppSidebarView(model: model)
         } content: {
             contentColumn
                 .navigationSplitViewColumnWidth(min: 300, ideal: 390, max: 520)
@@ -276,7 +260,9 @@ struct ContentView: View {
         case .graph:
             GraphWorkspaceView(model: model)
         case .nodes:
-            GraphNodesView(model: model)
+            GraphNodesView(model: model) {
+                showsAddServer = true
+            }
         case .activity:
             GraphActivityListView(model: model)
         case .servers:
@@ -299,9 +285,22 @@ struct ContentView: View {
     @ViewBuilder
     private var detailColumn: some View {
         switch model.destination {
-        case .graph, .nodes:
+        case .graph:
             GraphInspectorView(
                 workspace: model.graphWorkspace,
+                model: model,
+                onAddAccount: { nodeID, endpointID in
+                    addAccount(nodeID: nodeID, endpointID: endpointID)
+                },
+                onAddEndpoint: { nodeID in
+                    addEndpoint(nodeID: nodeID)
+                },
+                onEditAccount: { serverID in
+                    editAccount(serverID: serverID)
+                }
+            )
+        case .nodes:
+            NodeWorkspaceDetailView(
                 model: model,
                 onAddAccount: { nodeID, endpointID in
                     addAccount(nodeID: nodeID, endpointID: endpointID)
@@ -345,7 +344,6 @@ struct ContentView: View {
         if model.destination == .graph || model.destination == .nodes {
             ToolbarItem {
                 Button {
-                    model.destination = .servers
                     showsAddServer = true
                 } label: {
                     Label("添加节点", systemImage: "plus")
