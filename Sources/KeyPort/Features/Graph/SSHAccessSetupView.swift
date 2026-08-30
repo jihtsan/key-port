@@ -155,6 +155,7 @@ struct SSHAccessSetupView: View {
         Task {
             do {
                 let profileID = try await model.saveSSHConnectionProfile(draft)
+                draft.recordPersistedProfile(profileID)
                 let endpoint = model.topology.endpoint(id: draft.endpointID)
                 if authorizes {
                     await model.performPasswordlessPrimaryAction(

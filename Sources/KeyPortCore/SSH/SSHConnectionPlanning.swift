@@ -11,6 +11,22 @@ public enum SSHConnectionTransport: String, Codable, CaseIterable, Hashable, Sen
     case tailscaleCLI
 }
 
+public enum SSHConnectionTransportResolver {
+    public static func resolve(
+        preference: SSHConnectionTransportPreference,
+        networkScope: NetworkScope?
+    ) -> SSHConnectionTransport {
+        switch preference {
+        case .automatic:
+            networkScope == .tailnet ? .tailscaleCLI : .direct
+        case .direct:
+            .direct
+        case .tailscaleCLI:
+            .tailscaleCLI
+        }
+    }
+}
+
 /// A durable path preference. Automatic policies select a currently suitable
 /// endpoint inside the requested network scope; fixed policies never fall back
 /// to another endpoint without a new user decision.
@@ -290,7 +306,10 @@ public struct SSHConnectionPlanner: Sendable {
                 host: endpoint.address,
                 port: endpoint.port,
                 networkScope: endpoint.networkScope,
-                transport: resolvedTransport(explicitProfile?.transportPreference ?? .automatic),
+                transport: SSHConnectionTransportResolver.resolve(
+                    preference: explicitProfile?.transportPreference ?? .automatic,
+                    networkScope: endpoint.networkScope
+                ),
                 networkEpoch: networkEpoch,
                 reason: reason
             )
@@ -442,12 +461,4 @@ public struct SSHConnectionPlanner: Sendable {
         }
     }
 
-    private func resolvedTransport(
-        _ preference: SSHConnectionTransportPreference
-    ) -> SSHConnectionTransport {
-        switch preference {
-        case .automatic, .direct: .direct
-        case .tailscaleCLI: .tailscaleCLI
-        }
-    }
 }

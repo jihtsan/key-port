@@ -160,6 +160,10 @@ struct SSHAccessSetupDraft: Sendable {
     var accountID: UUID
     var endpointID: UUID
     var sshAlias: String
+
+    mutating func recordPersistedProfile(_ profileID: UUID) {
+        self.profileID = profileID
+    }
 }
 
 enum ServerEditorValidationState: Equatable, Sendable {
@@ -1085,7 +1089,8 @@ final class AppModel {
             try await configService.write(
                 servers: activeServers,
                 keys: snapshot.keys,
-                authorizations: snapshot.authorizations
+                authorizations: snapshot.authorizations,
+                transports: sshConfigTransports
             )
             appendAudit(
                 category: "ssh-config",
@@ -1167,7 +1172,8 @@ final class AppModel {
         try await configService.write(
             servers: activeServers,
             keys: snapshot.keys,
-            authorizations: snapshot.authorizations
+            authorizations: snapshot.authorizations,
+            transports: sshConfigTransports
         )
         appendAudit(category: "ssh-config", action: "write", targetID: profileID.uuidString, result: "success")
         await persist()
@@ -1382,7 +1388,8 @@ final class AppModel {
                     _ = try? await configService.adoptExistingManagedConfigBaseline(
                         servers: snapshot.servers.filter { !$0.isDeleted },
                         keys: snapshot.keys,
-                        authorizations: snapshot.authorizations
+                        authorizations: snapshot.authorizations,
+                        transports: sshConfigTransports
                     )
                     normalizeStableMetadataIDs()
                     ensureCurrentDevice()
@@ -1460,7 +1467,8 @@ final class AppModel {
                 _ = try? await configService.adoptExistingManagedConfigBaseline(
                     servers: snapshot.servers.filter { !$0.isDeleted },
                     keys: snapshot.keys,
-                    authorizations: snapshot.authorizations
+                    authorizations: snapshot.authorizations,
+                    transports: sshConfigTransports
                 )
                 normalizeStableMetadataIDs()
                 ensureCurrentDevice()
@@ -1633,10 +1641,18 @@ final class AppModel {
             )
         }
         let server = editorServer(draft: draft, existingServerID: existingServerID, confirmedHostKeys: trustedHostKeys)
+        let endpoint = draft.targetEndpointID.flatMap(topology.endpoint(id:))
+        let transport = sshTransport(
+            forProfileID: existingServerID,
+            endpoint: endpoint
+        )
 
         do {
             try await validateEditorDraft(draft, existingServerID: existingServerID)
-            let observed = try await hostKeyService.scan(server: server)
+            let observed = try await hostKeyService.scan(
+                server: server,
+                transport: transport
+            )
             log.append("已收到 \(observed.count) 个主机密钥指纹。")
 
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: trustedHostKeys) {
@@ -1689,14 +1705,22 @@ final class AppModel {
             defer { passwordData.resetBytes(in: passwordData.indices) }
 
             log.append("正在测试仅使用密码的 SSH 身份验证...")
-            guard try await sshService.testPassword(server: server, passwordData: passwordData) else {
+            guard try await sshService.testPassword(
+                server: server,
+                passwordData: passwordData,
+                transport: transport
+            ) else {
                 let detail = "服务器拒绝了该密码。"
                 log.append(detail)
                 return failedEditorValidation(detail: detail, log: log, confirmedHostKeys: trustedHostKeys)
             }
 
             log.append("密码登录验证成功。")
-            let machineConfiguration = try await sshService.inspectMachineWithPassword(server: server, passwordData: passwordData)
+            let machineConfiguration = try await sshService.inspectMachineWithPassword(
+                server: server,
+                passwordData: passwordData,
+                transport: transport
+            )
             if machineConfiguration != nil {
                 log.append("远程机器配置已同步。")
             } else {
@@ -1898,7 +1922,12 @@ final class AppModel {
         selectedServerID = serverID
         try await hostKeyService.persistConfirmedKeys(confirmedKeys, allServers: snapshot.servers.filter { !$0.isDeleted })
         ensureAuthorizationRecordForVerifiedServer(serverID: serverID)
-        try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
+        try await configService.write(
+            servers: activeServers,
+            keys: snapshot.keys,
+            authorizations: snapshot.authorizations,
+            transports: sshConfigTransports
+        )
         appendAudit(category: "ssh-config", action: "write", targetID: serverID.uuidString, result: "success")
         let profileBindings: [SSHConnectionProfileNodeBinding]
         if let targetNodeID = submission.draft.targetNodeID {
@@ -2099,6 +2128,7 @@ final class AppModel {
             return
         }
         let routeServer = self.server(compatibleRouteServer, using: endpoint)
+        let transport = sshTransport(forProfileID: serverID, endpoint: endpoint)
 
         isBusy = true
         retainedSSHCheckLog = SSHCheckLog(
@@ -2112,7 +2142,10 @@ final class AppModel {
 
         var didReachEndpoint = false
         do {
-            let observed = try await hostKeyService.scan(server: routeServer)
+            let observed = try await hostKeyService.scan(
+                server: routeServer,
+                transport: transport
+            )
             didReachEndpoint = true
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
@@ -2131,6 +2164,7 @@ final class AppModel {
                     serverID: serverID,
                     routedServer: routeServer,
                     endpointOverride: endpoint,
+                    transport: transport,
                     wasReachable: true
                 )
                 await persist()
@@ -2150,6 +2184,7 @@ final class AppModel {
                     serverID: serverID,
                     routedServer: routeServer,
                     endpointOverride: endpoint,
+                    transport: transport,
                     wasReachable: true
                 )
                 await persist()
@@ -2168,6 +2203,7 @@ final class AppModel {
                     serverID: serverID,
                     routedServer: routeServer,
                     endpointOverride: endpoint,
+                    transport: transport,
                     wasReachable: true
                 )
                 await persist()
@@ -2186,6 +2222,7 @@ final class AppModel {
                     serverID: serverID,
                     routedServer: routeServer,
                     endpointOverride: endpoint,
+                    transport: transport,
                     wasReachable: true
                 )
                 await persist()
@@ -2195,8 +2232,12 @@ final class AppModel {
             updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
             appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
             try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-            try await authorize(server: routeServer, key: key)
-            await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
+            try await authorize(server: routeServer, key: key, transport: transport)
+            await synchronizeMachineConfigurationWithKey(
+                server: routeServer,
+                key: key,
+                transport: transport
+            )
             appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
             appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
         } catch {
@@ -2236,6 +2277,7 @@ final class AppModel {
             serverID: serverID,
             routedServer: routeServer,
             endpointOverride: endpoint,
+            transport: transport,
             wasReachable: didReachEndpoint
         )
         await persist()
@@ -2422,10 +2464,15 @@ final class AppModel {
             markSSHRouteUnavailable(serverID: serverID, kind: .key)
             return
         }
+        let transport = sshTransport(forProfileID: serverID)
         isBusy = true
         defer { isBusy = false }
         do {
-            let lines = try await sshService.readAuthorizedKeys(server: routeServer, identityPath: identity)
+            let lines = try await sshService.readAuthorizedKeys(
+                server: routeServer,
+                identityPath: identity,
+                transport: transport
+            )
             var discoveredKeys: [SSHKeyRecord] = []
             var existingByID: [String: Authorization] = [:]
             for authorization in snapshot.authorizations where authorization.serverID == serverID {
@@ -2501,15 +2548,25 @@ final class AppModel {
             markSSHRouteUnavailable(serverID: server.id, kind: .key)
             return
         }
+        let transport = sshTransport(forProfileID: server.id)
         isBusy = true
         defer { isBusy = false }
         do {
             try await localAuthentication.authorize(reason: "撤销所选 KeyPort 服务器授权")
-            let observed = try await hostKeyService.scan(server: routeServer)
+            let observed = try await hostKeyService.scan(
+                server: routeServer,
+                transport: transport
+            )
             guard HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) == .confirmed else {
                 throw SSHServiceError.hostKeyChanged
             }
-            try await sshService.revokePublicKey(server: routeServer, fingerprint: authorization.fingerprint, publicKeyBlob: parsed.blob, identityPath: identity)
+            try await sshService.revokePublicKey(
+                server: routeServer,
+                fingerprint: authorization.fingerprint,
+                publicKeyBlob: parsed.blob,
+                identityPath: identity,
+                transport: transport
+            )
             if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
                 snapshot.authorizations[index].status = .needsAuthorization
                 snapshot.authorizations[index].isDeleted = true
@@ -2943,16 +3000,20 @@ final class AppModel {
             return AuthenticationCheck(state: .failed, detail: "测试前请输入用户名。", checkedAt: .now)
         }
         var candidateServer: ServerConnection
+        let endpoint = passwordPromptEndpointID.flatMap(topology.endpoint(id:))
         if let routed = sshOperationServer(for: server) {
-            let endpoint = passwordPromptEndpointID.flatMap(topology.endpoint(id:))
             candidateServer = self.server(routed, using: endpoint)
         } else {
             return AuthenticationCheck(state: .blocked, detail: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。", checkedAt: .now)
         }
         candidateServer.username = trimmedUsername
+        let transport = sshTransport(forProfileID: server.id, endpoint: endpoint)
 
         do {
-            let observed = try await hostKeyService.scan(server: candidateServer)
+            let observed = try await hostKeyService.scan(
+                server: candidateServer,
+                transport: transport
+            )
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: candidateServer.confirmedHostKeys) {
             case .pending:
                 let detail = candidateServer.confirmedHostKeys.isEmpty
@@ -2965,7 +3026,11 @@ final class AppModel {
             case .confirmed:
                 var passwordData = Data(password.utf8)
                 defer { passwordData.resetBytes(in: passwordData.indices) }
-                let authenticated = try await sshService.testPassword(server: candidateServer, passwordData: passwordData)
+                let authenticated = try await sshService.testPassword(
+                    server: candidateServer,
+                    passwordData: passwordData,
+                    transport: transport
+                )
                 return AuthenticationCheck(
                     state: authenticated ? .succeeded : .failed,
                     detail: authenticated
@@ -3272,6 +3337,10 @@ final class AppModel {
             return
         }
         let routeServer = server(compatibleRouteServer, using: endpointOverride)
+        let transport = sshTransport(
+            forProfileID: serverID,
+            endpoint: endpointOverride
+        )
         if ownsBusyState { isBusy = true }
         retainedSSHCheckLog = SSHCheckLog(
             serverID: serverID,
@@ -3285,7 +3354,10 @@ final class AppModel {
         defer { if ownsBusyState { isBusy = false } }
         var didReachEndpoint = false
         do {
-            let observed = try await hostKeyService.scan(server: routeServer)
+            let observed = try await hostKeyService.scan(
+                server: routeServer,
+                transport: transport
+            )
             didReachEndpoint = true
             appendSSHCheckLog("已收到 \(observed.count) 个主机密钥指纹。", serverID: serverID)
             switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
@@ -3314,9 +3386,15 @@ final class AppModel {
             case .confirmed:
                 switch kind {
                 case .password:
-                    try await checkPasswordAuthentication(server: routeServer)
+                    try await checkPasswordAuthentication(
+                        server: routeServer,
+                        transport: transport
+                    )
                 case .key:
-                    try await checkKeyAuthentication(server: routeServer)
+                    try await checkKeyAuthentication(
+                        server: routeServer,
+                        transport: transport
+                    )
                 }
             }
         } catch {
@@ -3332,6 +3410,7 @@ final class AppModel {
             serverID: serverID,
             routedServer: routeServer,
             endpointOverride: endpointOverride,
+            transport: transport,
             wasReachable: didReachEndpoint
         )
         await persist()
@@ -3353,10 +3432,32 @@ final class AppModel {
         return routed
     }
 
+    private func sshTransport(
+        forProfileID profileID: UUID?,
+        endpoint: Endpoint? = nil
+    ) -> SSHConnectionTransport {
+        let profile = profileID.flatMap(topology.connectionProfile(id:))
+        let resolvedEndpoint = endpoint
+            ?? profile?.routePolicy.fixedEndpointID.flatMap(topology.endpoint(id:))
+        let networkScope = resolvedEndpoint?.networkScope
+            ?? profile?.routePolicy.networkScope
+        return SSHConnectionTransportResolver.resolve(
+            preference: profile?.transportPreference ?? .automatic,
+            networkScope: networkScope
+        )
+    }
+
+    private var sshConfigTransports: [UUID: SSHConnectionTransport] {
+        Dictionary(uniqueKeysWithValues: topology.activeConnectionProfiles.map { profile in
+            (profile.id, sshTransport(forProfileID: profile.id))
+        })
+    }
+
     private func recordSSHConnectionEvidence(
         serverID: UUID,
         routedServer: ServerConnection,
         endpointOverride: Endpoint?,
+        transport: SSHConnectionTransport,
         wasReachable: Bool
     ) {
         guard let profile = topology.connectionProfile(id: serverID),
@@ -3389,7 +3490,7 @@ final class AppModel {
             deviceID: deviceID,
             profileID: profile.id,
             endpointID: endpoint.id,
-            transport: .direct,
+            transport: transport,
             networkEpoch: 0,
             status: server.status,
             statusDetail: server.statusDetail,
@@ -3410,7 +3511,10 @@ final class AppModel {
         return authenticatedServer
     }
 
-    private func checkPasswordAuthentication(server: ServerConnection) async throws {
+    private func checkPasswordAuthentication(
+        server: ServerConnection,
+        transport: SSHConnectionTransport
+    ) async throws {
         guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
             let detail = "检查密码 SSH 前，请输入并测试服务器密码。"
             updateAuthenticationCheck(id: server.id, kind: .password, state: .blocked, detail: detail)
@@ -3422,7 +3526,11 @@ final class AppModel {
         var credential = try await serverCredential(forProfileID: server.id)
         defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
         let authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
-        let authenticated = try await sshService.testPassword(server: authenticatedServer, passwordData: credential.passwordData)
+        let authenticated = try await sshService.testPassword(
+            server: authenticatedServer,
+            passwordData: credential.passwordData,
+            transport: transport
+        )
         let detail = authenticated ? "服务器密码身份验证成功。" : "服务器拒绝了已存储的密码。"
         updateAuthenticationCheck(id: server.id, kind: .password, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
@@ -3436,7 +3544,8 @@ final class AppModel {
             }
             await synchronizeMachineConfigurationWithPassword(
                 server: authenticatedServer,
-                passwordData: credential.passwordData
+                passwordData: credential.passwordData,
+                transport: transport
             )
         } else if server.status != .authorized {
             updateServer(id: server.id, status: .passwordAuthenticationFailed, detail: detail)
@@ -3450,7 +3559,10 @@ final class AppModel {
         )
     }
 
-    private func checkKeyAuthentication(server: ServerConnection) async throws {
+    private func checkKeyAuthentication(
+        server: ServerConnection,
+        transport: SSHConnectionTransport
+    ) async throws {
         guard let key = key(for: server) else {
             let detail = "此 Mac 没有可用的本地私钥。"
             updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: detail)
@@ -3458,7 +3570,11 @@ final class AppModel {
             appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "missing-key", level: .warning)
             return
         }
-        let authenticated = try await sshService.testPublicKey(server: server, key: key)
+        let authenticated = try await sshService.testPublicKey(
+            server: server,
+            key: key,
+            transport: transport
+        )
         let detail = authenticated ? "免密登录验证成功。" : "当前 Mac 尚未启用免密。"
         updateAuthenticationCheck(id: server.id, kind: .key, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
@@ -3466,28 +3582,46 @@ final class AppModel {
             markMachineConfigurationRefreshAttempt(serverID: server.id)
             updateServer(id: server.id, status: .authorized, detail: detail)
             upsertAuthorization(serverID: server.id, key: key, authorizedAt: nil)
-            await synchronizeMachineConfigurationWithKey(server: server, key: key)
+            await synchronizeMachineConfigurationWithKey(
+                server: server,
+                key: key,
+                transport: transport
+            )
             return
         }
         updateServer(id: server.id, status: .needsAuthorization, detail: detail)
         appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "not-authorized", level: .warning)
     }
 
-    private func authorize(server: ServerConnection, key: SSHKeyRecord) async throws {
+    private func authorize(
+        server: ServerConnection,
+        key: SSHKeyRecord,
+        transport requestedTransport: SSHConnectionTransport? = nil
+    ) async throws {
+        let transport = requestedTransport
+            ?? sshTransport(forProfileID: server.id)
         guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
             throw SSHServiceError.missingPassword
         }
         var credential = try await serverCredential(forProfileID: server.id)
         defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
         let authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
-        let observed = try await hostKeyService.scan(server: server)
+        let observed = try await hostKeyService.scan(
+            server: server,
+            transport: transport
+        )
         switch HostKeyEvaluator.evaluate(observed: observed, confirmed: server.confirmedHostKeys) {
         case .confirmed: break
         case .pending: throw SSHServiceError.hostKeyNotConfirmed
         case .changed: throw SSHServiceError.hostKeyChanged
         }
         do {
-            try await sshService.installPublicKey(server: authenticatedServer, key: key, passwordData: credential.passwordData)
+            try await sshService.installPublicKey(
+                server: authenticatedServer,
+                key: key,
+                passwordData: credential.passwordData,
+                transport: transport
+            )
             updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "授权期间服务器密码身份验证成功。")
             appendAudit(category: "ssh-auth", action: ServerCheckKind.password.auditAction, targetID: server.id.uuidString, result: "succeeded-during-authorization")
         } catch SSHServiceError.passwordAuthenticationRejected {
@@ -3496,14 +3630,23 @@ final class AppModel {
             await persist()
             throw SSHServiceError.passwordAuthenticationRejected
         }
-        guard try await sshService.testPublicKey(server: authenticatedServer, key: key) else {
+        guard try await sshService.testPublicKey(
+            server: authenticatedServer,
+            key: key,
+            transport: transport
+        ) else {
             updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "密钥已安装，但免密 SSH 验证失败。")
             throw SSHServiceError.operationFailed("密钥已安装，但验证失败。")
         }
         updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "授权后免密 SSH 身份验证成功。")
         upsertAuthorization(serverID: server.id, key: key, authorizedAt: .now)
         updateServer(id: server.id, status: .authorized, detail: "公钥已安装并通过验证。")
-        try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
+        try await configService.write(
+            servers: activeServers,
+            keys: snapshot.keys,
+            authorizations: snapshot.authorizations,
+            transports: sshConfigTransports
+        )
         appendAudit(category: "authorization", action: "install", targetID: server.id.uuidString, result: "verified")
         appendAudit(category: "ssh-config", action: "write", targetID: server.id.uuidString, result: "success")
         await persist()
@@ -3512,7 +3655,12 @@ final class AppModel {
     private func writeConfig() async {
         guard await authorizeLegacyMutation() else { return }
         do {
-            try await configService.write(servers: activeServers, keys: snapshot.keys, authorizations: snapshot.authorizations)
+            try await configService.write(
+                servers: activeServers,
+                keys: snapshot.keys,
+                authorizations: snapshot.authorizations,
+                transports: sshConfigTransports
+            )
             appendAudit(category: "ssh-config", action: "write", result: "success")
         } catch { present(error) }
     }
@@ -3942,7 +4090,13 @@ final class AppModel {
         )
     }
 
-    private func synchronizeMachineConfigurationWithKey(server: ServerConnection, key: SSHKeyRecord) async {
+    private func synchronizeMachineConfigurationWithKey(
+        server: ServerConnection,
+        key: SSHKeyRecord,
+        transport requestedTransport: SSHConnectionTransport? = nil
+    ) async {
+        let transport = requestedTransport
+            ?? sshTransport(forProfileID: server.id)
         machineConfigurationSyncingServerID = server.id
         machineConfigurationSyncError = nil
         machineConfigurationSyncErrorServerID = nil
@@ -3950,7 +4104,11 @@ final class AppModel {
         defer { machineConfigurationSyncingServerID = nil }
 
         do {
-            guard let configuration = try await sshService.inspectMachineWithPublicKey(server: server, key: key) else {
+            guard let configuration = try await sshService.inspectMachineWithPublicKey(
+                server: server,
+                key: key,
+                transport: transport
+            ) else {
                 let detail = "服务器未返回可解析的机器配置。"
                 machineConfigurationSyncError = detail
                 machineConfigurationSyncErrorServerID = server.id
@@ -3970,7 +4128,13 @@ final class AppModel {
         }
     }
 
-    private func synchronizeMachineConfigurationWithPassword(server: ServerConnection, passwordData: Data) async {
+    private func synchronizeMachineConfigurationWithPassword(
+        server: ServerConnection,
+        passwordData: Data,
+        transport requestedTransport: SSHConnectionTransport? = nil
+    ) async {
+        let transport = requestedTransport
+            ?? sshTransport(forProfileID: server.id)
         machineConfigurationSyncingServerID = server.id
         machineConfigurationSyncError = nil
         machineConfigurationSyncErrorServerID = nil
@@ -3978,7 +4142,11 @@ final class AppModel {
         defer { machineConfigurationSyncingServerID = nil }
 
         do {
-            guard let configuration = try await sshService.inspectMachineWithPassword(server: server, passwordData: passwordData) else {
+            guard let configuration = try await sshService.inspectMachineWithPassword(
+                server: server,
+                passwordData: passwordData,
+                transport: transport
+            ) else {
                 let detail = "服务器未返回可解析的机器配置。"
                 machineConfigurationSyncError = detail
                 machineConfigurationSyncErrorServerID = server.id

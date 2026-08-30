@@ -3,10 +3,16 @@ import Foundation
 public struct SSHConfigEntry: Hashable, Sendable {
     public let server: ServerConnection
     public let identityPath: String
+    public let proxyCommand: String?
 
-    public init(server: ServerConnection, identityPath: String) {
+    public init(
+        server: ServerConnection,
+        identityPath: String,
+        proxyCommand: String? = nil
+    ) {
         self.server = server
         self.identityPath = identityPath
+        self.proxyCommand = proxyCommand
     }
 }
 
@@ -109,12 +115,15 @@ public enum SSHConfigGenerator {
             let identities = entry.identityPaths
                 .map { "    IdentityFile \($0)" }
                 .joined(separator: "\n")
+            let proxyCommand = entries.first(where: { $0.server.id == entry.server.id })?
+                .proxyCommand
+                .map { "    ProxyCommand \($0)\n" } ?? ""
             return """
             Host \(entry.server.alias)
                 HostName \(entry.server.host)
                 Port \(entry.server.port)
                 User \(entry.server.username)
-            \(identities)
+            \(proxyCommand)\(identities)
                 IdentitiesOnly yes
                 UserKnownHostsFile ~/.ssh/keyport/known_hosts
             """

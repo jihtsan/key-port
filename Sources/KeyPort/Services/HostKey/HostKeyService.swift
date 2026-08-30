@@ -16,19 +16,29 @@ enum HostKeyServiceError: LocalizedError {
 actor HostKeyService {
     private let runner: ProcessRunner
     private let paths: KeyPortPaths
+    private let transportAdapter: SSHTransportAdapter
 
-    init(runner: ProcessRunner, paths: KeyPortPaths = KeyPortPaths()) {
+    init(
+        runner: ProcessRunner,
+        paths: KeyPortPaths = KeyPortPaths(),
+        transportAdapter: SSHTransportAdapter = SSHTransportAdapter()
+    ) {
         self.runner = runner
         self.paths = paths
+        self.transportAdapter = transportAdapter
     }
 
-    func scan(server: ServerConnection) async throws -> [HostKeyRecord] {
-        let result = try await runner.run("/usr/bin/ssh-keyscan", arguments: ["-T", "5", "-p", String(server.port), server.host])
-        let lines = result.stdout.split(separator: "\n").map(String.init).filter { !$0.hasPrefix("#") }
-        let keys = lines.compactMap { line -> HostKeyRecord? in
-            guard let parsed = PublicKeyParser.parse(line) else { return nil }
-            return HostKeyRecord(algorithm: parsed.type, fingerprint: parsed.fingerprint, knownHostsLine: line)
+    func scan(
+        server: ServerConnection,
+        transport: SSHConnectionTransport = .direct
+    ) async throws -> [HostKeyRecord] {
+        let transport = try transportAdapter.configuration(for: transport)
+        if transport.proxyCommand != nil {
+            return try await scanThroughOpenSSH(server: server, transport: transport)
         }
+
+        let result = try await runner.run("/usr/bin/ssh-keyscan", arguments: ["-T", "5", "-p", String(server.port), server.host])
+        let keys = hostKeys(in: result.stdout)
         if keys.isEmpty {
             if !result.succeeded {
                 throw HostKeyServiceError.scanFailed(
@@ -38,6 +48,59 @@ actor HostKeyService {
             throw HostKeyServiceError.noKeys
         }
         return keys
+    }
+
+    private func scanThroughOpenSSH(
+        server: ServerConnection,
+        transport: SSHTransportConfiguration
+    ) async throws -> [HostKeyRecord] {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-host-key-scan-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let capturedKnownHosts = directory.appendingPathComponent("known_hosts")
+        let arguments = [
+            "-T", "-p", String(server.port),
+            "-o", "ConnectTimeout=5",
+            "-o", "ConnectionAttempts=1",
+            "-o", "LogLevel=ERROR",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "UserKnownHostsFile=\(capturedKnownHosts.path)",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "HashKnownHosts=no",
+            "-o", "BatchMode=yes",
+            "-o", "PreferredAuthentications=none",
+            "-o", "NumberOfPasswordPrompts=0",
+        ] + transport.openSSHArguments + [
+            "\(server.username)@\(server.host)",
+        ]
+        let result = try await runner.run("/usr/bin/ssh", arguments: arguments)
+        let captured = (try? String(contentsOf: capturedKnownHosts, encoding: .utf8)) ?? ""
+        let keys = hostKeys(in: captured)
+        guard keys.isEmpty else { return keys }
+        if !result.succeeded {
+            throw HostKeyServiceError.scanFailed(
+                sanitized(result.stderr, status: result.status, endpoint: server.endpoint)
+            )
+        }
+        throw HostKeyServiceError.noKeys
+    }
+
+    private func hostKeys(in output: String) -> [HostKeyRecord] {
+        output.split(separator: "\n").map(String.init)
+            .filter { !$0.hasPrefix("#") }
+            .compactMap { line -> HostKeyRecord? in
+                guard let parsed = PublicKeyParser.parse(line) else { return nil }
+                return HostKeyRecord(
+                    algorithm: parsed.type,
+                    fingerprint: parsed.fingerprint,
+                    knownHostsLine: line
+                )
+            }
     }
 
     func persistConfirmedKeys(_ keys: [HostKeyRecord], allServers: [ServerConnection]) throws {
