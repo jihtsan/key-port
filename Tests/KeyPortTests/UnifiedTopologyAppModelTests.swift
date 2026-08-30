@@ -111,4 +111,120 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         XCTAssertEqual(stored.activeConnectionProfiles.count, 2)
         XCTAssertEqual(stored.connectionProfile(id: profileID)?.accountID, account.id)
     }
+
+    func testAccountCanBeAddedWithoutEndpointOrConnectionProfile() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-account-only-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-account-only"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        let nodeID = UUID(uuidString: "32000000-0000-4000-8000-000000000001")!
+        let currentNodeID = TopologyStableID.node(forDeviceID: currentDeviceID)
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        let paths = KeyPortPaths(home: home)
+        try await SnapshotStore(paths: paths).save(legacy)
+        try await TopologyStore(paths: paths).save(TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "测试 Mac", roles: [.clientDevice]),
+                Node(id: nodeID, name: "无地址节点", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "测试 Mac",
+                isCurrent: true
+            )]
+        ))
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        XCTAssertTrue(model.topology.endpoints(for: nodeID).isEmpty)
+
+        let accountID = try await model.saveSSHAccount(SSHAccountEditorSubmission(
+            draft: SSHAccountDraft(
+                nodeID: nodeID,
+                label: "部署用户",
+                username: "deploy"
+            ),
+            password: "",
+            synchronizable: false
+        ))
+
+        XCTAssertEqual(model.topology.accounts(for: nodeID).map(\.id), [accountID])
+        XCTAssertTrue(model.topology.connectionProfiles(for: accountID).isEmpty)
+        XCTAssertTrue(model.activeServers.isEmpty)
+
+        let reloaded = AppModel(paths: paths, defaults: defaults)
+        await reloaded.load()
+        XCTAssertEqual(reloaded.topology.accounts(for: nodeID).first?.username, "deploy")
+        XCTAssertEqual(reloaded.topology.accounts(for: nodeID).first?.label, "部署用户")
+    }
+
+    func testEditingAccountUsernamePreservesConnectionProfileAndEndpoint() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-account-edit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-account-edit"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        let profileID = UUID(uuidString: "33000000-0000-4000-8000-000000000001")!
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            id: profileID,
+            name: "构建服务器",
+            host: "builder.example.com",
+            username: "root",
+            alias: "builder-root"
+        )]
+        let paths = KeyPortPaths(home: home)
+        try await SnapshotStore(paths: paths).save(legacy)
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        let previousAccount = try XCTUnwrap(model.topology.activeAccounts.first)
+        let endpointID = try XCTUnwrap(
+            model.topology.connectionProfile(id: profileID)?.routePolicy.fixedEndpointID
+        )
+
+        let updatedAccountID = try await model.saveSSHAccount(SSHAccountEditorSubmission(
+            draft: SSHAccountDraft(
+                nodeID: previousAccount.nodeID,
+                accountID: previousAccount.id,
+                label: "部署用户",
+                username: "deploy"
+            ),
+            password: "",
+            synchronizable: false
+        ))
+
+        XCTAssertNotEqual(updatedAccountID, previousAccount.id)
+        XCTAssertEqual(model.topology.connectionProfile(id: profileID)?.accountID, updatedAccountID)
+        XCTAssertEqual(
+            model.topology.connectionProfile(id: profileID)?.routePolicy.fixedEndpointID,
+            endpointID
+        )
+        XCTAssertEqual(model.activeServers.first?.username, "deploy")
+        XCTAssertEqual(model.activeServers.first?.alias, "builder-root")
+        XCTAssertEqual(
+            model.topology.sshAccounts.first(where: { $0.id == previousAccount.id })?.isDeleted,
+            true
+        )
+
+        let reloaded = AppModel(paths: paths, defaults: defaults)
+        await reloaded.load()
+        XCTAssertEqual(reloaded.topology.connectionProfile(id: profileID)?.accountID, updatedAccountID)
+        XCTAssertEqual(reloaded.activeServers.first?.username, "deploy")
+        XCTAssertEqual(reloaded.activeServers.first?.alias, "builder-root")
+    }
 }

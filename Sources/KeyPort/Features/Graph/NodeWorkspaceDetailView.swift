@@ -3,7 +3,7 @@ import SwiftUI
 
 struct NodeWorkspaceDetailView: View {
     let model: AppModel
-    let onAddAccount: (UUID, UUID?) -> Void
+    let onAddAccount: (UUID) -> Void
     let onAddEndpoint: (UUID) -> Void
     let onEditAccount: (UUID) -> Void
     let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
@@ -30,6 +30,9 @@ struct NodeWorkspaceDetailView: View {
                 NodeWorkspaceContentView(
                     item: item,
                     tags: tags(for: item),
+                    sshAccounts: item.node.id.topologyUUID.map {
+                        model.sshAccounts(forNodeID: $0)
+                    } ?? [],
                     accountRows: accountRows(for: item),
                     selectedAccountID: model.selectedServerID,
                     selectedEndpointID: selectedEndpointID,
@@ -42,13 +45,22 @@ struct NodeWorkspaceDetailView: View {
                     onConfigureAccess: { configureAccess(in: item) },
                     onAddAccount: {
                         guard let nodeID = item.node.id.topologyUUID else { return }
-                        onAddAccount(nodeID, selectedEndpoint(in: item)?.id)
+                        onAddAccount(nodeID)
                     },
                     onAddEndpoint: {
                         guard let nodeID = item.node.id.topologyUUID else { return }
                         onAddEndpoint(nodeID)
                     },
-                    onEditAccount: onEditAccount,
+                    hasStoredPasswordForAccount: { accountID in
+                        model.hasStoredPassword(accountID: accountID)
+                    },
+                    connectionProfileCount: { accountID in
+                        model.topology.connectionProfiles(for: accountID).count
+                    },
+                    onEditSSHAccount: onEditAccount,
+                    onEditConnectionProfile: { profileID in
+                        configureAccess(profileID: profileID, in: item)
+                    },
                     onCopyCommand: { account in
                         model.copySSHCommand(
                             serverID: account.id,
@@ -100,7 +112,10 @@ struct NodeWorkspaceDetailView: View {
                         endpoint: selectedEndpoint(in: item)
                     )
                 },
-                onEdit: { account in onEditAccount(account.id) },
+                onEdit: { account in
+                    guard let item else { return }
+                    configureAccess(profileID: account.id, in: item)
+                },
                 onDelete: { account in pendingDeletion = account }
             )
             .inspectorColumnWidth(min: 260, ideal: 300, max: 340)
@@ -248,11 +263,19 @@ struct NodeWorkspaceDetailView: View {
             selectedEndpoint(in: item)?.id
         )
     }
+
+    private func configureAccess(profileID: UUID, in item: NodeWorkspaceItem) {
+        guard let nodeID = item.node.id.topologyUUID else { return }
+        let endpointID = model.topology.connectionProfile(id: profileID)?
+            .routePolicy.fixedEndpointID
+        onConfigureAccess(nodeID, profileID, endpointID)
+    }
 }
 
 private struct NodeWorkspaceContentView: View {
     let item: NodeWorkspaceItem
     let tags: [String]
+    let sshAccounts: [SSHAccount]
     let accountRows: [NodeWorkspaceAccountDisplay]
     let selectedAccountID: UUID?
     let selectedEndpointID: UUID?
@@ -265,7 +288,10 @@ private struct NodeWorkspaceContentView: View {
     let onConfigureAccess: () -> Void
     let onAddAccount: () -> Void
     let onAddEndpoint: () -> Void
-    let onEditAccount: (UUID) -> Void
+    let hasStoredPasswordForAccount: (UUID) -> Bool
+    let connectionProfileCount: (UUID) -> Int
+    let onEditSSHAccount: (UUID) -> Void
+    let onEditConnectionProfile: (UUID) -> Void
     let onCopyCommand: (ServerConnection) -> Void
 
     var body: some View {
@@ -292,14 +318,24 @@ private struct NodeWorkspaceContentView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 32) {
+                    NodeWorkspaceSSHAccountsSection(
+                        accounts: sshAccounts,
+                        isBusy: isBusy,
+                        isReadOnly: isReadOnly,
+                        hasStoredPassword: hasStoredPasswordForAccount,
+                        connectionProfileCount: connectionProfileCount,
+                        onAdd: onAddAccount,
+                        onEdit: onEditSSHAccount
+                    )
+
                     NodeWorkspaceAccountsSection(
                         rows: accountRows,
                         selectedAccountID: selectedAccountID,
                         isBusy: isBusy,
                         isReadOnly: isReadOnly,
                         onSelect: onSelectAccount,
-                        onAdd: onAddAccount,
-                        onEdit: onEditAccount,
+                        onAdd: onConfigureAccess,
+                        onEdit: onEditConnectionProfile,
                         onTest: { account in
                             onSelectAccount(account.id)
                             onTestConnection()

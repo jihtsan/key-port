@@ -1389,15 +1389,18 @@ public enum TopologySnapshotMigration {
     /// A legacy projection can temporarily recreate the old address-owned
     /// Node after an account has already been attached to a Node. Tombstone
     /// that generated shell only when no active fact still depends on it.
+    /// Account-only records that never came from the legacy projection must
+    /// survive until the user creates their first connection profile.
     private static func removeOrphanedMigratedRecords(
         from migrated: TopologySnapshot,
         in topology: inout TopologySnapshot
     ) {
         let referencedAccountIDs = Set(topology.activeConnectionProfiles.map(\.accountID))
         let migratedNodeIDs = Set(migrated.activeAccounts.map(\.nodeID))
+        let migratedAccountIDs = Set(migrated.sshAccounts.map(\.id))
 
         for accountIndex in topology.sshAccounts.indices
-            where migratedNodeIDs.contains(topology.sshAccounts[accountIndex].nodeID)
+            where migratedAccountIDs.contains(topology.sshAccounts[accountIndex].id)
                 && !referencedAccountIDs.contains(topology.sshAccounts[accountIndex].id) {
             topology.sshAccounts[accountIndex].isDeleted = true
         }

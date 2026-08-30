@@ -4,7 +4,7 @@ import SwiftUI
 struct GraphInspectorView: View {
     let workspace: GraphWorkspaceModel
     let model: AppModel
-    let onAddAccount: (UUID, UUID?) -> Void
+    let onAddAccount: (UUID) -> Void
     let onAddEndpoint: (UUID) -> Void
     let onEditAccount: (UUID) -> Void
     let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
@@ -25,7 +25,8 @@ struct GraphInspectorView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     header(item)
                     summary(item)
-                    accountsSection(item)
+                    sshAccountsSection(item)
+                    connectionProfilesSection(item)
                     statusSection(item.node.status)
                     endpointsSection(item)
                     machineConfigurationSection(item)
@@ -110,7 +111,82 @@ struct GraphInspectorView: View {
         .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func accountsSection(_ item: NodeWorkspaceItem) -> some View {
+    private func sshAccountsSection(_ item: NodeWorkspaceItem) -> some View {
+        let nodeID = item.node.id.uuid
+        let accounts = nodeID.map { model.sshAccounts(forNodeID: $0) } ?? []
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SSH 用户")
+                        .font(.headline)
+                    Text("账户身份和凭据独立于网络路径")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let nodeID {
+                    Button {
+                        onAddAccount(nodeID)
+                    } label: {
+                        Label("添加用户", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.isBusy || model.isMetadataReadOnly)
+                }
+            }
+
+            if accounts.isEmpty {
+                Label("这个节点还没有 SSH 用户", systemImage: "person.crop.circle.badge.exclamationmark")
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 10)
+            } else {
+                AccountListSurface {
+                    ForEach(accounts.indices, id: \.self) { index in
+                        if index > accounts.startIndex {
+                            Divider().padding(.leading, 49)
+                        }
+                        let account = accounts[index]
+                        HStack(spacing: 11) {
+                            Image(systemName: "person.crop.circle")
+                                .font(.title3)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 38, height: 38)
+                                .background(.quaternary, in: Circle())
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.label.isEmpty ? account.username : account.label)
+                                    .fontWeight(.medium)
+                                if !account.label.isEmpty {
+                                    Text(account.username)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Label(
+                                model.hasStoredPassword(accountID: account.id) ? "已存密码" : "按需输入密码",
+                                systemImage: model.hasStoredPassword(accountID: account.id) ? "key.fill" : "key.slash"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Button {
+                                onEditAccount(account.id)
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("编辑 SSH 用户")
+                            .disabled(model.isBusy || model.isMetadataReadOnly)
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func connectionProfilesSection(_ item: NodeWorkspaceItem) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -121,20 +197,12 @@ struct GraphInspectorView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let nodeID = item.node.id.uuid, !item.accountNodes.isEmpty {
+                if let nodeID = item.node.id.uuid,
+                   !model.sshAccounts(forNodeID: nodeID).isEmpty {
                     Button {
                         onConfigureAccess(nodeID, nil, nil)
                     } label: {
-                        Label("配置访问", systemImage: "key.horizontal")
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(model.isBusy || model.isMetadataReadOnly)
-                }
-                if let nodeID = item.node.id.uuid {
-                    Button {
-                        onAddAccount(nodeID, nil)
-                    } label: {
-                        Label("添加账户", systemImage: "plus")
+                        Label("新增配置", systemImage: "plus")
                     }
                     .buttonStyle(.borderless)
                     .disabled(model.isBusy || model.isMetadataReadOnly)
@@ -142,24 +210,12 @@ struct GraphInspectorView: View {
             }
 
             if item.accounts.isEmpty {
-                if item.accountNodes.isEmpty {
-                    Label("这个节点还没有 SSH 账户", systemImage: "person.crop.circle.badge.exclamationmark")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 10)
-                } else {
-                    Text("此节点已有 SSH 账户；请先创建连接配置，选择要使用的网络路径和别名。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    AccountListSurface {
-                        ForEach(item.accountNodes.indices, id: \.self) { index in
-                            if index > item.accountNodes.startIndex {
-                                Divider()
-                                    .padding(.leading, 49)
-                            }
-                            graphAccountFallbackRow(item.accountNodes[index])
-                        }
-                    }
-                }
+                Text((item.node.id.uuid.map { model.sshAccounts(forNodeID: $0).isEmpty } ?? true)
+                     ? "先添加 SSH 用户，再选择网络路径并创建连接配置。"
+                     : "选择 SSH 用户和网络路径后，即可创建带唯一别名的连接配置。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 10)
             } else {
                 AccountListSurface {
                     ForEach(item.accounts.indices, id: \.self) { index in
@@ -175,10 +231,10 @@ struct GraphInspectorView: View {
                             onSelect: { model.selectedServerID = account.id },
                             onAddAccount: {
                                 if let nodeID = item.node.id.uuid {
-                                    onAddAccount(nodeID, nil)
+                                    onAddAccount(nodeID)
                                 }
                             },
-                            onEdit: { onEditAccount(account.id) },
+                            onEdit: { configureAccess(account, in: item) },
                             onCopyAlias: { model.copyAlias(serverID: account.id) },
                             onAuthorize: { configureAccess(account, in: item) }
                         )
@@ -243,7 +299,7 @@ struct GraphInspectorView: View {
                             onAddAccount: endpoint.protocol == .ssh
                                 ? {
                                     if let nodeID = item.node.id.uuid {
-                                        onAddAccount(nodeID, endpoint.id)
+                                        onAddAccount(nodeID)
                                     }
                                 }
                                 : nil
@@ -510,7 +566,7 @@ private struct NodeEndpointRow: View {
                     Image(systemName: "person.badge.plus")
                 }
                 .buttonStyle(.borderless)
-                .help("为此端点添加 SSH 账户")
+                .help("为此节点添加 SSH 用户；网络路径稍后单独配置")
             }
         }
         .padding(.vertical, 3)

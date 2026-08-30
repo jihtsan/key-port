@@ -80,10 +80,16 @@ private struct LocalDeviceTag: View {
 struct DeviceOverviewView: View {
     let model: AppModel
     let onManageAccount: (TailscaleAccountEditorRequest) -> Void
+    let onConfigureAccess: (UUID) -> Void
 
     var body: some View {
         if let item = model.selectedDeviceItem {
-            DeviceDetailView(item: item, model: model, onManageAccount: onManageAccount)
+            DeviceDetailView(
+                item: item,
+                model: model,
+                onManageAccount: onManageAccount,
+                onConfigureAccess: onConfigureAccess
+            )
         } else {
             ContentUnavailableView("未选择设备", systemImage: "laptopcomputer", description: Text("请选择一台设备。"))
         }
@@ -94,6 +100,7 @@ private struct DeviceDetailView: View {
     let item: DevicePresence
     let model: AppModel
     let onManageAccount: (TailscaleAccountEditorRequest) -> Void
+    let onConfigureAccess: (UUID) -> Void
 
     var body: some View {
         ScrollView {
@@ -257,19 +264,37 @@ private struct DeviceDetailView: View {
         suggestion: TailscaleSSHServerSuggestion
     ) -> some View {
         let servers = model.managedServers(for: suggestion)
+        let accounts = model.keyPortNodeID(for: suggestion).map {
+            model.sshAccounts(forNodeID: $0)
+        } ?? []
         let unmanagedConnections = model.unmanagedSSHConnections(for: item)
         return GroupBox("SSH 管理") {
             VStack(alignment: .leading, spacing: 10) {
-                if servers.isEmpty && unmanagedConnections.isEmpty {
+                if accounts.isEmpty && servers.isEmpty && unmanagedConnections.isEmpty {
                     Label("尚未添加 SSH 账户", systemImage: "person.crop.circle.badge.questionmark")
                         .foregroundStyle(.secondary)
                 } else {
+                    if !accounts.isEmpty {
+                        Text("SSH 用户")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                            if index > 0 { Divider() }
+                            tailscaleUserRow(account, suggestion: suggestion)
+                        }
+                    }
+                    if !servers.isEmpty {
+                        Divider()
+                        Text("连接配置")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                     ForEach(Array(servers.enumerated()), id: \.element.id) { index, server in
                         if index > 0 { Divider() }
                         tailscaleAccountRow(server, node: node, suggestion: suggestion)
                     }
                     ForEach(Array(unmanagedConnections.enumerated()), id: \.element.alias) { index, connection in
-                        if !servers.isEmpty || index > 0 { Divider() }
+                        if !accounts.isEmpty || !servers.isEmpty || index > 0 { Divider() }
                         discoveredAccountRow(connection)
                     }
                 }
@@ -285,6 +310,38 @@ private struct DeviceDetailView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 5)
+        }
+    }
+
+    private func tailscaleUserRow(
+        _ account: SSHAccount,
+        suggestion: TailscaleSSHServerSuggestion
+    ) -> some View {
+        HStack(spacing: 10) {
+            Label(
+                account.label.isEmpty ? account.username : account.label,
+                systemImage: "person.crop.circle"
+            )
+            .fontWeight(.medium)
+            if !account.label.isEmpty {
+                Text(account.username)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text("\(model.topology.connectionProfiles(for: account.id).count) 个连接配置")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
+                onManageAccount(TailscaleAccountEditorRequest(
+                    suggestion: suggestion,
+                    accountID: account.id
+                ))
+            } label: {
+                Label("编辑用户", systemImage: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.isBusy)
         }
     }
 
@@ -347,9 +404,9 @@ private struct DeviceDetailView: View {
                     Label("查看", systemImage: "arrow.right.circle")
                 }
                 Button {
-                    onManageAccount(TailscaleAccountEditorRequest(suggestion: suggestion, serverID: server.id))
+                    onConfigureAccess(server.id)
                 } label: {
-                    Label("编辑", systemImage: "pencil")
+                    Label("编辑连接配置", systemImage: "pencil")
                 }
                 .disabled(!node.isOnline || model.isBusy)
 
@@ -395,17 +452,17 @@ private struct DeviceDetailView: View {
 
 struct TailscaleAccountEditorRequest: Identifiable {
     let suggestion: TailscaleSSHServerSuggestion
-    let serverID: UUID?
+    let accountID: UUID?
 
     init(
         suggestion: TailscaleSSHServerSuggestion,
-        serverID: UUID? = nil
+        accountID: UUID? = nil
     ) {
         self.suggestion = suggestion
-        self.serverID = serverID
+        self.accountID = accountID
     }
 
     var id: String {
-        "\(suggestion.nodeID):\(serverID?.uuidString ?? "new")"
+        "\(suggestion.nodeID):\(accountID?.uuidString ?? "new")"
     }
 }
