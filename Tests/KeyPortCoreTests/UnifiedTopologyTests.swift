@@ -232,9 +232,13 @@ final class UnifiedTopologyTests: XCTestCase {
             sshAccounts: [SSHAccount(
                 id: accountID,
                 nodeID: nodeID,
-                endpointID: endpointID,
-                username: "root",
-                alias: "public-root"
+                username: "root"
+            )],
+            sshConnectionProfiles: [SSHConnectionProfile(
+                id: UUID(uuidString: "20000000-0000-4000-8000-000000000023")!,
+                accountID: accountID,
+                sshAlias: "public-root",
+                routePolicy: .fixed(endpointID: endpointID)
             )]
         )
 
@@ -375,22 +379,24 @@ final class UnifiedTopologyTests: XCTestCase {
             port: 22,
             protocol: .ssh
         )
-        let existingAccountID = UUID(uuidString: "20000000-0000-4000-8000-000000000011")!
-        let newAccountID = UUID(uuidString: "20000000-0000-4000-8000-000000000012")!
+        let existingProfileID = UUID(uuidString: "20000000-0000-4000-8000-000000000011")!
+        let newProfileID = UUID(uuidString: "20000000-0000-4000-8000-000000000012")!
+        let existingAccountID = TopologyStableID.sshAccount(nodeID: targetNodeID, username: "root")
+        let newAccountID = TopologyStableID.sshAccount(nodeID: targetNodeID, username: "deploy")
         let publicHost = "203.0.113.20"
 
         var legacy = AppSnapshot()
         legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
         legacy.servers = [
             ServerConnection(
-                id: existingAccountID,
+                id: existingProfileID,
                 name: "公网节点",
                 host: publicHost,
                 username: "root",
                 alias: "public-root"
             ),
             ServerConnection(
-                id: newAccountID,
+                id: newProfileID,
                 name: "公网节点",
                 host: publicHost,
                 username: "deploy",
@@ -422,9 +428,13 @@ final class UnifiedTopologyTests: XCTestCase {
             sshAccounts: [SSHAccount(
                 id: existingAccountID,
                 nodeID: targetNodeID,
-                endpointID: endpointID,
-                username: "root",
-                alias: "public-root"
+                username: "root"
+            )],
+            sshConnectionProfiles: [SSHConnectionProfile(
+                id: existingProfileID,
+                accountID: existingAccountID,
+                sshAlias: "public-root",
+                routePolicy: .fixed(endpointID: endpointID)
             )]
         )
 
@@ -433,8 +443,8 @@ final class UnifiedTopologyTests: XCTestCase {
             preserving: existing,
             currentDeviceID: currentDeviceID,
             currentDeviceName: "我的 Mac",
-            accountBindings: [SSHAccountNodeBinding(
-                accountID: newAccountID,
+            profileBindings: [SSHConnectionProfileNodeBinding(
+                profileID: newProfileID,
                 nodeID: targetNodeID,
                 endpointID: endpointID
             )]
@@ -455,7 +465,9 @@ final class UnifiedTopologyTests: XCTestCase {
         )
 
         XCTAssertEqual(secondRefresh.accounts(for: targetNodeID).count, 2)
-        XCTAssertTrue(secondRefresh.accounts(for: targetNodeID).allSatisfy { $0.endpointID == endpointID })
+        XCTAssertTrue(secondRefresh.connectionProfiles(forNodeID: targetNodeID).allSatisfy {
+            $0.routePolicy.fixedEndpointID == endpointID
+        })
         XCTAssertEqual(secondRefresh.endpoints(for: targetNodeID).count, 1)
         XCTAssertTrue(secondRefresh.nodes.first(where: { $0.id == sourceNodeID })?.isDeleted == true)
     }

@@ -294,6 +294,7 @@ public struct TopologyGraphProjector: Sendable {
         let activeEndpoints = topology.endpoints.filter { !$0.isDeleted }
         let activeServices = topology.services.filter { !$0.isDeleted }
         let activeAccounts = topology.sshAccounts.filter { !$0.isDeleted }
+        let activeConnectionProfiles = topology.sshConnectionProfiles.filter { !$0.isDeleted }
         let activeTrusts = topology.hostKeyTrusts.filter { !$0.isDeleted }
         let activeTailscaleIdentities = topology.tailscaleNodes.filter { !$0.isDeleted }
         let activeAuthorizations = topology.authorizations.filter {
@@ -304,6 +305,7 @@ public struct TopologyGraphProjector: Sendable {
         let profilesByID = Dictionary(uniqueKeysWithValues: activeProfiles.map { ($0.id, $0) })
         let keysByID = Dictionary(uniqueKeysWithValues: topology.sshKeys.map { ($0.id, $0) })
         let accountsByNode = Dictionary(grouping: activeAccounts, by: \.nodeID)
+        let connectionProfilesByAccount = Dictionary(grouping: activeConnectionProfiles, by: \.accountID)
         let tailscaleIdentitiesByNode = Dictionary(grouping: activeTailscaleIdentities, by: \.keyPortNodeID)
 
         let currentProfile = currentDeviceID.flatMap { profilesByID[$0] }
@@ -410,13 +412,16 @@ public struct TopologyGraphProjector: Sendable {
         }
 
         func verificationStatus(for accountID: UUID, deviceID: String) -> TopologyGraphVerificationStatus {
-            switch topology.accessVerifications.first(where: {
-                $0.accountID == accountID && $0.deviceID == deviceID
-            })?.status {
-            case .authorized: .succeeded
-            case .checking, .syncing: .checking
-            case .keyAuthenticationFailed, .passwordAuthenticationFailed: .failed
-            default: .unknown
+            let latest = topology.accessVerifications
+                .filter { $0.accountID == accountID && $0.deviceID == deviceID }
+                .max {
+                    ($0.lastCheckedAt ?? .distantPast) < ($1.lastCheckedAt ?? .distantPast)
+                }
+            switch latest?.status {
+            case .authorized: return .succeeded
+            case .checking, .syncing: return .checking
+            case .keyAuthenticationFailed, .passwordAuthenticationFailed: return .failed
+            default: return .unknown
             }
         }
 
@@ -524,15 +529,17 @@ public struct TopologyGraphProjector: Sendable {
         if query.includesSupportingNodes {
             nodes.append(contentsOf: activeAccounts.compactMap { account in
                 guard let node = nodesByID[account.nodeID] else { return nil }
-                let endpoint = endpointsByID[account.endpointID]
+                let aliases = (connectionProfilesByAccount[account.id] ?? [])
+                    .map(\.sshAlias)
+                    .sorted()
                 return TopologyGraphNode(
                     id: .sshAccount(account.id),
                     kind: .sshAccount,
-                    title: account.alias.isEmpty ? account.username : account.alias,
-                    subtitle: "\(account.username) · \(node.name) · \(endpoint?.displayAddress ?? "未知地址")",
-                    endpointSummaries: endpoint.map {
-                        ["\($0.displayAddress) · \($0.protocol.rawValue.uppercased()) · \($0.networkScope.rawValue)"]
-                    } ?? [],
+                    title: account.label.isEmpty ? account.username : account.label,
+                    subtitle: [account.username, node.name, aliases.joined(separator: ", ")]
+                        .filter { !$0.isEmpty }
+                        .joined(separator: " · "),
+                    endpointSummaries: endpointSummaries(for: account.nodeID),
                     status: currentProfile.map {
                         accessStatus(
                             node: node,
@@ -564,7 +571,7 @@ public struct TopologyGraphProjector: Sendable {
                 let source = TopologyGraphNodeID.node(profile.nodeID)
                 let destination = TopologyGraphNodeID.node(target.id)
                 let label = (authorizedAccounts.isEmpty ? accounts : authorizedAccounts)
-                    .map { $0.alias.isEmpty ? $0.username : $0.alias }
+                    .map { $0.label.isEmpty ? $0.username : $0.label }
                     .sorted()
                     .joined(separator: ", ")
                 if !authorizedAccounts.isEmpty {

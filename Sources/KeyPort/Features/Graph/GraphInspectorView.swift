@@ -7,6 +7,7 @@ struct GraphInspectorView: View {
     let onAddAccount: (UUID, UUID?) -> Void
     let onAddEndpoint: (UUID) -> Void
     let onEditAccount: (UUID) -> Void
+    let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
 
     var body: some View {
         if !workspace.isAvailable {
@@ -113,13 +114,22 @@ struct GraphInspectorView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("SSH 账户")
+                    Text("SSH 连接配置")
                         .font(.headline)
-                    Text("每个账户保留自己的 SSH 别名和授权状态")
+                    Text("连接配置绑定账户、网络路径和唯一别名")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if let nodeID = item.node.id.uuid, !item.accountNodes.isEmpty {
+                    Button {
+                        onConfigureAccess(nodeID, nil, nil)
+                    } label: {
+                        Label("配置访问", systemImage: "key.horizontal")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.isBusy || model.isMetadataReadOnly)
+                }
                 if let nodeID = item.node.id.uuid {
                     Button {
                         onAddAccount(nodeID, nil)
@@ -137,7 +147,7 @@ struct GraphInspectorView: View {
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 10)
                 } else {
-                    Text("这些账户来自拓扑记录，暂时不能直接操作。")
+                    Text("此节点已有 SSH 账户；请先创建连接配置，选择要使用的网络路径和别名。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     AccountListSurface {
@@ -170,7 +180,7 @@ struct GraphInspectorView: View {
                             },
                             onEdit: { onEditAccount(account.id) },
                             onCopyAlias: { model.copyAlias(serverID: account.id) },
-                            onAuthorize: { onAuthorize(account) }
+                            onAuthorize: { configureAccess(account, in: item) }
                         )
                     }
                 }
@@ -396,8 +406,14 @@ struct GraphInspectorView: View {
         .padding(.vertical, 10)
     }
 
-    private func onAuthorize(_ account: ServerConnection) {
-        Task { await model.performPasswordlessPrimaryAction(serverID: account.id) }
+    private func configureAccess(_ account: ServerConnection, in item: NodeWorkspaceItem) {
+        guard let nodeID = item.node.id.uuid else { return }
+        let endpointID = item.endpoints.first(where: {
+            $0.protocol == .ssh
+                && $0.address.caseInsensitiveCompare(account.host) == .orderedSame
+                && Int($0.port) == account.port
+        })?.id ?? item.endpoints.first(where: { $0.protocol == .ssh })?.id
+        onConfigureAccess(nodeID, account.id, endpointID)
     }
 
     private func referenceRow(_ reference: HostV6.EntityReference) -> some View {
@@ -540,7 +556,7 @@ private struct NodeAccountRow: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
-                "选择 SSH 账户 \(account.username)，别名 \(account.alias)，\(account.status.title)"
+                "选择 SSH 连接配置，用户 \(account.username)，别名 \(account.alias)，\(account.status.title)"
             )
 
             Menu {
@@ -552,7 +568,7 @@ private struct NodeAccountRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("账户操作")
+            .help("连接配置操作")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -565,7 +581,7 @@ private struct NodeAccountRow: View {
     @ViewBuilder
     private func accountActions(_ action: PasswordlessPrimaryAction) -> some View {
         Button(action: onEdit) {
-            Label("编辑账户", systemImage: "pencil")
+            Label("编辑连接配置", systemImage: "pencil")
         }
         Button(action: onAddAccount) {
             Label("添加同节点账户", systemImage: "person.badge.plus")

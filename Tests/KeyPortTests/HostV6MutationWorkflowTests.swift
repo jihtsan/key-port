@@ -386,6 +386,28 @@ final class HostV6MutationWorkflowTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: paths.managedConfig, encoding: .utf8), manual)
     }
 
+    func testSSHConfigAliasValidationIsCaseInsensitive() async throws {
+        let home = try temporaryHome(prefix: "keyport-config-alias")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let paths = KeyPortPaths(home: home)
+        try paths.prepareDirectories()
+        try "Host Shared-Alias\n  HostName example.com\n"
+            .write(to: paths.userConfig, atomically: true, encoding: .utf8)
+        let service = SSHConfigService(runner: ProcessRunner(), paths: paths)
+
+        do {
+            try await service.validateAlias("shared-alias")
+            XCTFail("Expected case-insensitive alias conflict")
+        } catch {
+            guard case SSHConfigError.aliasConflict(let alias) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+            XCTAssertEqual(alias, "shared-alias")
+        }
+
+        try await service.validateAlias("shared-alias", excluding: "SHARED-ALIAS")
+    }
+
     func testSSHConfigDerivationAdoptsExistingGeneratedFileBeforeFirstMutation() async throws {
         let home = try temporaryHome(prefix: "keyport-config-derivation-upgrade")
         defer { try? FileManager.default.removeItem(at: home) }

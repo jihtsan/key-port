@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var nodeAccountEditorRequest: NodeAccountEditorRequest?
     @State private var endpointNodeID: UUID?
     @State private var tailscaleAccountEditorRequest: TailscaleAccountEditorRequest?
+    @State private var sshAccessSetupRequest: SSHAccessSetupRequest?
 
     var body: some View {
         @Bindable var model = model
@@ -116,6 +117,24 @@ struct ContentView: View {
                         )
                     }
                 )
+            }
+        }
+        .sheet(item: $sshAccessSetupRequest) { request in
+            NavigationStack {
+                if let draft = model.sshAccessSetupDraft(
+                    forNodeID: request.nodeID,
+                    profileID: request.profileID,
+                    endpointID: request.endpointID
+                ) {
+                    SSHAccessSetupView(model: model, initialDraft: draft)
+                } else {
+                    ContentUnavailableView(
+                        "无法配置 SSH 访问",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("请先为节点添加至少一个 SSH 账户和网络路径。")
+                    )
+                    .frame(minWidth: 480, minHeight: 300)
+                }
             }
         }
         .sheet(isPresented: Binding(
@@ -297,6 +316,13 @@ struct ContentView: View {
                 },
                 onEditAccount: { serverID in
                     editAccount(serverID: serverID)
+                },
+                onConfigureAccess: { nodeID, profileID, endpointID in
+                    configureAccess(
+                        nodeID: nodeID,
+                        profileID: profileID,
+                        endpointID: endpointID
+                    )
                 }
             )
         case .nodes:
@@ -310,6 +336,13 @@ struct ContentView: View {
                 },
                 onEditAccount: { serverID in
                     editAccount(serverID: serverID)
+                },
+                onConfigureAccess: { nodeID, profileID, endpointID in
+                    configureAccess(
+                        nodeID: nodeID,
+                        profileID: profileID,
+                        endpointID: endpointID
+                    )
                 }
             )
         case .activity:
@@ -444,6 +477,23 @@ struct ContentView: View {
         showsEditServer = true
     }
 
+    private func configureAccess(nodeID: UUID, profileID: UUID?, endpointID: UUID?) {
+        guard !model.isBusy, !model.isMetadataReadOnly else { return }
+        guard model.sshAccessSetupDraft(
+            forNodeID: nodeID,
+            profileID: profileID,
+            endpointID: endpointID
+        ) != nil else {
+            model.errorMessage = "请先为节点添加至少一个 SSH 账户和网络路径。"
+            return
+        }
+        sshAccessSetupRequest = SSHAccessSetupRequest(
+            nodeID: nodeID,
+            profileID: profileID,
+            endpointID: endpointID
+        )
+    }
+
     private var selectedPasswordlessAction: PasswordlessPrimaryAction {
         guard let server = model.selectedServer else { return .enable }
         return model.passwordlessPrimaryAction(for: server)
@@ -467,6 +517,20 @@ private struct NodeAccountEditorRequest: Identifiable {
 
     var id: String {
         "\(nodeID.uuidString.lowercased()):\(endpointID?.uuidString.lowercased() ?? "default")"
+    }
+}
+
+private struct SSHAccessSetupRequest: Identifiable {
+    let nodeID: UUID
+    let profileID: UUID?
+    let endpointID: UUID?
+
+    var id: String {
+        [
+            nodeID.uuidString.lowercased(),
+            profileID?.uuidString.lowercased() ?? "new",
+            endpointID?.uuidString.lowercased() ?? "automatic",
+        ].joined(separator: ":")
     }
 }
 

@@ -6,6 +6,7 @@ struct NodeWorkspaceDetailView: View {
     let onAddAccount: (UUID, UUID?) -> Void
     let onAddEndpoint: (UUID) -> Void
     let onEditAccount: (UUID) -> Void
+    let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
 
     @State private var selectedEndpointID: UUID?
     @State private var showsAccountInspector = true
@@ -38,6 +39,7 @@ struct NodeWorkspaceDetailView: View {
                     onSelectEndpoint: { selectedEndpointID = $0 },
                     onTestConnection: { testConnection(in: item) },
                     onOpenTerminal: { openTerminal(in: item) },
+                    onConfigureAccess: { configureAccess(in: item) },
                     onAddAccount: {
                         guard let nodeID = item.node.id.topologyUUID else { return }
                         onAddAccount(nodeID, selectedEndpoint(in: item)?.id)
@@ -109,28 +111,28 @@ struct NodeWorkspaceDetailView: View {
                     showsAccountInspector.toggle()
                 } label: {
                     Label(
-                        showsAccountInspector ? "隐藏账户检查器" : "显示账户检查器",
+                        showsAccountInspector ? "隐藏连接配置检查器" : "显示连接配置检查器",
                         systemImage: "sidebar.right"
                     )
                 }
-                .help(showsAccountInspector ? "隐藏账户检查器" : "显示账户检查器")
+                .help(showsAccountInspector ? "隐藏连接配置检查器" : "显示连接配置检查器")
             }
         }
         .confirmationDialog(
-            "要删除这个 SSH 账户吗？",
+            "要删除这个 SSH 连接配置吗？",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
             )
         ) {
-            Button("删除账户", role: .destructive) {
+            Button("删除连接配置", role: .destructive) {
                 guard let account = pendingDeletion else { return }
                 pendingDeletion = nil
                 Task { await model.deleteServer(account.id) }
             }
             Button("取消", role: .cancel) { pendingDeletion = nil }
         } message: {
-            Text("账户会从 KeyPort 和生成的 SSH 配置中移除；节点与其他账户不会受影响。")
+            Text("这个别名和网络路径会从 KeyPort 及生成的 SSH 配置中移除；共享的 SSH 账户与其他连接配置不会受影响。")
         }
     }
 
@@ -237,6 +239,15 @@ struct NodeWorkspaceDetailView: View {
             endpoint: selectedEndpoint(in: item)
         )
     }
+
+    private func configureAccess(in item: NodeWorkspaceItem) {
+        guard let nodeID = item.node.id.topologyUUID else { return }
+        onConfigureAccess(
+            nodeID,
+            selectedAccount(in: item)?.id,
+            selectedEndpoint(in: item)?.id
+        )
+    }
 }
 
 private struct NodeWorkspaceContentView: View {
@@ -251,6 +262,7 @@ private struct NodeWorkspaceContentView: View {
     let onSelectEndpoint: (UUID) -> Void
     let onTestConnection: () -> Void
     let onOpenTerminal: () -> Void
+    let onConfigureAccess: () -> Void
     let onAddAccount: () -> Void
     let onAddEndpoint: () -> Void
     let onEditAccount: (UUID) -> Void
@@ -272,6 +284,7 @@ private struct NodeWorkspaceContentView: View {
                     onSelectEndpoint: onSelectEndpoint,
                     onTestConnection: onTestConnection,
                     onOpenTerminal: onOpenTerminal,
+                    onConfigureAccess: onConfigureAccess,
                     onAddAccount: onAddAccount,
                     onAddEndpoint: onAddEndpoint
                 )

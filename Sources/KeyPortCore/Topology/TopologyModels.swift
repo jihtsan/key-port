@@ -200,9 +200,8 @@ public struct WorkspaceDeviceProfile: Identifiable, Codable, Hashable, Sendable 
 public struct SSHAccount: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var nodeID: UUID
-    public var endpointID: UUID
     public var username: String
-    public var alias: String
+    public var label: String
     public var createdAt: Date
     public var updatedAt: Date
     public var isDeleted: Bool
@@ -211,9 +210,8 @@ public struct SSHAccount: Identifiable, Codable, Hashable, Sendable {
     public init(
         id: UUID,
         nodeID: UUID,
-        endpointID: UUID,
         username: String,
-        alias: String,
+        label: String = "",
         createdAt: Date = .now,
         updatedAt: Date = .now,
         isDeleted: Bool = false,
@@ -221,9 +219,8 @@ public struct SSHAccount: Identifiable, Codable, Hashable, Sendable {
     ) {
         self.id = id
         self.nodeID = nodeID
-        self.endpointID = endpointID
-        self.username = username
-        self.alias = alias
+        self.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.label = label.trimmingCharacters(in: .whitespacesAndNewlines)
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
@@ -231,16 +228,15 @@ public struct SSHAccount: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
-/// A transient command used when a new SSH account is created from a Node.
-/// The binding is applied to the unified topology and is not a second account
-/// classification or a replacement for `SSHAccount.nodeID`.
-public struct SSHAccountNodeBinding: Hashable, Sendable {
-    public let accountID: UUID
+/// A transient compatibility command used when a legacy connection profile is
+/// created from a Node. The account is resolved from the profile's username.
+public struct SSHConnectionProfileNodeBinding: Hashable, Sendable {
+    public let profileID: UUID
     public let nodeID: UUID
     public let endpointID: UUID?
 
-    public init(accountID: UUID, nodeID: UUID, endpointID: UUID? = nil) {
-        self.accountID = accountID
+    public init(profileID: UUID, nodeID: UUID, endpointID: UUID? = nil) {
+        self.profileID = profileID
         self.nodeID = nodeID
         self.endpointID = endpointID
     }
@@ -402,6 +398,10 @@ public struct ReachabilityObservation: Identifiable, Codable, Hashable, Sendable
 public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
     public var accountID: UUID
     public var deviceID: String
+    public var profileID: UUID?
+    public var endpointID: UUID?
+    public var transport: SSHConnectionTransport?
+    public var networkEpoch: UInt64?
     public var status: AuthorizationStatus
     public var statusDetail: String?
     public var lastCheckedAt: Date?
@@ -409,11 +409,18 @@ public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
     public var keyCheck: AuthenticationCheck?
     public var machineConfigurationRefreshAttemptedAt: Date?
 
-    public var id: String { "\(deviceID):\(accountID.uuidString.lowercased())" }
+    public var id: String {
+        let planSubject = profileID?.uuidString.lowercased() ?? "account"
+        return "\(deviceID):\(accountID.uuidString.lowercased()):\(planSubject)"
+    }
 
     public init(
         accountID: UUID,
         deviceID: String,
+        profileID: UUID? = nil,
+        endpointID: UUID? = nil,
+        transport: SSHConnectionTransport? = nil,
+        networkEpoch: UInt64? = nil,
         status: AuthorizationStatus,
         statusDetail: String? = nil,
         lastCheckedAt: Date? = nil,
@@ -423,6 +430,10 @@ public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
     ) {
         self.accountID = accountID
         self.deviceID = deviceID
+        self.profileID = profileID
+        self.endpointID = endpointID
+        self.transport = transport
+        self.networkEpoch = networkEpoch
         self.status = status
         self.statusDetail = statusDetail
         self.lastCheckedAt = lastCheckedAt
@@ -432,8 +443,20 @@ public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+private struct LegacySSHAccountV2: Decodable {
+    var id: UUID
+    var nodeID: UUID
+    var endpointID: UUID
+    var username: String
+    var alias: String
+    var createdAt: Date
+    var updatedAt: Date
+    var isDeleted: Bool
+    var version: Int
+}
+
 public struct TopologySnapshot: Codable, Hashable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var nodes: [Node]
@@ -443,6 +466,7 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
     public var tailscaleNodes: [TailscaleNodeIdentity]
     public var tailscaleObservations: [TailscaleNodeObservation]
     public var sshAccounts: [SSHAccount]
+    public var sshConnectionProfiles: [SSHConnectionProfile]
     public var sshKeys: [SSHKey]
     public var hostKeyTrusts: [SSHHostKeyTrust]
     public var authorizations: [SSHAuthorization]
@@ -460,6 +484,7 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         tailscaleNodes: [TailscaleNodeIdentity] = [],
         tailscaleObservations: [TailscaleNodeObservation] = [],
         sshAccounts: [SSHAccount] = [],
+        sshConnectionProfiles: [SSHConnectionProfile] = [],
         sshKeys: [SSHKey] = [],
         hostKeyTrusts: [SSHHostKeyTrust] = [],
         authorizations: [SSHAuthorization] = [],
@@ -476,6 +501,7 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         self.tailscaleNodes = tailscaleNodes
         self.tailscaleObservations = tailscaleObservations
         self.sshAccounts = sshAccounts
+        self.sshConnectionProfiles = sshConnectionProfiles
         self.sshKeys = sshKeys
         self.hostKeyTrusts = hostKeyTrusts
         self.authorizations = authorizations
@@ -494,6 +520,7 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         case tailscaleNodes
         case tailscaleObservations
         case sshAccounts
+        case sshConnectionProfiles
         case sshKeys
         case hostKeyTrusts
         case authorizations
@@ -505,7 +532,8 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        let decodedSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        schemaVersion = max(decodedSchemaVersion, Self.currentSchemaVersion)
         nodes = try container.decodeIfPresent([Node].self, forKey: .nodes) ?? []
         profiles = try container.decodeIfPresent([WorkspaceDeviceProfile].self, forKey: .profiles) ?? []
         endpoints = try container.decodeIfPresent([Endpoint].self, forKey: .endpoints) ?? []
@@ -518,7 +546,56 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
             [TailscaleNodeObservation].self,
             forKey: .tailscaleObservations
         ) ?? []
-        sshAccounts = try container.decodeIfPresent([SSHAccount].self, forKey: .sshAccounts) ?? []
+        var legacyAccountIDMap: [UUID: UUID] = [:]
+        if decodedSchemaVersion < 3 {
+            let legacyAccounts = try container.decodeIfPresent(
+                [LegacySSHAccountV2].self,
+                forKey: .sshAccounts
+            ) ?? []
+            var accountsByID: [UUID: SSHAccount] = [:]
+            sshConnectionProfiles = []
+            for legacy in legacyAccounts.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+                let accountID = TopologyStableID.sshAccount(
+                    nodeID: legacy.nodeID,
+                    username: legacy.username
+                )
+                legacyAccountIDMap[legacy.id] = accountID
+                if var existing = accountsByID[accountID] {
+                    existing.createdAt = min(existing.createdAt, legacy.createdAt)
+                    existing.updatedAt = max(existing.updatedAt, legacy.updatedAt)
+                    existing.isDeleted = existing.isDeleted && legacy.isDeleted
+                    existing.version = max(existing.version, legacy.version)
+                    accountsByID[accountID] = existing
+                } else {
+                    accountsByID[accountID] = SSHAccount(
+                        id: accountID,
+                        nodeID: legacy.nodeID,
+                        username: legacy.username,
+                        createdAt: legacy.createdAt,
+                        updatedAt: legacy.updatedAt,
+                        isDeleted: legacy.isDeleted,
+                        version: legacy.version
+                    )
+                }
+                sshConnectionProfiles.append(SSHConnectionProfile(
+                    id: legacy.id,
+                    accountID: accountID,
+                    sshAlias: legacy.alias,
+                    routePolicy: .fixed(endpointID: legacy.endpointID),
+                    createdAt: legacy.createdAt,
+                    updatedAt: legacy.updatedAt,
+                    isDeleted: legacy.isDeleted,
+                    version: legacy.version
+                ))
+            }
+            sshAccounts = accountsByID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        } else {
+            sshAccounts = try container.decodeIfPresent([SSHAccount].self, forKey: .sshAccounts) ?? []
+            sshConnectionProfiles = try container.decodeIfPresent(
+                [SSHConnectionProfile].self,
+                forKey: .sshConnectionProfiles
+            ) ?? []
+        }
         sshKeys = try container.decodeIfPresent([SSHKey].self, forKey: .sshKeys) ?? []
         hostKeyTrusts = try container.decodeIfPresent([SSHHostKeyTrust].self, forKey: .hostKeyTrusts) ?? []
         authorizations = try container.decodeIfPresent([SSHAuthorization].self, forKey: .authorizations) ?? []
@@ -530,8 +607,59 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
             [AccessVerification].self,
             forKey: .accessVerifications
         ) ?? []
+        if !legacyAccountIDMap.isEmpty {
+            authorizations = Self.remapLegacyAuthorizations(
+                authorizations,
+                accountIDMap: legacyAccountIDMap
+            )
+            accessVerifications = Self.remapLegacyVerifications(
+                accessVerifications,
+                profiles: sshConnectionProfiles,
+                accountIDMap: legacyAccountIDMap
+            )
+        }
         nodeAssociations = try container.decodeIfPresent([NodeAssociation].self, forKey: .nodeAssociations) ?? []
         auditEvents = try container.decodeIfPresent([AuditEvent].self, forKey: .auditEvents) ?? []
+    }
+
+    fileprivate static func remapLegacyAuthorizations(
+        _ values: [SSHAuthorization],
+        accountIDMap: [UUID: UUID]
+    ) -> [SSHAuthorization] {
+        var byID: [String: SSHAuthorization] = [:]
+        for var value in values {
+            value.accountID = accountIDMap[value.accountID] ?? value.accountID
+            if let existing = byID[value.id] {
+                byID[value.id] = value.updatedAt >= existing.updatedAt ? value : existing
+            } else {
+                byID[value.id] = value
+            }
+        }
+        return byID.values.sorted { $0.id < $1.id }
+    }
+
+    fileprivate static func remapLegacyVerifications(
+        _ values: [AccessVerification],
+        profiles: [SSHConnectionProfile],
+        accountIDMap: [UUID: UUID]
+    ) -> [AccessVerification] {
+        let profilesByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
+        var byID: [String: AccessVerification] = [:]
+        for var value in values {
+            let legacyID = value.accountID
+            value.accountID = accountIDMap[legacyID] ?? legacyID
+            value.profileID = value.profileID ?? profilesByID[legacyID]?.id
+            value.endpointID = value.endpointID ?? profilesByID[legacyID]?.routePolicy.fixedEndpointID
+            value.transport = value.transport ?? .direct
+            if let existing = byID[value.id] {
+                let valueDate = value.lastCheckedAt ?? .distantPast
+                let existingDate = existing.lastCheckedAt ?? .distantPast
+                byID[value.id] = valueDate >= existingDate ? value : existing
+            } else {
+                byID[value.id] = value
+            }
+        }
+        return byID.values.sorted { $0.id < $1.id }
     }
 
     public static let empty = Self()
@@ -539,6 +667,9 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
     public var activeNodes: [Node] { nodes.filter { !$0.isDeleted } }
     public var activeEndpoints: [Endpoint] { endpoints.filter { !$0.isDeleted } }
     public var activeAccounts: [SSHAccount] { sshAccounts.filter { !$0.isDeleted } }
+    public var activeConnectionProfiles: [SSHConnectionProfile] {
+        sshConnectionProfiles.filter { !$0.isDeleted }
+    }
     public var activeTailscaleNodes: [TailscaleNodeIdentity] {
         tailscaleNodes.filter { !$0.isDeleted }
     }
@@ -565,9 +696,32 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
         activeAccounts
             .filter { $0.nodeID == nodeID }
             .sorted {
-                ($0.alias.localizedLowercase, $0.username.localizedLowercase, $0.id.uuidString)
-                    < ($1.alias.localizedLowercase, $1.username.localizedLowercase, $1.id.uuidString)
+                ($0.label.localizedLowercase, $0.username.localizedLowercase, $0.id.uuidString)
+                    < ($1.label.localizedLowercase, $1.username.localizedLowercase, $1.id.uuidString)
             }
+    }
+
+    public func connectionProfiles(for accountID: UUID) -> [SSHConnectionProfile] {
+        activeConnectionProfiles
+            .filter { $0.accountID == accountID }
+            .sorted {
+                ($0.sshAlias.localizedLowercase, $0.id.uuidString)
+                    < ($1.sshAlias.localizedLowercase, $1.id.uuidString)
+            }
+    }
+
+    public func connectionProfiles(forNodeID nodeID: UUID) -> [SSHConnectionProfile] {
+        let accountIDs = Set(accounts(for: nodeID).map(\.id))
+        return activeConnectionProfiles
+            .filter { accountIDs.contains($0.accountID) }
+            .sorted {
+                ($0.sshAlias.localizedLowercase, $0.id.uuidString)
+                    < ($1.sshAlias.localizedLowercase, $1.id.uuidString)
+            }
+    }
+
+    public func connectionProfile(id: UUID) -> SSHConnectionProfile? {
+        activeConnectionProfiles.first { $0.id == id }
     }
 
     /// Active external identities currently bound to a Node.
@@ -668,6 +822,13 @@ public enum TopologyStableID {
         )
     }
 
+    public static func sshAccount(nodeID: UUID, username: String) -> UUID {
+        uuidV5(
+            namespace: namespace,
+            name: "ssh-account/\(nodeID.uuidString.lowercased())/\(normalize(username))"
+        )
+    }
+
     public static func normalize(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -687,7 +848,9 @@ public enum TopologySnapshotMigration {
         var nodesByID: [UUID: Node] = [:]
         var profiles: [WorkspaceDeviceProfile] = []
         var endpointsByKey: [String: Endpoint] = [:]
-        var accounts: [SSHAccount] = []
+        var accountsByID: [UUID: SSHAccount] = [:]
+        var connectionProfiles: [SSHConnectionProfile] = []
+        var legacyProfileToAccountID: [UUID: UUID] = [:]
         var keys: [SSHKey] = []
         var trustsByKey: [String: SSHHostKeyTrust] = [:]
         var authorizations: [SSHAuthorization] = []
@@ -765,20 +928,44 @@ public enum TopologySnapshotMigration {
                         priority: endpointsByKey.count
                     )
                 }
-                accounts.append(SSHAccount(
-                    id: record.id,
+                let accountID = TopologyStableID.sshAccount(
                     nodeID: nodeID,
-                    endpointID: endpointID,
-                    username: record.username,
-                    alias: record.alias,
+                    username: record.username
+                )
+                legacyProfileToAccountID[record.id] = accountID
+                if var account = accountsByID[accountID] {
+                    account.createdAt = min(account.createdAt, record.createdAt)
+                    account.updatedAt = max(account.updatedAt, record.updatedAt)
+                    account.isDeleted = account.isDeleted && record.isDeleted
+                    account.version = max(account.version, record.version)
+                    accountsByID[accountID] = account
+                } else {
+                    accountsByID[accountID] = SSHAccount(
+                        id: accountID,
+                        nodeID: nodeID,
+                        username: record.username,
+                        createdAt: record.createdAt,
+                        updatedAt: record.updatedAt,
+                        isDeleted: record.isDeleted,
+                        version: record.version
+                    )
+                }
+                connectionProfiles.append(SSHConnectionProfile(
+                    id: record.id,
+                    accountID: accountID,
+                    sshAlias: record.alias,
+                    routePolicy: .fixed(endpointID: endpointID),
                     createdAt: record.createdAt,
                     updatedAt: record.updatedAt,
                     isDeleted: record.isDeleted,
                     version: record.version
                 ))
                 verifications.append(AccessVerification(
-                    accountID: record.id,
+                    accountID: accountID,
                     deviceID: currentDeviceID,
+                    profileID: record.id,
+                    endpointID: endpointID,
+                    transport: .direct,
                     status: record.status,
                     statusDetail: record.statusDetail,
                     lastCheckedAt: record.lastCheckedAt,
@@ -822,8 +1009,9 @@ public enum TopologySnapshotMigration {
         }
 
         for authorization in legacy.authorizations {
+            guard let accountID = legacyProfileToAccountID[authorization.serverID] else { continue }
             authorizations.append(SSHAuthorization(
-                accountID: authorization.serverID,
+                accountID: accountID,
                 keyID: authorization.keyID,
                 fingerprint: authorization.fingerprint,
                 remoteComment: authorization.remoteComment,
@@ -838,16 +1026,27 @@ public enum TopologySnapshotMigration {
 
         let migratedEndpoints = endpointsByKey.values.map { endpoint in
             var value = endpoint
-            let relatedAccounts = accounts.filter { $0.endpointID == endpoint.id }
-            value.isDeleted = !relatedAccounts.isEmpty && relatedAccounts.allSatisfy(\.isDeleted)
+            let relatedProfiles = connectionProfiles.filter {
+                $0.routePolicy.fixedEndpointID == endpoint.id
+            }
+            value.isDeleted = !relatedProfiles.isEmpty && relatedProfiles.allSatisfy(\.isDeleted)
             return value
         }
+
+        let accounts = accountsByID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        authorizations = TopologySnapshot.remapLegacyAuthorizations(authorizations, accountIDMap: [:])
+        verifications = TopologySnapshot.remapLegacyVerifications(
+            verifications,
+            profiles: connectionProfiles,
+            accountIDMap: [:]
+        )
 
         return TopologySnapshot(
             nodes: nodesByID.values.sorted { $0.id.uuidString < $1.id.uuidString },
             profiles: profiles.sorted { $0.id < $1.id },
             endpoints: migratedEndpoints.sorted { $0.id.uuidString < $1.id.uuidString },
             sshAccounts: accounts.sorted { $0.id.uuidString < $1.id.uuidString },
+            sshConnectionProfiles: connectionProfiles.sorted { $0.id.uuidString < $1.id.uuidString },
             sshKeys: keys.sorted { $0.id < $1.id },
             hostKeyTrusts: trustsByKey.values.sorted { $0.id.uuidString < $1.id.uuidString },
             authorizations: authorizations.sorted { $0.id < $1.id },
@@ -866,7 +1065,7 @@ public enum TopologySnapshotMigration {
         currentDeviceID: String,
         currentDeviceName: String,
         now: Date = .now,
-        accountBindings: [SSHAccountNodeBinding] = []
+        profileBindings: [SSHConnectionProfileNodeBinding] = []
     ) -> TopologySnapshot {
         let migrated = fromLegacy(
             legacy,
@@ -925,12 +1124,36 @@ public enum TopologySnapshotMigration {
             by: \.id
         ) { current, _ in current }
         result.sshAccounts = mergeByKey(migrated.sshAccounts, existing.sshAccounts, by: { $0.id.uuidString }) { current, previous in
-            mergedAccount(
-                current: current,
-                previous: previous,
-                migratedEndpoints: migrated.endpoints,
-                existingEndpoints: existing.endpoints
-            )
+            var value = current
+            if value.label.isEmpty { value.label = previous.label }
+            value.createdAt = min(current.createdAt, previous.createdAt)
+            value.updatedAt = max(current.updatedAt, previous.updatedAt)
+            value.version = max(current.version, previous.version)
+            value.isDeleted = current.isDeleted && previous.isDeleted
+            return value
+        }
+        result.sshConnectionProfiles = mergeByKey(
+            migrated.sshConnectionProfiles,
+            existing.sshConnectionProfiles,
+            by: { $0.id.uuidString }
+        ) { current, previous in
+            var value = current
+            let currentUsername = migrated.sshAccounts.first(where: { $0.id == current.accountID })?.username
+            let previousUsername = existing.sshAccounts.first(where: { $0.id == previous.accountID })?.username
+            if currentUsername == previousUsername {
+                value.accountID = previous.accountID
+            }
+            value.transportPreference = previous.transportPreference
+            if let previousEndpointID = previous.routePolicy.fixedEndpointID,
+               let currentEndpointID = current.routePolicy.fixedEndpointID,
+               let previousEndpoint = existing.endpoint(id: previousEndpointID),
+               let currentEndpoint = migrated.endpoint(id: currentEndpointID),
+               sameEndpointCoordinate(previousEndpoint, currentEndpoint) {
+                value.routePolicy = previous.routePolicy
+            } else if case .automatic = previous.routePolicy {
+                value.routePolicy = previous.routePolicy
+            }
+            return value
         }
         result.sshKeys = mergeByKey(migrated.sshKeys, existing.sshKeys, by: \.id) { current, previous in
             var value = current
@@ -942,31 +1165,25 @@ public enum TopologySnapshotMigration {
         result.hostKeyTrusts = mergeByKey(migrated.hostKeyTrusts, existing.hostKeyTrusts, by: { $0.id.uuidString }) { current, _ in current }
         result.authorizations = mergeByKey(migrated.authorizations, existing.authorizations, by: \.id) { current, _ in current }
         result.reachabilityObservations = mergeByKey([], existing.reachabilityObservations, by: \.id) { current, _ in current }
-        result.accessVerifications = mergeByKey(migrated.accessVerifications, existing.accessVerifications, by: \.id) { current, _ in current }
+        result.accessVerifications = mergeByKey(
+            migrated.accessVerifications,
+            existing.accessVerifications,
+            by: \.id
+        ) { current, previous in
+            var value = current
+            value.profileID = previous.profileID ?? current.profileID
+            value.endpointID = previous.endpointID ?? current.endpointID
+            value.transport = previous.transport ?? current.transport
+            value.networkEpoch = previous.networkEpoch ?? current.networkEpoch
+            return value
+        }
         result.nodeAssociations = mergeByKey(migrated.nodeAssociations, existing.nodeAssociations, by: \.id) { current, _ in current }
         result.auditEvents = mergeByKey(migrated.auditEvents, existing.auditEvents, by: { $0.id.uuidString }) { current, _ in current }
         reattachLegacyAccountsToTailscaleNodes(in: &result, preserving: existing)
-        applyExplicitAccountBindings(accountBindings, in: &result)
+        applyExplicitProfileBindings(profileBindings, in: &result)
+        normalizeAccountIdentities(in: &result)
         removeOrphanedMigratedRecords(from: migrated, in: &result)
         return result
-    }
-
-    private static func mergedAccount(
-        current: SSHAccount,
-        previous: SSHAccount,
-        migratedEndpoints: [Endpoint],
-        existingEndpoints: [Endpoint]
-    ) -> SSHAccount {
-        guard let currentEndpoint = migratedEndpoints.first(where: { $0.id == current.endpointID }),
-              let previousEndpoint = existingEndpoints.first(where: { $0.id == previous.endpointID }),
-              sameEndpointCoordinate(currentEndpoint, previousEndpoint) else {
-            return current
-        }
-
-        var value = current
-        value.nodeID = previous.nodeID
-        value.endpointID = previous.endpointID
-        return value
     }
 
     private static func sameEndpointCoordinate(_ lhs: Endpoint, _ rhs: Endpoint) -> Bool {
@@ -976,19 +1193,24 @@ public enum TopologySnapshotMigration {
             && TopologyStableID.normalize(lhs.address) == TopologyStableID.normalize(rhs.address)
     }
 
-    /// Applies the Node selected by the account editor after legacy records
-    /// have been projected. This lets a public or LAN endpoint join an
-    /// existing Tailscale Node without treating the address as identity.
-    private static func applyExplicitAccountBindings(
-        _ bindings: [SSHAccountNodeBinding],
+    /// Applies the Node and endpoint selected by the connection editor after
+    /// legacy records have been projected. A binding moves one profile; the
+    /// account is then coalesced by target Node and username.
+    private static func applyExplicitProfileBindings(
+        _ bindings: [SSHConnectionProfileNodeBinding],
         in topology: inout TopologySnapshot
     ) {
         for binding in bindings {
-            guard let accountIndex = topology.sshAccounts.firstIndex(where: { $0.id == binding.accountID }),
+            guard let profileIndex = topology.sshConnectionProfiles.firstIndex(where: {
+                      $0.id == binding.profileID && !$0.isDeleted
+                  }),
+                  let sourceAccount = topology.sshAccounts.first(where: {
+                      $0.id == topology.sshConnectionProfiles[profileIndex].accountID
+                  }),
                   let targetNodeIndex = topology.nodes.firstIndex(where: { $0.id == binding.nodeID && !$0.isDeleted }),
-                  let sourceEndpoint = topology.endpoints.first(where: {
-                      $0.id == topology.sshAccounts[accountIndex].endpointID
-                  }) else {
+                  let sourceEndpoint = topology.sshConnectionProfiles[profileIndex].routePolicy.fixedEndpointID
+                    .flatMap({ topology.endpoint(id: $0) })
+                    ?? topology.endpoints(for: sourceAccount.nodeID, endpointProtocol: .ssh).first else {
                 continue
             }
 
@@ -999,7 +1221,6 @@ public enum TopologySnapshotMigration {
                         && $0.nodeID == binding.nodeID
                         && $0.serviceID == nil
                         && $0.protocol == .ssh
-                        && sameEndpointCoordinate($0, sourceEndpoint)
                 }
             }
             let matchingEndpoint = requestedEndpoint ?? topology.endpoints.first { endpoint in
@@ -1043,12 +1264,34 @@ public enum TopologySnapshotMigration {
                 topology.endpoints[targetEndpointIndex].serviceID = nil
             }
 
-            let sourceNodeID = topology.sshAccounts[accountIndex].nodeID
-            let sourceEndpointID = topology.sshAccounts[accountIndex].endpointID
-            topology.sshAccounts[accountIndex].nodeID = binding.nodeID
-            topology.sshAccounts[accountIndex].endpointID = targetEndpointID
+            let sourceNodeID = sourceAccount.nodeID
+            let sourceEndpointID = sourceEndpoint.id
+            let targetAccountID = TopologyStableID.sshAccount(
+                nodeID: binding.nodeID,
+                username: sourceAccount.username
+            )
+            if let targetAccountIndex = topology.sshAccounts.firstIndex(where: { $0.id == targetAccountID }) {
+                topology.sshAccounts[targetAccountIndex].isDeleted = false
+                if topology.sshAccounts[targetAccountIndex].label.isEmpty {
+                    topology.sshAccounts[targetAccountIndex].label = sourceAccount.label
+                }
+                topology.sshAccounts[targetAccountIndex].updatedAt = max(
+                    topology.sshAccounts[targetAccountIndex].updatedAt,
+                    sourceAccount.updatedAt
+                )
+            } else {
+                var targetAccount = sourceAccount
+                targetAccount.id = targetAccountID
+                targetAccount.nodeID = binding.nodeID
+                targetAccount.isDeleted = false
+                topology.sshAccounts.append(targetAccount)
+            }
+            topology.sshConnectionProfiles[profileIndex].accountID = targetAccountID
+            topology.sshConnectionProfiles[profileIndex].routePolicy = .fixed(endpointID: targetEndpointID)
 
-            if sourceEndpointID != targetEndpointID {
+            if sourceEndpointID != targetEndpointID,
+               let targetEndpoint = topology.endpoints.first(where: { $0.id == targetEndpointID }),
+               sameEndpointCoordinate(sourceEndpoint, targetEndpoint) {
                 moveHostKeyTrusts(
                     from: sourceEndpointID,
                     to: targetEndpointID,
@@ -1101,6 +1344,48 @@ public enum TopologySnapshotMigration {
         }
     }
 
+    /// Enforces the canonical account identity `(Node, normalized username)`
+    /// after imports and explicit profile moves, then rewrites account-level
+    /// authorization and local verification references exactly once.
+    private static func normalizeAccountIdentities(in topology: inout TopologySnapshot) {
+        var accountIDMap: [UUID: UUID] = [:]
+        var accountsByID: [UUID: SSHAccount] = [:]
+        for account in topology.sshAccounts {
+            let canonicalID = TopologyStableID.sshAccount(
+                nodeID: account.nodeID,
+                username: account.username
+            )
+            accountIDMap[account.id] = canonicalID
+            var value = account
+            value.id = canonicalID
+            if var existing = accountsByID[canonicalID] {
+                if existing.label.isEmpty { existing.label = value.label }
+                existing.createdAt = min(existing.createdAt, value.createdAt)
+                existing.updatedAt = max(existing.updatedAt, value.updatedAt)
+                existing.version = max(existing.version, value.version)
+                existing.isDeleted = existing.isDeleted && value.isDeleted
+                accountsByID[canonicalID] = existing
+            } else {
+                accountsByID[canonicalID] = value
+            }
+        }
+        for index in topology.sshConnectionProfiles.indices {
+            topology.sshConnectionProfiles[index].accountID = accountIDMap[
+                topology.sshConnectionProfiles[index].accountID
+            ] ?? topology.sshConnectionProfiles[index].accountID
+        }
+        topology.sshAccounts = accountsByID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        topology.authorizations = TopologySnapshot.remapLegacyAuthorizations(
+            topology.authorizations,
+            accountIDMap: accountIDMap
+        )
+        topology.accessVerifications = TopologySnapshot.remapLegacyVerifications(
+            topology.accessVerifications,
+            profiles: topology.sshConnectionProfiles,
+            accountIDMap: accountIDMap
+        )
+    }
+
     /// A legacy projection can temporarily recreate the old address-owned
     /// Node after an account has already been attached to a Node. Tombstone
     /// that generated shell only when no active fact still depends on it.
@@ -1108,32 +1393,49 @@ public enum TopologySnapshotMigration {
         from migrated: TopologySnapshot,
         in topology: inout TopologySnapshot
     ) {
-        let migratedAccountsByID = Dictionary(uniqueKeysWithValues: migrated.sshAccounts.map { ($0.id, $0) })
-        let reboundAccounts = topology.activeAccounts.filter { account in
-            guard let migratedAccount = migratedAccountsByID[account.id] else { return false }
-            return account.nodeID != migratedAccount.nodeID || account.endpointID != migratedAccount.endpointID
+        let referencedAccountIDs = Set(topology.activeConnectionProfiles.map(\.accountID))
+        let migratedNodeIDs = Set(migrated.activeAccounts.map(\.nodeID))
+
+        for accountIndex in topology.sshAccounts.indices
+            where migratedNodeIDs.contains(topology.sshAccounts[accountIndex].nodeID)
+                && !referencedAccountIDs.contains(topology.sshAccounts[accountIndex].id) {
+            topology.sshAccounts[accountIndex].isDeleted = true
         }
 
-        for account in reboundAccounts {
-            guard let migratedAccount = migratedAccountsByID[account.id] else { continue }
-            let sourceEndpointIDs = Set(migrated.sshAccounts
-                .filter { $0.nodeID == migratedAccount.nodeID }
-                .map(\.endpointID))
-            for endpointIndex in topology.endpoints.indices where sourceEndpointIDs.contains(topology.endpoints[endpointIndex].id) {
-                let endpointID = topology.endpoints[endpointIndex].id
-                let stillUsed = topology.activeAccounts.contains { $0.endpointID == endpointID }
-                if !stillUsed {
+        for sourceNodeID in migratedNodeIDs {
+            let migratedEndpointIDs = Set(migrated.endpoints(for: sourceNodeID, endpointProtocol: .ssh).map(\.id))
+            for endpointIndex in topology.endpoints.indices
+                where migratedEndpointIDs.contains(topology.endpoints[endpointIndex].id) {
+                let endpoint = topology.endpoints[endpointIndex]
+                if !profileUsesEndpoint(endpoint, in: topology) {
                     topology.endpoints[endpointIndex].isDeleted = true
                 }
             }
 
-            let sourceNodeID = migratedAccount.nodeID
             let hasAccounts = topology.activeAccounts.contains { $0.nodeID == sourceNodeID }
             let hasServices = topology.services.contains { $0.nodeID == sourceNodeID && !$0.isDeleted }
             let hasEndpoints = topology.activeEndpoints.contains { $0.nodeID == sourceNodeID }
             if !hasAccounts && !hasServices && !hasEndpoints,
                let nodeIndex = topology.nodes.firstIndex(where: { $0.id == sourceNodeID }) {
                 topology.nodes[nodeIndex].isDeleted = true
+            }
+        }
+    }
+
+    private static func profileUsesEndpoint(
+        _ endpoint: Endpoint,
+        in topology: TopologySnapshot
+    ) -> Bool {
+        let accountsByID = Dictionary(uniqueKeysWithValues: topology.activeAccounts.map { ($0.id, $0) })
+        return topology.activeConnectionProfiles.contains { profile in
+            guard let account = accountsByID[profile.accountID], account.nodeID == endpoint.nodeID else {
+                return false
+            }
+            switch profile.routePolicy {
+            case .fixed(let endpointID):
+                return endpointID == endpoint.id
+            case .automatic(let scope):
+                return scope == nil || scope == endpoint.networkScope
             }
         }
     }
@@ -1209,12 +1511,20 @@ public enum TopologySnapshotMigration {
                 }
             }
 
+            let sourceAccountIDs = Set(topology.sshAccounts
+                .filter { $0.nodeID == sourceNodeID && !$0.isDeleted }
+                .map(\.id))
             for accountIndex in topology.sshAccounts.indices
-                where topology.sshAccounts[accountIndex].nodeID == sourceNodeID {
+                where sourceAccountIDs.contains(topology.sshAccounts[accountIndex].id) {
                 topology.sshAccounts[accountIndex].nodeID = targetNodeID
-                if let targetEndpointID = endpointRemaps[topology.sshAccounts[accountIndex].endpointID] {
-                    topology.sshAccounts[accountIndex].endpointID = targetEndpointID
+            }
+            for profileIndex in topology.sshConnectionProfiles.indices
+                where sourceAccountIDs.contains(topology.sshConnectionProfiles[profileIndex].accountID) {
+                guard let sourceEndpointID = topology.sshConnectionProfiles[profileIndex].routePolicy.fixedEndpointID,
+                      let targetEndpointID = endpointRemaps[sourceEndpointID] else {
+                    continue
                 }
+                topology.sshConnectionProfiles[profileIndex].routePolicy = .fixed(endpointID: targetEndpointID)
             }
 
             for trustIndex in topology.hostKeyTrusts.indices {
@@ -1274,6 +1584,7 @@ public enum TopologySnapshotMigration {
         topology.nodes.sort { $0.id.uuidString < $1.id.uuidString }
         topology.endpoints.sort { $0.id.uuidString < $1.id.uuidString }
         topology.sshAccounts.sort { $0.id.uuidString < $1.id.uuidString }
+        topology.sshConnectionProfiles.sort { $0.id.uuidString < $1.id.uuidString }
         topology.hostKeyTrusts.sort { $0.id.uuidString < $1.id.uuidString }
     }
 
@@ -1326,18 +1637,43 @@ public enum TopologySnapshotMigration {
 
         let nodesByID = Dictionary(uniqueKeysWithValues: topology.nodes.map { ($0.id, $0) })
         let endpointsByID = Dictionary(uniqueKeysWithValues: topology.endpoints.map { ($0.id, $0) })
-        let verificationsByID = Dictionary(
-            topology.accessVerifications
-                .filter { $0.deviceID == currentDeviceID }
-                .map { ($0.accountID, $0) },
-            uniquingKeysWith: { first, _ in first }
+        let accountsByID = Dictionary(uniqueKeysWithValues: topology.sshAccounts.map { ($0.id, $0) })
+        let verificationsByAccountID = Dictionary(
+            grouping: topology.accessVerifications.filter { $0.deviceID == currentDeviceID },
+            by: \.accountID
         )
         let trustByEndpoint = Dictionary(grouping: topology.hostKeyTrusts.filter { !$0.isDeleted }, by: \.endpointID)
 
-        snapshot.servers = topology.sshAccounts.compactMap { account in
-            guard let node = nodesByID[account.nodeID],
-                  let endpoint = endpointsByID[account.endpointID] else { return nil }
-            let verification = verificationsByID[account.id]
+        snapshot.servers = topology.sshConnectionProfiles.compactMap { profile in
+            guard let account = accountsByID[profile.accountID],
+                  let node = nodesByID[account.nodeID] else { return nil }
+            let endpoint: Endpoint?
+            switch profile.routePolicy {
+            case .fixed(let endpointID):
+                endpoint = endpointsByID[endpointID]
+            case .automatic(let scope):
+                endpoint = topology.endpoints
+                    .filter {
+                        $0.nodeID == account.nodeID
+                            && $0.serviceID == nil
+                            && $0.protocol == .ssh
+                            && !$0.isDeleted
+                            && (scope == nil || $0.networkScope == scope)
+                    }
+                    .sorted {
+                        ($0.priority, $0.id.uuidString) < ($1.priority, $1.id.uuidString)
+                    }
+                    .first
+            }
+            guard let endpoint else { return nil }
+            let verification = verificationsByAccountID[account.id]?
+                .sorted {
+                    let lhsMatches = $0.profileID == profile.id
+                    let rhsMatches = $1.profileID == profile.id
+                    if lhsMatches != rhsMatches { return lhsMatches }
+                    return ($0.lastCheckedAt ?? .distantPast) > ($1.lastCheckedAt ?? .distantPast)
+                }
+                .first
             let confirmedHostKeys = (trustByEndpoint[endpoint.id] ?? []).filter { $0.state == .confirmed }.map {
                 HostKeyRecord(
                     algorithm: $0.algorithm,
@@ -1348,12 +1684,12 @@ public enum TopologySnapshotMigration {
                 )
             }.sorted { ($0.algorithm, $0.fingerprint) < ($1.algorithm, $1.fingerprint) }
             return ServerConnection(
-                id: account.id,
+                id: profile.id,
                 name: node.name,
                 host: endpoint.address,
                 port: Int(endpoint.port),
                 username: account.username,
-                alias: account.alias,
+                alias: profile.sshAlias,
                 group: node.group,
                 notes: node.notes,
                 confirmedHostKeys: confirmedHostKeys,
@@ -1364,25 +1700,28 @@ public enum TopologySnapshotMigration {
                 keyCheck: verification?.keyCheck,
                 machineConfiguration: node.machineConfiguration,
                 machineConfigurationRefreshAttemptedAt: verification?.machineConfigurationRefreshAttemptedAt,
-                createdAt: account.createdAt,
-                updatedAt: account.updatedAt,
-                isDeleted: account.isDeleted,
-                version: account.version
+                createdAt: profile.createdAt,
+                updatedAt: max(account.updatedAt, profile.updatedAt),
+                isDeleted: account.isDeleted || profile.isDeleted,
+                version: max(account.version, profile.version)
             )
         }
-        snapshot.authorizations = topology.authorizations.map { authorization in
-            Authorization(
-                serverID: authorization.accountID,
-                keyID: authorization.keyID,
-                fingerprint: authorization.fingerprint,
-                remoteComment: authorization.remoteComment,
-                status: authorization.remoteState == .authorized ? .authorized : .needsAuthorization,
-                authorizedAt: authorization.authorizedAt,
-                lastVerifiedAt: authorization.lastVerifiedAt,
-                updatedAt: authorization.updatedAt,
-                isDeleted: authorization.isDeleted,
-                version: 1
-            )
+        let profilesByAccountID = Dictionary(grouping: topology.sshConnectionProfiles, by: \.accountID)
+        snapshot.authorizations = topology.authorizations.flatMap { authorization in
+            (profilesByAccountID[authorization.accountID] ?? []).map { profile in
+                Authorization(
+                    serverID: profile.id,
+                    keyID: authorization.keyID,
+                    fingerprint: authorization.fingerprint,
+                    remoteComment: authorization.remoteComment,
+                    status: authorization.remoteState == .authorized ? .authorized : .needsAuthorization,
+                    authorizedAt: authorization.authorizedAt,
+                    lastVerifiedAt: authorization.lastVerifiedAt,
+                    updatedAt: authorization.updatedAt,
+                    isDeleted: authorization.isDeleted || profile.isDeleted,
+                    version: 1
+                )
+            }
         }
         snapshot.nodeAssociations = topology.nodeAssociations
         snapshot.auditEvents = topology.auditEvents
