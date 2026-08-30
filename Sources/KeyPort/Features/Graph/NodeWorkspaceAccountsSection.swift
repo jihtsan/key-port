@@ -16,9 +16,9 @@ struct NodeWorkspaceAccountsSection: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("SSH 账户")
+                    Text("SSH 连接配置")
                         .font(.title3.weight(.semibold))
-                    Text("同一账户可使用该节点的所有网络路径")
+                    Text("每个配置绑定一个账户、网络路径和唯一别名")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -31,9 +31,9 @@ struct NodeWorkspaceAccountsSection: View {
 
             if rows.isEmpty {
                 ContentUnavailableView(
-                    "还没有 SSH 账户",
-                    systemImage: "person.crop.circle.badge.plus",
-                    description: Text("添加账户后即可测试连接或在终端中打开。")
+                    "还没有 SSH 连接配置",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    description: Text("选择账户和网络路径后，即可保存一个 SSH 使用入口。")
                 )
                 .frame(maxWidth: .infinity, minHeight: 140)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -85,7 +85,7 @@ private struct NodeWorkspaceAccountRow: View {
         HStack(spacing: 12) {
             Button(action: onSelect) {
                 HStack(spacing: 12) {
-                    Image(systemName: "person.fill")
+                    Image(systemName: "arrow.triangle.branch")
                         .font(.title3)
                         .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                         .frame(width: 44, height: 44)
@@ -134,7 +134,7 @@ private struct NodeWorkspaceAccountRow: View {
                     Label("复制 SSH 命令", systemImage: "doc.on.doc")
                 }
                 Button(action: onEdit) {
-                    Label("编辑账户", systemImage: "pencil")
+                    Label("编辑连接配置", systemImage: "pencil")
                 }
             } label: {
                 Image(systemName: "ellipsis")

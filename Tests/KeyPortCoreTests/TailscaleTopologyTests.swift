@@ -507,7 +507,7 @@ final class TailscaleTopologyTests: XCTestCase {
         let data = #"{"schemaVersion":1,"nodes":[],"profiles":[],"endpoints":[],"services":[],"sshAccounts":[],"sshKeys":[],"hostKeyTrusts":[],"authorizations":[],"reachabilityObservations":[],"accessVerifications":[],"nodeAssociations":[],"auditEvents":[]}"#.data(using: .utf8)!
         let decoded = try JSONDecoder().decode(TopologySnapshot.self, from: data)
 
-        XCTAssertEqual(decoded.schemaVersion, 1)
+        XCTAssertEqual(decoded.schemaVersion, TopologySnapshot.currentSchemaVersion)
         XCTAssertTrue(decoded.tailscaleNodes.isEmpty)
         XCTAssertTrue(decoded.tailscaleObservations.isEmpty)
     }

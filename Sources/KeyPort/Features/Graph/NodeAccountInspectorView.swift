@@ -30,14 +30,14 @@ struct NodeAccountInspectorView: View {
                 .padding(18)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .navigationTitle("账户")
+            .navigationTitle("连接配置")
         } else {
             ContentUnavailableView(
-                "未选择账户",
-                systemImage: "person.crop.circle",
-                description: Text("从节点工作区选择一个 SSH 账户。")
+                "未选择连接配置",
+                systemImage: "arrow.triangle.branch",
+                description: Text("从节点工作区选择一个 SSH 连接配置。")
             )
-            .navigationTitle("账户")
+            .navigationTitle("连接配置")
         }
     }
 
@@ -55,7 +55,7 @@ struct NodeAccountInspectorView: View {
                         .font(.body.weight(.medium))
                         .lineLimit(2)
                     if isDefaultAccount {
-                        Text("默认账户")
+                        Text("默认连接配置")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -73,7 +73,7 @@ struct NodeAccountInspectorView: View {
                 onEdit(account)
             } label: {
                 HStack {
-                    Text("账户设置")
+                    Text("连接配置")
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
@@ -91,7 +91,7 @@ struct NodeAccountInspectorView: View {
                 Button {
                     onEdit(account)
                 } label: {
-                    Label("编辑账户", systemImage: "pencil")
+                    Label("编辑连接配置", systemImage: "pencil")
                 }
                 .disabled(isReadOnly)
             } label: {
@@ -160,7 +160,7 @@ struct NodeAccountInspectorView: View {
                 Button {
                     onEdit(account)
                 } label: {
-                    InspectorActionRow(title: "编辑账户", systemImage: "pencil")
+                    InspectorActionRow(title: "编辑连接配置", systemImage: "pencil")
                 }
                 .buttonStyle(.plain)
                 .disabled(isReadOnly || isBusy)
@@ -171,7 +171,7 @@ struct NodeAccountInspectorView: View {
                     onDelete(account)
                 } label: {
                     InspectorActionRow(
-                        title: "删除账户",
+                        title: "删除连接配置",
                         systemImage: "trash",
                         tint: .red,
                         showsChevron: false

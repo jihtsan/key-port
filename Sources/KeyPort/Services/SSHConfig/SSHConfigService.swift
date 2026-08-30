@@ -64,8 +64,12 @@ actor SSHConfigService {
 
     func validateAlias(_ alias: String, excluding managedAlias: String? = nil) throws {
         let existing = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
-        let aliases = SSHConfigGenerator.aliases(in: existing)
-        if aliases.contains(alias), alias != managedAlias { throw SSHConfigError.aliasConflict(alias) }
+        let normalizedAlias = alias.lowercased()
+        let aliases = Set(SSHConfigGenerator.aliases(in: existing).map { $0.lowercased() })
+        let excludedAlias = managedAlias?.lowercased()
+        if aliases.contains(normalizedAlias), normalizedAlias != excludedAlias {
+            throw SSHConfigError.aliasConflict(alias)
+        }
     }
 
     func write(servers: [ServerConnection], keys: [SSHKeyRecord], authorizations: [Authorization]) throws {

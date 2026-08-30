@@ -24,6 +24,7 @@ public enum TopologyCloudMetadataSnapshotPolicy {
         result.tailscaleNodes = snapshot.tailscaleNodes.sorted { $0.id < $1.id }
         result.tailscaleObservations = []
         result.sshAccounts = snapshot.sshAccounts.sorted { $0.id.uuidString < $1.id.uuidString }
+        result.sshConnectionProfiles = snapshot.sshConnectionProfiles.sorted { $0.id.uuidString < $1.id.uuidString }
         result.sshKeys = snapshot.sshKeys.map(sanitizedKey).sorted { $0.id < $1.id }
         result.hostKeyTrusts = snapshot.hostKeyTrusts.sorted { $0.id.uuidString < $1.id.uuidString }
         result.authorizations = snapshot.authorizations.map { authorization in
@@ -75,6 +76,11 @@ public enum TopologyCloudMetadataSnapshotPolicy {
             prefer: preferTailscaleNode
         )
         result.sshAccounts = mergeByID(local.sshAccounts + remote.sshAccounts, id: \.id, prefer: preferSSHAccount)
+        result.sshConnectionProfiles = mergeByID(
+            local.sshConnectionProfiles + remote.sshConnectionProfiles,
+            id: \.id,
+            prefer: preferSSHConnectionProfile
+        )
         result.sshKeys = mergeByID(local.sshKeys + remote.sshKeys, id: \.id) { candidate, existing in
             candidate.publicKey.isEmpty && !existing.publicKey.isEmpty ? existing : candidate
         }
@@ -131,6 +137,7 @@ public enum TopologyCloudMetadataSnapshotPolicy {
         snapshot.tailscaleNodes.sort { $0.id < $1.id }
         snapshot.tailscaleObservations.sort { $0.id < $1.id }
         snapshot.sshAccounts.sort { $0.id.uuidString < $1.id.uuidString }
+        snapshot.sshConnectionProfiles.sort { $0.id.uuidString < $1.id.uuidString }
         snapshot.sshKeys.sort { $0.id < $1.id }
         snapshot.hostKeyTrusts.sort { $0.id.uuidString < $1.id.uuidString }
         snapshot.authorizations.sort { $0.id < $1.id }
@@ -191,6 +198,16 @@ public enum TopologyCloudMetadataSnapshotPolicy {
     ) -> SSHAuthorization {
         if candidate.isDeleted != existing.isDeleted {
             return candidate.isDeleted ? candidate : existing
+        }
+        return candidate.updatedAt >= existing.updatedAt ? candidate : existing
+    }
+
+    private static func preferSSHConnectionProfile(
+        _ candidate: SSHConnectionProfile,
+        over existing: SSHConnectionProfile
+    ) -> SSHConnectionProfile {
+        if candidate.version != existing.version {
+            return candidate.version > existing.version ? candidate : existing
         }
         return candidate.updatedAt >= existing.updatedAt ? candidate : existing
     }

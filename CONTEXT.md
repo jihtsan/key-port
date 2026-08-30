@@ -81,8 +81,28 @@ _Avoid_: 用 Device 区分本机与远端机器
 _Avoid_: 授权本身、可达性状态、节点角色
 
 **SSH Account（SSH 账户）**：
-某个 Node 上的 SSH 登录入口，由用户名和稳定别名表达；一个 Node 可以有多个 SSH 账户。账户凭据和授权属于账户级访问关系，不属于 Node 的通用元数据。
+某个 Node 上由用户名标识的 SSH 登录入口；一个 Node 可以有多个 SSH 账户。同一账户可以被多个 SSH Connection Profile 引用，账户凭据和授权不会因访问路径或 SSH Alias 不同而重复。
 _Avoid_: SSH Identity、Host、Workspace Device Profile
+
+**Account Label（账户标签）**：
+用户为 SSH Account 设置的可选显示名称，例如“管理员账户”；它不参与 SSH 登录、SSH Config 寻址或授权身份。
+_Avoid_: SSH Alias、用户名、Host
+
+**SSH Connection Profile（SSH 连接配置）**：
+一个可保存的 SSH 使用入口，引用一个 SSH Account 和一条访问路径策略，并拥有一个 SSH Alias。同一账户可以有多个连接配置，但这些配置共享账户级 SSH Authorization。
+_Avoid_: SSH Account、SSH Authorization、Endpoint
+
+**SSH Alias（SSH 别名）**：
+SSH Connection Profile 在 KeyPort 工作区与用户 SSH Config 联合命名空间中的稳定唯一名称；它由用户自定义并必须是安全的 SSH Host 字面名称，自动模板只提供建议。
+_Avoid_: Account Label、Node 名称、用户名
+
+**Connection Intent（连接意图）**：
+用户通过选择或输入 SSH 目标表达的连接请求，可以包含 Node、SSH Account、网络范围、Endpoint 或 SSH Alias 等提示，但尚未决定本次实际路径。
+_Avoid_: SSH 命令字符串、授权、连接结果
+
+**Connection Plan（连接计划）**：
+KeyPort 针对一次操作解析出的 SSH Account、Endpoint、传输方式和本地密钥组合；它只在当前网络环境中有效，并作为主机密钥检查、授权和复验共享的执行输入。
+_Avoid_: SSH Connection Profile、永久路由、SSH Authorization
 
 **Local SSH Account（本机 SSH 账户）**：
 当前设备对应 Node 上的 SSH Account，例如通过 localhost 或本机地址登录的用户。它仍然是 Node 的子账户，可以独立保存密码或密钥引用，不会因为“本机”属性变成另一个 Node 或特殊的账户分类。
@@ -109,7 +129,7 @@ _Avoid_: SSH Key、账号授权、Ping 状态
 _Avoid_: Host Ping、全局在线状态、访问授权
 
 **Access Verification（访问验证）**：
-某个本地 Workspace Device Profile 在特定时间对 Endpoint、SSH Host Key 和 SSH Account 完成检查后得到的本地证据。它只说明那次验证，不替代同步的授权事实。
+某个本地 Workspace Device Profile 在特定时间依照 Connection Plan 对 Endpoint、SSH Host Key 和 SSH Account 完成检查后得到的本地证据。它记录实际连接配置、传输方式和网络环境，只说明那次验证，不替代同步的授权事实。
 _Avoid_: 实时连接、永久授权、Node 状态
 
 **Account Password（账户密码）**：

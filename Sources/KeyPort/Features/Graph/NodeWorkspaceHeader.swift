@@ -14,6 +14,7 @@ struct NodeWorkspaceHeader: View {
     let onSelectEndpoint: (UUID) -> Void
     let onTestConnection: () -> Void
     let onOpenTerminal: () -> Void
+    let onConfigureAccess: () -> Void
     let onAddAccount: () -> Void
     let onAddEndpoint: () -> Void
 
@@ -61,6 +62,12 @@ struct NodeWorkspaceHeader: View {
             }
 
             HStack(spacing: 10) {
+                Button(action: onConfigureAccess) {
+                    Label("配置访问与免密", systemImage: "key.horizontal.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(item.accountCount == 0 || selectedEndpoint == nil || isBusy || isReadOnly)
+
                 Button(action: onTestConnection) {
                     Label("测试连接", systemImage: "waveform.path.ecg")
                 }
@@ -91,7 +98,7 @@ struct NodeWorkspaceHeader: View {
             }
         } label: {
             NodeWorkspacePickerLabel(
-                title: selectedAccount.map { "\($0.username) · \($0.alias)" } ?? "选择账户",
+                title: selectedAccount.map { "\($0.username) · \($0.alias)" } ?? "选择连接配置",
                 systemImage: "person"
             )
         }

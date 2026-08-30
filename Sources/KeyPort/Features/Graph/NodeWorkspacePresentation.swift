@@ -3,9 +3,9 @@ import KeyPortCore
 
 /// The display projection for one top-level node.
 ///
-/// A node owns its access facts in the UI. SSH accounts remain stable
-/// `ServerConnection` records so existing Keychain, authorization, and SSH
-/// actions keep their account-level identity.
+/// A node owns its access facts in the UI. `ServerConnection` is now only the
+/// compatibility view of an SSH connection profile; account identity remains
+/// in `TopologySnapshot.sshAccounts`.
 struct NodeWorkspaceItem: Identifiable {
     let node: TopologyGraphNode
     let accounts: [ServerConnection]
@@ -21,7 +21,12 @@ struct NodeWorkspaceItem: Identifiable {
     }
 
     var accountCount: Int {
-        max(accounts.count, accountNodes.count)
+        if !accountNodes.isEmpty { return accountNodes.count }
+        return Set(accounts.map { $0.username }).count
+    }
+
+    var connectionProfileCount: Int {
+        accounts.count
     }
 
     var endpointCount: Int {
@@ -167,7 +172,10 @@ enum NodeWorkspacePresentation {
         if let nodeID = node.id.uuid,
            model.topology.nodes.contains(where: { $0.id == nodeID }) {
             let accountIDs = Set(model.topology.accounts(for: nodeID).map(\.id))
-            return sorted(activeServers.filter { accountIDs.contains($0.id) })
+            let profileIDs = Set(model.topology.activeConnectionProfiles
+                .filter { accountIDs.contains($0.accountID) }
+                .map(\.id))
+            return sorted(activeServers.filter { profileIDs.contains($0.id) })
         }
 
         // In the Host v6 shadow view, account graph nodes carry a host
