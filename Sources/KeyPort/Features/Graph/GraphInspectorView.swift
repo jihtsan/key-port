@@ -110,39 +110,54 @@ struct GraphInspectorView: View {
     }
 
     private func accountsSection(_ item: NodeWorkspaceItem) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("SSH 账户")
-                            .font(.headline)
-                        Text("同一节点下的用户各自拥有独立别名和授权状态")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("SSH 账户")
+                        .font(.headline)
+                    Text("每个账户保留自己的 SSH 别名和授权状态")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let nodeID = item.node.id.uuid {
+                    Button {
+                        onAddAccount(nodeID, nil)
+                    } label: {
+                        Label("添加账户", systemImage: "plus")
                     }
-                    Spacer()
-                    if let nodeID = item.node.id.uuid {
-                        Button {
-                            onAddAccount(nodeID, nil)
-                        } label: {
-                            Label("添加账户", systemImage: "person.badge.plus")
+                    .buttonStyle(.borderless)
+                    .disabled(model.isBusy || model.isMetadataReadOnly)
+                }
+            }
+
+            if item.accounts.isEmpty {
+                if item.accountNodes.isEmpty {
+                    Label("这个节点还没有 SSH 账户", systemImage: "person.crop.circle.badge.exclamationmark")
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 10)
+                } else {
+                    Text("这些账户来自拓扑记录，暂时不能直接操作。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    AccountListSurface {
+                        ForEach(item.accountNodes.indices, id: \.self) { index in
+                            if index > item.accountNodes.startIndex {
+                                Divider()
+                                    .padding(.leading, 49)
+                            }
+                            graphAccountFallbackRow(item.accountNodes[index])
                         }
-                        .buttonStyle(.borderless)
-                        .disabled(model.isBusy || model.isMetadataReadOnly)
                     }
                 }
-
-                if item.accounts.isEmpty {
-                    Label("这个节点还没有可操作的 SSH 账户", systemImage: "person.crop.circle.badge.exclamationmark")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 8)
-                    if !item.accountNodes.isEmpty {
-                        ForEach(item.accountNodes) { accountNode in
-                            graphAccountFallbackRow(accountNode)
+            } else {
+                AccountListSurface {
+                    ForEach(item.accounts.indices, id: \.self) { index in
+                        if index > item.accounts.startIndex {
+                            Divider()
+                                .padding(.leading, 49)
                         }
-                    }
-                } else {
-                    ForEach(item.accounts) { account in
+                        let account = item.accounts[index]
                         NodeAccountRow(
                             account: account,
                             model: model,
@@ -160,9 +175,8 @@ struct GraphInspectorView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 4)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func statusSection(_ status: TopologyGraphStatus) -> some View {
@@ -362,21 +376,24 @@ struct GraphInspectorView: View {
     private func graphAccountFallbackRow(_ account: TopologyGraphNode) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "person.crop.circle")
+                .font(.title3)
                 .foregroundStyle(.secondary)
+                .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.title)
-                    .fontWeight(.medium)
+                    .font(.callout.weight(.medium))
                 if let subtitle = account.subtitle {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
             }
             Spacer()
             GraphStatusBadge(status: account.status)
         }
-        .padding(.vertical, 3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 
     private func onAuthorize(_ account: ServerConnection) {
@@ -528,82 +545,91 @@ private struct NodeAccountRow: View {
     let onAuthorize: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
+        let action = model.passwordlessPrimaryAction(for: account)
+
+        HStack(spacing: 8) {
             Button(action: onSelect) {
                 HStack(spacing: 10) {
                     Image(systemName: "person.crop.circle")
                         .font(.title3)
-                        .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 3) {
                         Text(account.username)
                             .font(.callout.weight(.medium))
                             .lineLimit(1)
-                        HStack(spacing: 5) {
-                            Text(account.alias)
-                                .font(.caption.monospaced())
-                            Text("·")
-                            Text("\(account.host):\(account.port)")
-                                .font(.caption.monospaced())
-                        }
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        Text(account.alias)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
+                    Spacer(minLength: 8)
+                    StatusLabel(status: account.status)
+                        .font(.caption)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(
+                "选择 SSH 账户 \(account.username)，别名 \(account.alias)，\(account.status.title)"
+            )
 
-            StatusLabel(status: account.status)
-                .font(.caption)
-                .fixedSize(horizontal: true, vertical: false)
-
-            Button(action: onCopyAlias) {
-                Image(systemName: "doc.on.doc")
+            Menu {
+                accountActions(action)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 18, height: 18)
             }
-            .buttonStyle(.borderless)
-            .help("复制 \(account.alias)")
-
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.borderless)
-            .help("编辑 \(account.username) 账户")
-
-            let action = model.passwordlessPrimaryAction(for: account)
-            Button(action: onAuthorize) {
-                Image(systemName: action.systemImage)
-            }
-            .buttonStyle(.borderless)
-            .help(action.help)
-            .disabled(model.isBusy || action == .checking)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("账户操作")
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(
-            isSelected ? Color.accentColor.opacity(0.11) : Color.primary.opacity(0.035),
-            in: RoundedRectangle(cornerRadius: 9)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9)
-                .stroke(isSelected ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1)
-        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
         .contextMenu {
-            Button(action: onEdit) {
-                Label("编辑账户", systemImage: "pencil")
-            }
-            Button(action: onAddAccount) {
-                Label("添加同节点账户", systemImage: "person.badge.plus")
-            }
-            Button(action: onCopyAlias) {
-                Label("复制 SSH 别名", systemImage: "doc.on.doc")
-            }
-            Divider()
-            Button(action: onAuthorize) {
-                let action = model.passwordlessPrimaryAction(for: account)
-                Label(action.title, systemImage: action.systemImage)
-            }
-            .disabled(model.isBusy)
+            accountActions(action)
+        }
+    }
+
+    @ViewBuilder
+    private func accountActions(_ action: PasswordlessPrimaryAction) -> some View {
+        Button(action: onEdit) {
+            Label("编辑账户", systemImage: "pencil")
+        }
+        Button(action: onAddAccount) {
+            Label("添加同节点账户", systemImage: "person.badge.plus")
+        }
+        Button(action: onCopyAlias) {
+            Label("复制 SSH 别名", systemImage: "doc.on.doc")
+        }
+        Divider()
+        Button(action: onAuthorize) {
+            Label(action.title, systemImage: action.systemImage)
+        }
+        .disabled(model.isBusy || action == .checking)
+    }
+}
+
+private struct AccountListSurface<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .background(.quaternary.opacity(0.24))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
         }
     }
 }
