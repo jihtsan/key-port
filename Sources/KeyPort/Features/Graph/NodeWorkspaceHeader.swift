@@ -5,6 +5,7 @@ struct NodeWorkspaceHeader: View {
     let item: NodeWorkspaceItem
     let tags: [String]
     let accounts: [ServerConnection]
+    let connectionProfiles: [SSHConnectionProfile]
     let endpoints: [Endpoint]
     let selectedAccountID: UUID?
     let selectedEndpointID: UUID?
@@ -119,7 +120,7 @@ struct NodeWorkspaceHeader: View {
         } label: {
             NodeWorkspacePickerLabel(
                 title: selectedEndpoint.map {
-                    "自动 → \($0.networkScope.displayTitle)"
+                    "\(endpointSelectionTitle(for: $0)) · \($0.networkScope.displayTitle)"
                 } ?? "账户默认路径",
                 systemImage: "point.3.connected.trianglepath.dotted"
             )
@@ -136,6 +137,25 @@ struct NodeWorkspaceHeader: View {
 
     private var selectedEndpoint: Endpoint? {
         endpoints.first(where: { $0.id == selectedEndpointID }) ?? endpoints.first
+    }
+
+    private var selectedProfile: SSHConnectionProfile? {
+        guard let selectedAccount else { return nil }
+        return connectionProfiles.first { $0.id == selectedAccount.id }
+    }
+
+    private func endpointSelectionTitle(for endpoint: Endpoint) -> String {
+        guard let profile = selectedProfile else { return "手选" }
+        switch profile.routePolicy {
+        case .fixed(let endpointID):
+            return endpointID == endpoint.id ? "固定" : "手选"
+        case .automatic:
+            guard !profile.candidateEndpointIDs.isEmpty else { return "自动" }
+            if let index = profile.candidateEndpointIDs.firstIndex(of: endpoint.id) {
+                return "候选 \(index + 1)"
+            }
+            return "手选"
+        }
     }
 }
 

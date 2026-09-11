@@ -95,6 +95,168 @@ final class SSHConnectionPlanningTests: XCTestCase {
         XCTAssertEqual(plans.first?.reason, .currentNetworkSuccess)
     }
 
+    func testAutomaticProfileUsesExplicitCandidateOrderWithoutReorderingByEvidence() throws {
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [tailnetEndpointID, lanEndpointID]
+        topology.reachabilityObservations = [ReachabilityObservation(
+            endpointID: lanEndpointID,
+            observerDeviceID: "device-current",
+            networkEpoch: 9,
+            observedAt: .now,
+            wasReachable: true
+        )]
+
+        let plans = try SSHConnectionPlanner().plans(
+            for: SSHConnectionIntent(profileID: profileID),
+            in: topology,
+            currentDeviceID: "device-current",
+            networkEpoch: 9
+        )
+
+        XCTAssertEqual(plans.map(\.endpointID), [tailnetEndpointID, lanEndpointID])
+        XCTAssertTrue(plans.allSatisfy { $0.reason == .profileCandidateOrder })
+    }
+
+    func testAutomaticProfileRejectsDeadCandidateReference() {
+        let missingEndpointID = UUID(uuidString: "51000000-0000-4000-8000-000000000099")!
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [missingEndpointID]
+
+        XCTAssertThrowsError(
+            try SSHConnectionPlanner().plan(
+                for: SSHConnectionIntent(profileID: profileID),
+                in: topology,
+                currentDeviceID: "device-current",
+                networkEpoch: 0
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? SSHConnectionPlanningError,
+                .routeCandidateNotFound(missingEndpointID)
+            )
+        }
+    }
+
+    func testAutomaticProfileRejectsCandidateOutsideNode() {
+        let otherNodeID = UUID(uuidString: "51000000-0000-4000-8000-000000000010")!
+        let otherEndpointID = UUID(uuidString: "51000000-0000-4000-8000-000000000011")!
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.nodes.append(Node(id: otherNodeID, name: "Other", roles: [.sshHost]))
+        topology.endpoints.append(Endpoint(
+            id: otherEndpointID,
+            nodeID: otherNodeID,
+            address: "10.0.0.20",
+            port: 22,
+            protocol: .ssh,
+            networkScope: .lan
+        ))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [otherEndpointID]
+
+        XCTAssertThrowsError(
+            try SSHConnectionPlanner().plan(
+                for: SSHConnectionIntent(profileID: profileID),
+                in: topology,
+                currentDeviceID: "device-current",
+                networkEpoch: 0
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? SSHConnectionPlanningError,
+                .routeCandidateOutsideNode(otherEndpointID)
+            )
+        }
+    }
+
+    func testAutomaticProfileRejectsNonSSHCandidate() {
+        let httpEndpointID = UUID(uuidString: "51000000-0000-4000-8000-000000000012")!
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.endpoints.append(Endpoint(
+            id: httpEndpointID,
+            nodeID: nodeID,
+            address: "192.168.1.10",
+            port: 80,
+            protocol: .http,
+            networkScope: .lan
+        ))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [httpEndpointID]
+
+        XCTAssertThrowsError(
+            try SSHConnectionPlanner().plan(
+                for: SSHConnectionIntent(profileID: profileID),
+                in: topology,
+                currentDeviceID: "device-current",
+                networkEpoch: 0
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? SSHConnectionPlanningError,
+                .routeCandidateNotSSH(httpEndpointID)
+            )
+        }
+    }
+
+    func testAutomaticProfileRejectsCandidateWithConflictingNetworkScope() {
+        var topology = makeTopology(routePolicy: .automatic(networkScope: .tailnet))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [lanEndpointID]
+
+        XCTAssertThrowsError(
+            try SSHConnectionPlanner().plan(
+                for: SSHConnectionIntent(profileID: profileID),
+                in: topology,
+                currentDeviceID: "device-current",
+                networkEpoch: 0
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? SSHConnectionPlanningError,
+                .routeCandidateScopeMismatch(lanEndpointID)
+            )
+        }
+    }
+
+    func testConnectionProfileDecodesPreCandidatePayloadWithLegacyDefaults() throws {
+        let profile = SSHConnectionProfile(
+            id: profileID,
+            accountID: accountID,
+            sshAlias: "studio-tailnet-root",
+            routePolicy: .automatic(networkScope: nil)
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(profile)
+            ) as? [String: Any]
+        )
+        object.removeValue(forKey: "candidateEndpointIDs")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(SSHConnectionProfile.self, from: legacyData)
+
+        XCTAssertEqual(decoded.candidateEndpointIDs, [])
+        XCTAssertEqual(decoded.routePolicy, profile.routePolicy)
+    }
+
+    func testRefreshAndLegacyProjectionPreserveOrderedCandidates() throws {
+        var existing = makeTopology(routePolicy: .automatic(networkScope: nil))
+        existing.sshConnectionProfiles[0].candidateEndpointIDs = [tailnetEndpointID, lanEndpointID]
+        let legacy = TopologySnapshotMigration.legacyProjection(
+            from: existing,
+            currentDeviceID: "device-current"
+        )
+
+        let refreshed = TopologySnapshotMigration.refreshed(
+            from: legacy,
+            preserving: existing,
+            currentDeviceID: "device-current",
+            currentDeviceName: "Current Mac"
+        )
+
+        XCTAssertEqual(
+            refreshed.connectionProfile(id: profileID)?.candidateEndpointIDs,
+            [tailnetEndpointID, lanEndpointID]
+        )
+        XCTAssertEqual(legacy.servers.first?.host, "100.117.174.75")
+    }
+
     func testRawSSHCommandMatchesNodeAccountAndEndpoint() throws {
         let plan = try SSHConnectionPlanner().plan(
             for: SSHConnectionIntentParser.parse("ssh root@100.117.174.75"),
@@ -252,6 +414,78 @@ final class SSHConnectionPlanningTests: XCTestCase {
 
         XCTAssertEqual(sanitized.sshConnectionProfiles, [old])
         XCTAssertEqual(merged.sshConnectionProfiles, [new])
+    }
+
+    func testCloudPolicyPreservesOrderedCandidates() {
+        let profile = SSHConnectionProfile(
+            id: profileID,
+            accountID: accountID,
+            sshAlias: "ordered",
+            routePolicy: .automatic(networkScope: nil),
+            candidateEndpointIDs: [tailnetEndpointID, lanEndpointID],
+            updatedAt: Date(timeIntervalSinceReferenceDate: 10),
+            version: 1
+        )
+        let remoteProfile = SSHConnectionProfile(
+            id: profileID,
+            accountID: accountID,
+            sshAlias: "ordered",
+            routePolicy: .automatic(networkScope: nil),
+            candidateEndpointIDs: [lanEndpointID, tailnetEndpointID],
+            updatedAt: Date(timeIntervalSinceReferenceDate: 20),
+            version: 2
+        )
+
+        let sanitized = TopologyCloudMetadataSnapshotPolicy.sanitized(
+            TopologySnapshot(sshConnectionProfiles: [profile])
+        )
+        let merged = TopologyCloudMetadataSnapshotPolicy.merge(
+            local: sanitized,
+            remote: TopologySnapshot(sshConnectionProfiles: [remoteProfile])
+        )
+
+        XCTAssertEqual(
+            sanitized.sshConnectionProfiles.first?.candidateEndpointIDs,
+            [tailnetEndpointID, lanEndpointID]
+        )
+        XCTAssertEqual(
+            merged.sshConnectionProfiles.first?.candidateEndpointIDs,
+            [lanEndpointID, tailnetEndpointID]
+        )
+    }
+
+    func testEncryptedTopologyArchivePreservesRoutePolicyAndStripsLocalKeyPath() throws {
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.sshConnectionProfiles[0].candidateEndpointIDs = [tailnetEndpointID, lanEndpointID]
+        topology.sshKeys = [SSHKey(
+            id: "key-current",
+            deviceID: "device-current",
+            kind: .ed25519,
+            publicKey: "ssh-ed25519 AAAA",
+            fingerprint: "SHA256:test",
+            privateKeyPath: "/private/key",
+            isInAgent: true,
+            origin: .generated,
+            isLocallyAvailable: true
+        )]
+
+        let archive = try MetadataArchiveCodec.seal(
+            AppSnapshot(),
+            topology: topology,
+            password: "test-password",
+            iterations: 1_000
+        )
+        let payload = try MetadataArchiveCodec.openPayload(archive, password: "test-password")
+        let archivedProfile = try XCTUnwrap(payload.topology?.connectionProfile(id: profileID))
+        let archivedKey = try XCTUnwrap(payload.topology?.sshKeys.first)
+
+        XCTAssertEqual(
+            archivedProfile.candidateEndpointIDs,
+            [tailnetEndpointID, lanEndpointID]
+        )
+        XCTAssertNil(archivedKey.privateKeyPath)
+        XCTAssertFalse(archivedKey.isInAgent)
+        XCTAssertFalse(archivedKey.isLocallyAvailable)
     }
 
     private func makeTopology(routePolicy: SSHRoutePolicy) -> TopologySnapshot {

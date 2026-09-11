@@ -152,14 +152,55 @@ struct SSHAccountEditorSubmission: Sendable {
     let synchronizable: Bool
 }
 
+enum SSHAccessRouteMode: String, CaseIterable, Identifiable, Sendable {
+    case fixed
+    case automatic
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fixed: "固定路径"
+        case .automatic: "自动候选路径"
+        }
+    }
+}
+
 /// One editable connection profile for the passwordless setup flow. The
-/// selected account is stable; the endpoint and alias describe how to reach it.
+/// selected account is stable; the route policy, endpoint preview and alias
+/// describe how to reach it.
 struct SSHAccessSetupDraft: Sendable {
     var nodeID: UUID
     var profileID: UUID?
     var accountID: UUID
     var endpointID: UUID
     var sshAlias: String
+    var routeMode: SSHAccessRouteMode = .fixed
+    var automaticNetworkScope: NetworkScope?
+    /// Empty means all endpoints matching `automaticNetworkScope`, retaining
+    /// the pre-v4 automatic behavior. A non-empty array is an explicit ordered
+    /// allow-list.
+    var candidateEndpointIDs: [UUID]
+
+    init(
+        nodeID: UUID,
+        profileID: UUID? = nil,
+        accountID: UUID,
+        endpointID: UUID,
+        sshAlias: String,
+        routeMode: SSHAccessRouteMode = .fixed,
+        automaticNetworkScope: NetworkScope? = nil,
+        candidateEndpointIDs: [UUID] = []
+    ) {
+        self.nodeID = nodeID
+        self.profileID = profileID
+        self.accountID = accountID
+        self.endpointID = endpointID
+        self.sshAlias = sshAlias
+        self.routeMode = routeMode
+        self.automaticNetworkScope = automaticNetworkScope
+        self.candidateEndpointIDs = candidateEndpointIDs
+    }
 
     mutating func recordPersistedProfile(_ profileID: UUID) {
         self.profileID = profileID
@@ -847,8 +888,26 @@ final class AppModel {
             .flatMap { selected in accounts.first { $0.id == selected.accountID } }
             ?? accounts.first
         guard let account else { return nil }
+        let scopedEndpoints: [Endpoint]
+        let routeMode: SSHAccessRouteMode
+        let automaticNetworkScope: NetworkScope?
+        let candidateEndpointIDs: [UUID]
+        switch profile?.routePolicy {
+        case .automatic(let scope):
+            routeMode = .automatic
+            automaticNetworkScope = scope
+            candidateEndpointIDs = profile?.candidateEndpointIDs ?? []
+            scopedEndpoints = endpoints.filter { scope == nil || $0.networkScope == scope }
+        case .fixed, nil:
+            routeMode = .fixed
+            automaticNetworkScope = nil
+            candidateEndpointIDs = []
+            scopedEndpoints = endpoints
+        }
         let endpoint = endpointID.flatMap { id in endpoints.first { $0.id == id } }
             ?? profile?.routePolicy.fixedEndpointID.flatMap { id in endpoints.first { $0.id == id } }
+            ?? candidateEndpointIDs.lazy.compactMap { id in endpoints.first { $0.id == id } }.first
+            ?? scopedEndpoints.first
             ?? endpoints.first
         guard let endpoint else { return nil }
         let alias = profile?.sshAlias ?? suggestedSSHAlias(
@@ -862,7 +921,10 @@ final class AppModel {
             profileID: profile?.id,
             accountID: account.id,
             endpointID: endpoint.id,
-            sshAlias: alias
+            sshAlias: alias,
+            routeMode: routeMode,
+            automaticNetworkScope: automaticNetworkScope,
+            candidateEndpointIDs: candidateEndpointIDs
         )
     }
 
@@ -1130,12 +1192,45 @@ final class AppModel {
         let now = Date()
         let profileID = draft.profileID ?? UUID()
         let alias = draft.sshAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let routePolicy: SSHRoutePolicy
+        let candidateEndpointIDs: [UUID]
+        switch draft.routeMode {
+        case .fixed:
+            routePolicy = .fixed(endpointID: endpoint.id)
+            candidateEndpointIDs = []
+        case .automatic:
+            if let scope = draft.automaticNetworkScope, scope != endpoint.networkScope {
+                throw SSHServiceError.operationFailed("当前预览路径不符合所选网络范围，请重新选择。")
+            }
+            candidateEndpointIDs = draft.candidateEndpointIDs
+            if !candidateEndpointIDs.isEmpty && !candidateEndpointIDs.contains(endpoint.id) {
+                throw SSHServiceError.operationFailed("当前预览路径必须包含在自动候选路径中。")
+            }
+            routePolicy = .automatic(networkScope: draft.automaticNetworkScope)
+        }
+        let candidateProfile = SSHConnectionProfile(
+            id: profileID,
+            accountID: account.id,
+            sshAlias: alias,
+            routePolicy: routePolicy,
+            candidateEndpointIDs: candidateEndpointIDs
+        )
+        do {
+            _ = try SSHRoutePolicyResolver.endpoints(
+                for: candidateProfile,
+                nodeID: draft.nodeID,
+                in: topology
+            )
+        } catch let error as SSHConnectionPlanningError {
+            throw SSHServiceError.operationFailed(error.errorDescription ?? "自动路径配置无效。")
+        }
         let existingAlias = topology.connectionProfile(id: profileID)?.sshAlias
         try await configService.validateAlias(alias, excluding: existingAlias)
         if let index = topology.sshConnectionProfiles.firstIndex(where: { $0.id == profileID }) {
             topology.sshConnectionProfiles[index].accountID = account.id
             topology.sshConnectionProfiles[index].sshAlias = alias
-            topology.sshConnectionProfiles[index].routePolicy = .fixed(endpointID: endpoint.id)
+            topology.sshConnectionProfiles[index].routePolicy = routePolicy
+            topology.sshConnectionProfiles[index].candidateEndpointIDs = candidateProfile.candidateEndpointIDs
             topology.sshConnectionProfiles[index].updatedAt = now
             topology.sshConnectionProfiles[index].isDeleted = false
             topology.sshConnectionProfiles[index].version += 1
@@ -1144,7 +1239,8 @@ final class AppModel {
                 id: profileID,
                 accountID: account.id,
                 sshAlias: alias,
-                routePolicy: .fixed(endpointID: endpoint.id),
+                routePolicy: routePolicy,
+                candidateEndpointIDs: candidateProfile.candidateEndpointIDs,
                 createdAt: now,
                 updatedAt: now
             ))
@@ -1167,7 +1263,9 @@ final class AppModel {
         await persist(profileBindings: [SSHConnectionProfileNodeBinding(
             profileID: profileID,
             nodeID: draft.nodeID,
-            endpointID: endpoint.id
+            endpointID: endpoint.id,
+            routePolicyOverride: routePolicy,
+            candidateEndpointIDs: candidateProfile.candidateEndpointIDs
         )])
         try await configService.write(
             servers: activeServers,
@@ -3165,7 +3263,12 @@ final class AppModel {
     func exportMetadata(password: String) async {
         guard let destination = await fileSelection.selectArchiveDestination() else { return }
         do {
-            try await archiveService.export(snapshot: snapshot, password: password, destination: destination)
+            try await archiveService.export(
+                snapshot: snapshot,
+                topology: topology,
+                password: password,
+                destination: destination
+            )
             if !isMetadataReadOnly {
                 appendAudit(category: "archive", action: "export", result: "encrypted-metadata")
                 await persist()
@@ -3179,7 +3282,23 @@ final class AppModel {
         do {
             let imported = try await archiveService.importArchive(from: source, password: password)
             let previousServers = snapshot.servers
-            mergeImported(imported)
+            mergeImported(imported.snapshot)
+            if let importedTopology = imported.topology {
+                let mergedTopology = TopologyCloudMetadataSnapshotPolicy.merge(
+                    local: topology,
+                    remote: importedTopology
+                )
+                topology = TopologyCloudMetadataSnapshotPolicy.restoringLocalState(
+                    in: mergedTopology,
+                    from: topology
+                )
+                snapshot = TopologySnapshotMigration.legacyProjection(
+                    from: topology,
+                    currentDeviceID: snapshot.devices.first(where: \.isCurrent)?.id
+                        ?? defaults.string(forKey: "KeyPort.deviceID")
+                        ?? "local"
+                )
+            }
             normalizeStableMetadataIDs()
             ensureCurrentDevice()
             normalizeStatusesAfterMetadataMerge(previousServers: previousServers)

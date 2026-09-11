@@ -111,6 +111,79 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         XCTAssertEqual(stored.connectionProfile(id: profileID)?.accountID, account.id)
     }
 
+    func testConnectionProfileSavePersistsAutomaticCandidateOrder() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-automatic-route-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-automatic-route"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        legacy.servers = [ServerConnection(
+            id: UUID(uuidString: "31200000-0000-4000-8000-000000000001")!,
+            name: "Mac Studio",
+            host: "100.117.174.75",
+            username: "root",
+            alias: "studio-tailnet"
+        )]
+        let paths = KeyPortPaths(home: home)
+        try await SnapshotStore(paths: paths).save(legacy)
+        var seededTopology = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "测试 Mac"
+        )
+        let seededAccount = try XCTUnwrap(seededTopology.activeAccounts.first)
+        seededTopology.endpoints.append(Endpoint(
+            id: UUID(uuidString: "31200000-0000-4000-8000-000000000002")!,
+            nodeID: seededAccount.nodeID,
+            address: "192.168.1.20",
+            label: "工作室局域网",
+            port: 22,
+            protocol: .ssh,
+            networkScope: .lan,
+            source: .manual,
+            priority: 1
+        ))
+        try await TopologyStore(paths: paths).save(seededTopology)
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+
+        let account = try XCTUnwrap(model.topology.activeAccounts.first)
+        let endpoints = model.topology.endpoints(for: account.nodeID, endpointProtocol: .ssh)
+        let orderedEndpointIDs = endpoints.sorted {
+            if $0.networkScope != $1.networkScope {
+                return $0.networkScope == .lan
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }.map(\.id)
+        let previewEndpointID = try XCTUnwrap(orderedEndpointIDs.first)
+        let profileID = try await model.saveSSHConnectionProfile(SSHAccessSetupDraft(
+            nodeID: account.nodeID,
+            accountID: account.id,
+            endpointID: previewEndpointID,
+            sshAlias: "studio-ordered",
+            routeMode: .automatic,
+            candidateEndpointIDs: orderedEndpointIDs
+        ))
+
+        let profile = try XCTUnwrap(model.topology.connectionProfile(id: profileID))
+        XCTAssertEqual(profile.routePolicy.networkScope, nil)
+        XCTAssertEqual(profile.candidateEndpointIDs, orderedEndpointIDs)
+
+        let loaded = try await TopologyStore(paths: paths).load()
+        let stored = try XCTUnwrap(loaded)
+        XCTAssertEqual(
+            stored.connectionProfile(id: profileID)?.candidateEndpointIDs,
+            orderedEndpointIDs
+        )
+    }
+
     func testNewConnectionDraftRecordsPersistedProfileBeforeFurtherValidation() async throws {
         let home = FileManager.default.temporaryDirectory
             .appendingPathComponent("keyport-connection-draft-persistence-\(UUID().uuidString)", isDirectory: true)

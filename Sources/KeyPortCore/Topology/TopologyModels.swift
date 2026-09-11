@@ -234,11 +234,24 @@ public struct SSHConnectionProfileNodeBinding: Hashable, Sendable {
     public let profileID: UUID
     public let nodeID: UUID
     public let endpointID: UUID?
+    /// Optional route data carried across the legacy projection seam. Legacy
+    /// callers leave these nil; the unified editor uses them so a refresh does
+    /// not collapse an automatic candidate order back to one fixed endpoint.
+    public let routePolicyOverride: SSHRoutePolicy?
+    public let candidateEndpointIDs: [UUID]?
 
-    public init(profileID: UUID, nodeID: UUID, endpointID: UUID? = nil) {
+    public init(
+        profileID: UUID,
+        nodeID: UUID,
+        endpointID: UUID? = nil,
+        routePolicyOverride: SSHRoutePolicy? = nil,
+        candidateEndpointIDs: [UUID]? = nil
+    ) {
         self.profileID = profileID
         self.nodeID = nodeID
         self.endpointID = endpointID
+        self.routePolicyOverride = routePolicyOverride
+        self.candidateEndpointIDs = candidateEndpointIDs
     }
 }
 
@@ -456,7 +469,7 @@ private struct LegacySSHAccountV2: Decodable {
 }
 
 public struct TopologySnapshot: Codable, Hashable, Sendable {
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     public var schemaVersion: Int
     public var nodes: [Node]
@@ -1144,6 +1157,12 @@ public enum TopologySnapshotMigration {
                 value.accountID = previous.accountID
             }
             value.transportPreference = previous.transportPreference
+            value.candidateEndpointIDs = {
+                if case .automatic = previous.routePolicy {
+                    return previous.candidateEndpointIDs
+                }
+                return []
+            }()
             if let previousEndpointID = previous.routePolicy.fixedEndpointID,
                let currentEndpointID = current.routePolicy.fixedEndpointID,
                let previousEndpoint = existing.endpoint(id: previousEndpointID),
@@ -1288,6 +1307,11 @@ public enum TopologySnapshotMigration {
             }
             topology.sshConnectionProfiles[profileIndex].accountID = targetAccountID
             topology.sshConnectionProfiles[profileIndex].routePolicy = .fixed(endpointID: targetEndpointID)
+            if let routePolicyOverride = binding.routePolicyOverride {
+                topology.sshConnectionProfiles[profileIndex].routePolicy = routePolicyOverride
+                topology.sshConnectionProfiles[profileIndex].candidateEndpointIDs =
+                    binding.candidateEndpointIDs ?? []
+            }
 
             if sourceEndpointID != targetEndpointID,
                let targetEndpoint = topology.endpoints.first(where: { $0.id == targetEndpointID }),
@@ -1438,6 +1462,9 @@ public enum TopologySnapshotMigration {
             case .fixed(let endpointID):
                 return endpointID == endpoint.id
             case .automatic(let scope):
+                if !profile.candidateEndpointIDs.isEmpty {
+                    return profile.candidateEndpointIDs.contains(endpoint.id)
+                }
                 return scope == nil || scope == endpoint.networkScope
             }
         }
@@ -1655,18 +1682,32 @@ public enum TopologySnapshotMigration {
             case .fixed(let endpointID):
                 endpoint = endpointsByID[endpointID]
             case .automatic(let scope):
-                endpoint = topology.endpoints
-                    .filter {
-                        $0.nodeID == account.nodeID
-                            && $0.serviceID == nil
-                            && $0.protocol == .ssh
-                            && !$0.isDeleted
-                            && (scope == nil || $0.networkScope == scope)
-                    }
-                    .sorted {
-                        ($0.priority, $0.id.uuidString) < ($1.priority, $1.id.uuidString)
-                    }
-                    .first
+                if !profile.candidateEndpointIDs.isEmpty {
+                    endpoint = profile.candidateEndpointIDs.compactMap { endpointID in
+                        guard let candidate = endpointsByID[endpointID],
+                              !candidate.isDeleted,
+                              candidate.nodeID == account.nodeID,
+                              candidate.serviceID == nil,
+                              candidate.protocol == .ssh,
+                              scope == nil || candidate.networkScope == scope else {
+                            return nil
+                        }
+                        return candidate
+                    }.first
+                } else {
+                    endpoint = topology.endpoints
+                        .filter {
+                            $0.nodeID == account.nodeID
+                                && $0.serviceID == nil
+                                && $0.protocol == .ssh
+                                && !$0.isDeleted
+                                && (scope == nil || $0.networkScope == scope)
+                        }
+                        .sorted {
+                            ($0.priority, $0.id.uuidString) < ($1.priority, $1.id.uuidString)
+                        }
+                        .first
+                }
             }
             guard let endpoint else { return nil }
             let verification = verificationsByAccountID[account.id]?

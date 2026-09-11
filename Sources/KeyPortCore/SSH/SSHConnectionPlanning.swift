@@ -52,6 +52,10 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
     public var accountID: UUID
     public var sshAlias: String
     public var routePolicy: SSHRoutePolicy
+    /// Ordered allow-list for an automatic route. An empty list preserves the
+    /// legacy meaning: all active SSH endpoints matching `networkScope` are
+    /// eligible and are ranked by live evidence and endpoint priority.
+    public var candidateEndpointIDs: [UUID]
     public var transportPreference: SSHConnectionTransportPreference
     public var createdAt: Date
     public var updatedAt: Date
@@ -63,6 +67,7 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         accountID: UUID,
         sshAlias: String,
         routePolicy: SSHRoutePolicy,
+        candidateEndpointIDs: [UUID] = [],
         transportPreference: SSHConnectionTransportPreference = .automatic,
         createdAt: Date = .now,
         updatedAt: Date = .now,
@@ -73,11 +78,66 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         self.accountID = accountID
         self.sshAlias = sshAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         self.routePolicy = routePolicy
+        self.candidateEndpointIDs = Self.uniqueIDs(candidateEndpointIDs)
         self.transportPreference = transportPreference
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.isDeleted = isDeleted
         self.version = version
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case accountID
+        case sshAlias
+        case routePolicy
+        case candidateEndpointIDs
+        case transportPreference
+        case createdAt
+        case updatedAt
+        case isDeleted
+        case version
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            accountID: try container.decode(UUID.self, forKey: .accountID),
+            sshAlias: try container.decode(String.self, forKey: .sshAlias),
+            routePolicy: try container.decode(SSHRoutePolicy.self, forKey: .routePolicy),
+            candidateEndpointIDs: try container.decodeIfPresent(
+                [UUID].self,
+                forKey: .candidateEndpointIDs
+            ) ?? [],
+            transportPreference: try container.decodeIfPresent(
+                SSHConnectionTransportPreference.self,
+                forKey: .transportPreference
+            ) ?? .automatic,
+            createdAt: try container.decode(Date.self, forKey: .createdAt),
+            updatedAt: try container.decode(Date.self, forKey: .updatedAt),
+            isDeleted: try container.decodeIfPresent(Bool.self, forKey: .isDeleted) ?? false,
+            version: try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(accountID, forKey: .accountID)
+        try container.encode(sshAlias, forKey: .sshAlias)
+        try container.encode(routePolicy, forKey: .routePolicy)
+        try container.encode(Self.uniqueIDs(candidateEndpointIDs), forKey: .candidateEndpointIDs)
+        try container.encode(transportPreference, forKey: .transportPreference)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(isDeleted, forKey: .isDeleted)
+        try container.encode(version, forKey: .version)
+    }
+
+    private static func uniqueIDs(_ values: [UUID]) -> [UUID] {
+        var seen = Set<UUID>()
+        return values.filter { seen.insert($0).inserted }
     }
 }
 
@@ -115,6 +175,7 @@ public enum SSHConnectionPlanReason: String, Codable, Hashable, Sendable {
     case explicitProfile
     case explicitEndpoint
     case exactAddress
+    case profileCandidateOrder
     case currentNetworkSuccess
     case profileNetworkScope
     case endpointPriority
@@ -248,6 +309,10 @@ public enum SSHConnectionPlanningError: LocalizedError, Equatable, Sendable {
     case endpointNotFound
     case profileNotFound
     case profileOutsideNode
+    case routeCandidateNotFound(UUID)
+    case routeCandidateOutsideNode(UUID)
+    case routeCandidateNotSSH(UUID)
+    case routeCandidateScopeMismatch(UUID)
 
     public var errorDescription: String? {
         switch self {
@@ -257,6 +322,55 @@ public enum SSHConnectionPlanningError: LocalizedError, Equatable, Sendable {
         case .endpointNotFound: "节点上没有符合访问要求的 SSH 路径。"
         case .profileNotFound: "找不到指定的 SSH 连接配置。"
         case .profileOutsideNode: "SSH 连接配置不属于所选节点。"
+        case .routeCandidateNotFound(let endpointID):
+            "自动路径候选 \(endpointID.uuidString.prefix(8)) 已不存在或已被删除。"
+        case .routeCandidateOutsideNode(let endpointID):
+            "自动路径候选 \(endpointID.uuidString.prefix(8)) 不属于当前节点。"
+        case .routeCandidateNotSSH(let endpointID):
+            "自动路径候选 \(endpointID.uuidString.prefix(8)) 不是有效的节点级 SSH 路径。"
+        case .routeCandidateScopeMismatch(let endpointID):
+            "自动路径候选 \(endpointID.uuidString.prefix(8)) 与网络范围要求不一致。"
+        }
+    }
+}
+
+/// Resolves the durable route policy to active node-level SSH endpoints. The
+/// resolver is deliberately free of probing and authentication so the same
+/// validation is used by the planner and the editor before any SSH operation.
+public enum SSHRoutePolicyResolver {
+    public static func endpoints(
+        for profile: SSHConnectionProfile,
+        nodeID: UUID,
+        in topology: TopologySnapshot
+    ) throws -> [Endpoint] {
+        let activeEndpoints = topology.endpoints(for: nodeID, endpointProtocol: .ssh)
+        switch profile.routePolicy {
+        case .fixed(let endpointID):
+            guard let endpoint = activeEndpoints.first(where: { $0.id == endpointID }) else {
+                throw SSHConnectionPlanningError.endpointNotFound
+            }
+            return [endpoint]
+        case .automatic(let scope):
+            guard !profile.candidateEndpointIDs.isEmpty else {
+                return activeEndpoints.filter { scope == nil || $0.networkScope == scope }
+            }
+
+            let endpointsByID = Dictionary(uniqueKeysWithValues: topology.endpoints.map { ($0.id, $0) })
+            return try profile.candidateEndpointIDs.map { endpointID in
+                guard let endpoint = endpointsByID[endpointID], !endpoint.isDeleted else {
+                    throw SSHConnectionPlanningError.routeCandidateNotFound(endpointID)
+                }
+                guard endpoint.nodeID == nodeID else {
+                    throw SSHConnectionPlanningError.routeCandidateOutsideNode(endpointID)
+                }
+                guard endpoint.serviceID == nil, endpoint.protocol == .ssh else {
+                    throw SSHConnectionPlanningError.routeCandidateNotSSH(endpointID)
+                }
+                if let scope, endpoint.networkScope != scope {
+                    throw SSHConnectionPlanningError.routeCandidateScopeMismatch(endpointID)
+                }
+                return endpoint
+            }
         }
     }
 }
@@ -424,6 +538,17 @@ public struct SSHConnectionPlanner: Sendable {
                 }
                 return [(endpoint, .explicitEndpoint)]
             case .automatic(let scope):
+                if !profile.candidateEndpointIDs.isEmpty {
+                    let ordered = try SSHRoutePolicyResolver.endpoints(
+                        for: profile,
+                        nodeID: nodeID,
+                        in: topology
+                    )
+                    guard !ordered.isEmpty else {
+                        throw SSHConnectionPlanningError.endpointNotFound
+                    }
+                    return ordered.map { ($0, .profileCandidateOrder) }
+                }
                 if let scope { endpoints = endpoints.filter { $0.networkScope == scope } }
             }
         } else if let scope = intent.networkScope {
