@@ -10,7 +10,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Form {
-                Section("设备") {
+                Section("我的设备") {
                     LabeledContent("当前设备", value: model.currentDevice?.name ?? "未注册")
                     LabeledContent("设备 ID", value: model.currentDevice?.id ?? "不可用")
                 }
@@ -86,7 +86,7 @@ struct SettingsView: View {
                 }
                 Section("内容") {
                     LabeledContent("包含", value: "服务器、别名、公钥、设备、授权")
-                    LabeledContent("不包含", value: "密码、私钥、本地路径、审计日志")
+                    LabeledContent("不包含", value: "密码、私钥、本地路径、活动记录")
                 }
             }
             .formStyle(.grouped)

@@ -22,7 +22,7 @@ struct NodeWorkspaceDetailView: View {
         Group {
             if !model.graphWorkspace.isAvailable {
                 ContentUnavailableView(
-                    "节点工作区还没有数据",
+                    "服务器工作区还没有数据",
                     systemImage: "server.rack",
                     description: Text(model.graphWorkspace.unavailableMessage)
                 )
@@ -80,13 +80,13 @@ struct NodeWorkspaceDetailView: View {
                 }
             } else {
                 ContentUnavailableView(
-                    "未选择节点",
+                    "未选择服务器",
                     systemImage: "cursorarrow.click",
-                    description: Text("从左侧列表选择一个节点。")
+                    description: Text("从左侧列表选择一个服务器。")
                 )
             }
         }
-        .navigationTitle(item?.node.title ?? "节点")
+        .navigationTitle(item?.node.title ?? "服务器")
         .inspector(isPresented: $showsAccountInspector) {
             NodeAccountInspectorView(
                 account: item.flatMap(selectedAccount(in:)),

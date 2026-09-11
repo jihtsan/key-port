@@ -54,7 +54,7 @@ struct NodeWorkspaceHeader: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .help("节点操作")
+                .help("服务器操作")
             }
 
             ViewThatFits(in: .horizontal) {

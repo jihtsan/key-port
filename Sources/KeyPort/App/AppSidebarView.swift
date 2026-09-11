@@ -6,29 +6,30 @@ struct AppSidebarView: View {
 
     var body: some View {
         @Bindable var model = model
+        let destinationSelection = Binding<SidebarDestination>(
+            get: { model.destination },
+            set: { destination in
+                model.destination = destination
+                model.selectedKeyID = nil
+            }
+        )
 
         VStack(spacing: 0) {
-            List(selection: $model.destination) {
+            List(selection: destinationSelection) {
                 Section {
                     AppSidebarDestinationRow(
-                        title: "节点",
+                        title: "服务器",
                         systemImage: "server.rack"
                     )
-                    .tag(SidebarDestination.nodes)
-
-                    AppSidebarDestinationRow(
-                        title: "拓扑",
-                        systemImage: "point.3.connected.trianglepath.dotted"
-                    )
-                    .tag(SidebarDestination.graph)
+                    .tag(SidebarDestination.servers)
                 }
 
                 Section {
                     Button(action: showAllNodes) {
                         AppSidebarCountRow(
-                            title: "全部节点",
+                            title: "全部服务器",
                             systemImage: "square.grid.2x2",
-                            count: nodeCount
+                            count: serverCount
                         )
                     }
                     .buttonStyle(.plain)
@@ -60,28 +61,10 @@ struct AppSidebarView: View {
                     .tag(SidebarDestination.activity)
 
                     AppSidebarDestinationRow(
-                        title: "SSH 账户",
-                        systemImage: "person.2"
-                    )
-                    .tag(SidebarDestination.servers)
-
-                    AppSidebarDestinationRow(
-                        title: "密钥",
-                        systemImage: "key"
-                    )
-                    .tag(SidebarDestination.keys)
-
-                    AppSidebarDestinationRow(
-                        title: "设备",
+                        title: "我的设备",
                         systemImage: "laptopcomputer"
                     )
                     .tag(SidebarDestination.devices)
-
-                    AppSidebarDestinationRow(
-                        title: "审计日志",
-                        systemImage: "checklist"
-                    )
-                    .tag(SidebarDestination.logs)
                 }
             }
             .listStyle(.sidebar)
@@ -101,13 +84,13 @@ struct AppSidebarView: View {
         .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 250)
     }
 
-    private var nodeCount: Int {
-        let unifiedCount = model.topology.nodes.filter { !$0.isDeleted }.count
-        if unifiedCount > 0 { return unifiedCount }
-        return NodeWorkspacePresentation.items(
+    private var serverCount: Int {
+        let workspaceCount = NodeWorkspacePresentation.items(
             model: model,
             workspace: model.graphWorkspace
-        ).count
+        ).filter { $0.isHostNode && $0.accountCount > 0 }.count
+        if workspaceCount > 0 { return workspaceCount }
+        return ServerConnectionGrouping.groups(model.activeServers).count
     }
 
     private var tags: [AppSidebarTag] {
@@ -121,17 +104,23 @@ struct AppSidebarView: View {
     }
 
     private func showAllNodes() {
-        model.destination = .nodes
+        model.destination = .servers
+        model.selectedKeyID = nil
+        model.serverWorkspaceMode = .list
         model.graphWorkspace.viewMode = .allDevices
         model.graphWorkspace.onlyIssues = false
         model.graphWorkspace.searchText = ""
+        model.searchText = ""
     }
 
     private func showTag(_ tag: String) {
-        model.destination = .nodes
+        model.destination = .servers
+        model.selectedKeyID = nil
+        model.serverWorkspaceMode = .list
         model.graphWorkspace.viewMode = .allDevices
         model.graphWorkspace.onlyIssues = false
         model.graphWorkspace.searchText = tag
+        model.searchText = tag
     }
 
     private func tagTint(at index: Int) -> Color {

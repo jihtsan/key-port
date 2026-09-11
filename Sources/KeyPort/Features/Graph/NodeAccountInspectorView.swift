@@ -35,7 +35,7 @@ struct NodeAccountInspectorView: View {
             ContentUnavailableView(
                 "未选择连接配置",
                 systemImage: "arrow.triangle.branch",
-                description: Text("从节点工作区选择一个 SSH 连接配置。")
+                description: Text("从服务器工作区选择一个 SSH 连接配置。")
             )
             .navigationTitle("连接配置")
         }
