@@ -37,6 +37,10 @@ public extension AuthorizationStatus {
         self == .checking || self == .syncing
     }
 
+    var isBatchAuthorizationCandidate: Bool {
+        self != .authorized && !isInFlight
+    }
+
     func primaryAction(hasStoredPassword: Bool, hasLocalKey: Bool) -> SSHAuthorizationAction {
         switch self {
         case .authorized:
@@ -57,6 +61,8 @@ public extension AuthorizationStatus {
             .addAndVerifyPassword
         case .unreachable, .authorizationConflict:
             .retry
+        case .authorizationWrittenAwaitingVerification:
+            .recheck
         case .checking, .syncing:
             .none
         }

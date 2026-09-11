@@ -726,7 +726,8 @@ public struct TopologyGraphProjector: Sendable {
         switch localState?.status {
         case .authorized: verification = .succeeded
         case .checking, .syncing: verification = .checking; reasons.append(.verificationPending)
-        case .keyAuthenticationFailed, .passwordAuthenticationFailed:
+        case .keyAuthenticationFailed, .passwordAuthenticationFailed,
+             .authorizationWrittenAwaitingVerification:
             verification = .failed
             reasons.append(.verificationFailed)
         case .authorizationConflict:

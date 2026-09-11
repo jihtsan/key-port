@@ -10,6 +10,10 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
     case passwordAuthenticationFailed
     case keyAuthenticationFailed
     case authorizationConflict
+    /// The remote authorized_keys write completed, but the mandatory
+    /// public-key-only verification did not. This is recoverable and must not
+    /// be presented as a fully authorized connection.
+    case authorizationWrittenAwaitingVerification
     case syncPending
     case checking
     case syncing
@@ -25,6 +29,7 @@ public enum AuthorizationStatus: String, Codable, CaseIterable, Sendable {
         case .passwordAuthenticationFailed: "密码验证失败"
         case .keyAuthenticationFailed: "免密验证失败"
         case .authorizationConflict: "授权冲突"
+        case .authorizationWrittenAwaitingVerification: "已写入待复检"
         case .syncPending: "免密待验证"
         case .checking: "检测中"
         case .syncing: "同步中"

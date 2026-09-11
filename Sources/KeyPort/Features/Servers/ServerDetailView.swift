@@ -14,6 +14,12 @@ struct ServerDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 accountHeader
+                SSHFirstAccessProgressView(
+                    state: model.firstAccessState(for: server),
+                    onPrimaryAction: {
+                        Task { await model.performPasswordlessPrimaryAction(serverID: server.id) }
+                    }
+                )
                 quickConnection
                 machineConfiguration
                 credentialsAndSecurity
@@ -429,6 +435,17 @@ struct ServerDetailView: View {
                         Divider()
                     }
 
+                    let deviceSummaries = model.deviceAuthorizationSummaries(for: server)
+                    if !deviceSummaries.isEmpty {
+                        Text("各设备授权状态")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(deviceSummaries) { summary in
+                            deviceAuthorizationSummaryRow(summary)
+                        }
+                        Divider()
+                    }
+
                     HStack {
                         Text(authorizations.isEmpty ? "尚未读取到 KeyPort 授权。" : "共 \(authorizations.count) 项 KeyPort 授权")
                             .foregroundStyle(.secondary)
@@ -499,6 +516,36 @@ struct ServerDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func deviceAuthorizationSummaryRow(_ summary: SSHDeviceAuthorizationSummary) -> some View {
+        let deviceName = model.snapshot.devices.first(where: { $0.id == summary.deviceID })?.name
+            ?? "未知设备"
+        return HStack(spacing: 8) {
+            Label(deviceName, systemImage: summary.status.systemImage)
+                .foregroundStyle(summaryColor(summary.status))
+                .lineLimit(1)
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(summary.status.title)
+                    .font(.caption)
+                    .foregroundStyle(summaryColor(summary.status))
+                if let lastVerifiedAt = summary.lastVerifiedAt {
+                    Text("最近验证：\(lastVerifiedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private func summaryColor(_ status: SSHDeviceAuthorizationStatus) -> Color {
+        switch status {
+        case .authorized, .remotelyAuthorized: .green
+        case .checking: .blue
+        case .needsAuthorization, .missingLocalKey, .remoteUnknown, .staleVerification: .orange
+        case .deviceRevoked, .failed: .red
         }
     }
 
@@ -672,6 +719,7 @@ private struct PasswordlessStatusLabel: View {
         case .passwordAuthenticationFailed: "密码验证失败"
         case .keyAuthenticationFailed: "免密验证失败"
         case .authorizationConflict: "授权冲突"
+        case .authorizationWrittenAwaitingVerification: "已写入待复检"
         case .syncPending: "免密待验证"
         case .checking: "正在检测免密"
         case .syncing: "正在同步免密"
@@ -682,7 +730,7 @@ private struct PasswordlessStatusLabel: View {
         switch status {
         case .authorized: "checkmark.shield.fill"
         case .checking, .syncing: "arrow.trianglehead.2.clockwise.rotate.90"
-        case .hostKeyMismatch, .authorizationConflict: "exclamationmark.shield.fill"
+        case .hostKeyMismatch, .authorizationConflict, .authorizationWrittenAwaitingVerification: "exclamationmark.shield.fill"
         case .hostKeyPending: "questionmark.diamond.fill"
         case .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: "xmark.circle.fill"
         case .missingLocalKey: "key.slash"
@@ -696,7 +744,7 @@ private struct PasswordlessStatusLabel: View {
         case .authorized: .green
         case .checking, .syncing, .syncPending: .blue
         case .hostKeyPending, .needsAuthorization, .missingLocalKey: .orange
-        case .hostKeyMismatch, .authorizationConflict, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
+        case .hostKeyMismatch, .authorizationConflict, .authorizationWrittenAwaitingVerification, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
         }
     }
 }

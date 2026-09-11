@@ -381,6 +381,9 @@ private struct SharedServerFields {
 @MainActor
 @Observable
 final class AppModel {
+    private static let firstAccessStatesDefaultsKey = "KeyPort.firstAccessStates"
+    private static let authorizationBatchPlanDefaultsKey = "KeyPort.authorizationBatchPlan"
+
     private struct ActiveDiscoveryOperation {
         let operationID: UUID
         let hostID: UUID
@@ -407,6 +410,11 @@ final class AppModel {
     private var pendingHostKeyResumesAuthorization = false
     var cloudState: CloudSyncState = .disabled
     var lastCloudSyncAt: Date?
+    /// Local workflow state only. It is intentionally excluded from CloudKit
+    /// and the encrypted metadata archive because it describes this Mac's
+    /// current interaction, not shared topology.
+    var firstAccessStates: [UUID: SSHFirstAccessState] = [:]
+    var authorizationBatchPlan: SSHAuthorizationBatchPlan?
     var serverIDsWithStoredPassword = Set<UUID>()
     var serverIDsWithSynchronizablePassword = Set<UUID>()
     var passwordPromptServerID: UUID?
@@ -453,6 +461,7 @@ final class AppModel {
     private var activeDiscoveryOperations: [UUID: ActiveDiscoveryOperation] = [:]
     private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
     private var discoveryGeneration = 0
+    private var authorizationBatchTask: Task<Void, Never>?
 
     init(
         hostV6Runtime: HostV6Runtime? = nil,
@@ -500,12 +509,17 @@ final class AppModel {
         self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
         self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
         self.discoveryCoordinator = discoveryCoordinator
+        restoreLocalAuthorizationWorkflowState()
     }
 
     var activeServers: [ServerConnection] {
         snapshot.servers
             .filter { !$0.isDeleted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var pendingAuthorizationServers: [ServerConnection] {
+        activeServers.filter { $0.status.isBatchAuthorizationCandidate }
     }
 
     var authorizedSSHAccounts: [ServerConnection] {
@@ -537,6 +551,21 @@ final class AppModel {
     }
 
     var currentDevice: Device? { snapshot.devices.first(where: \.isCurrent) }
+
+    func firstAccessState(for server: ServerConnection) -> SSHFirstAccessState {
+        firstAccessStates[server.id] ?? inferredFirstAccessState(for: server)
+    }
+
+    func deviceAuthorizationSummaries(for server: ServerConnection) -> [SSHDeviceAuthorizationSummary] {
+        guard let accountID = topology.connectionProfile(id: server.id)?.accountID else { return [] }
+        let currentDeviceID = currentDevice?.id
+            ?? defaults.string(forKey: "KeyPort.deviceID")
+        return SSHAuthorizationProjection.summaries(
+            for: accountID,
+            currentDeviceID: currentDeviceID,
+            topology: topology
+        )
+    }
     var deviceListItems: [DevicePresence] {
         DevicePresenceMerger.merge(devices: snapshot.devices, tailscaleNodes: tailscaleStatus?.nodes ?? [])
     }
@@ -1483,6 +1512,111 @@ final class AppModel {
         return snapshot.servers.first { $0.id == passwordPromptServerID && !$0.isDeleted }
     }
 
+    private func restoreLocalAuthorizationWorkflowState() {
+        if let data = defaults.data(forKey: Self.firstAccessStatesDefaultsKey),
+           let values = try? JSONDecoder().decode([SSHFirstAccessState].self, from: data) {
+            firstAccessStates = Dictionary(uniqueKeysWithValues: values.map { ($0.targetID, $0) })
+        }
+        guard let data = defaults.data(forKey: Self.authorizationBatchPlanDefaultsKey),
+              var plan = try? JSONDecoder().decode(SSHAuthorizationBatchPlan.self, from: data) else {
+            return
+        }
+        if let deviceID = defaults.string(forKey: "KeyPort.deviceID"), plan.deviceID != deviceID {
+            defaults.removeObject(forKey: Self.authorizationBatchPlanDefaultsKey)
+            return
+        }
+        plan.recoverAfterInterruption()
+        authorizationBatchPlan = plan
+        persistLocalAuthorizationWorkflowState()
+    }
+
+    private func persistLocalAuthorizationWorkflowState() {
+        if let data = try? JSONEncoder().encode(Array(firstAccessStates.values)) {
+            defaults.set(data, forKey: Self.firstAccessStatesDefaultsKey)
+        }
+        if let plan = authorizationBatchPlan,
+           let data = try? JSONEncoder().encode(plan) {
+            defaults.set(data, forKey: Self.authorizationBatchPlanDefaultsKey)
+        } else {
+            defaults.removeObject(forKey: Self.authorizationBatchPlanDefaultsKey)
+        }
+    }
+
+    private func inferredFirstAccessState(for server: ServerConnection) -> SSHFirstAccessState {
+        var state = SSHFirstAccessState(targetID: server.id)
+        switch server.status {
+        case .authorized:
+            state.recordProgress(to: .authorized)
+        case .checking, .syncing:
+            state.recordProgress(to: .authorizing)
+        case .hostKeyPending:
+            state.recordProgress(to: .hostKeyReview)
+        case .hostKeyMismatch:
+            state.recordProgress(to: .hostKeyReview)
+            state.recordBlock(code: .hostKeyChanged, recoveryAction: .reviewHostKey, at: .hostKeyReview)
+        case .missingLocalKey:
+            state.recordProgress(to: .localKeyRequired)
+        case .needsAuthorization, .syncPending:
+            if !hasStoredPassword(serverID: server.id) {
+                state.recordProgress(to: .credentialRequired)
+            } else if privateKey(for: server) == nil {
+                state.recordProgress(to: .localKeyRequired)
+            } else {
+                state.recordProgress(to: .readyToAuthorize)
+            }
+        case .authorizationWrittenAwaitingVerification:
+            state.recordProgress(to: .writtenAwaitingVerification)
+            state.recordBlock(
+                code: .verificationFailedAfterWrite,
+                recoveryAction: .recheck,
+                at: .writtenAwaitingVerification
+            )
+        case .authorizationConflict:
+            state.recordProgress(to: .readyToAuthorize)
+            state.recordBlock(code: .keyAuthenticationFailed, recoveryAction: .retry, at: .readyToAuthorize)
+        case .unreachable:
+            state.recordProgress(to: .authorizing)
+            state.recordBlock(code: .unreachable, recoveryAction: .retry, at: .authorizing)
+        case .passwordAuthenticationFailed:
+            state.recordProgress(to: .credentialVerified)
+            state.recordBlock(code: .passwordRejected, recoveryAction: .providePassword, at: .credentialVerified)
+        case .keyAuthenticationFailed:
+            state.recordProgress(to: .authorizing)
+            state.recordBlock(code: .keyAuthenticationFailed, recoveryAction: .recheck, at: .authorizing)
+        }
+        return state
+    }
+
+    private func setFirstAccessStage(
+        _ serverID: UUID,
+        _ stage: SSHFirstAccessStage,
+        now: Date = .now
+    ) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        var state = firstAccessStates[serverID] ?? inferredFirstAccessState(for: server)
+        state.recordProgress(to: stage, now: now)
+        firstAccessStates[serverID] = state
+        persistLocalAuthorizationWorkflowState()
+    }
+
+    private func blockFirstAccess(
+        _ serverID: UUID,
+        code: SSHAuthorizationFailureCode,
+        at stage: SSHFirstAccessStage? = nil,
+        now: Date = .now
+    ) {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+        var state = firstAccessStates[serverID] ?? inferredFirstAccessState(for: server)
+        state.recordBlock(
+            code: code,
+            recoveryAction: code.suggestedRecoveryAction,
+            at: stage,
+            now: now
+        )
+        firstAccessStates[serverID] = state
+        persistLocalAuthorizationWorkflowState()
+    }
+
     func load() async {
         guard !isLoaded else { return }
         isInitialLoadInProgress = true
@@ -2065,6 +2199,16 @@ final class AppModel {
             profileBindings = []
         }
         await persist(profileBindings: profileBindings)
+        if let savedServer = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) {
+            if savedServer.confirmedHostKeys.isEmpty {
+                setFirstAccessStage(serverID, .hostKeyReview)
+            } else if submission.passwordCheck?.state == .succeeded {
+                setFirstAccessStage(
+                    serverID,
+                    privateKey(for: savedServer) == nil ? .localKeyRequired : .readyToAuthorize
+                )
+            }
+        }
         return serverID
     }
 
@@ -2198,6 +2342,9 @@ final class AppModel {
         if server.status == .authorized, privateKey(for: server) != nil {
             return .verify
         }
+        if server.status == .authorizationWrittenAwaitingVerification {
+            return .verify
+        }
         if privateKey(for: server) == nil {
             return .generateKeyAndEnable
         }
@@ -2253,6 +2400,7 @@ final class AppModel {
         )
         updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在检查主机身份并准备 SSH 授权。", checkedAt: nil)
         updateServer(id: serverID, status: .syncing, detail: "正在同步 SSH 授权，完成公钥复检后才会显示免密可用。")
+        setFirstAccessStage(serverID, .authorizing)
         defer { isBusy = false }
 
         var didReachEndpoint = false
@@ -2268,6 +2416,7 @@ final class AppModel {
                 let detail = "同步 SSH 授权前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(serverID, code: .hostKeyPending, at: .hostKeyReview)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = .key
@@ -2288,6 +2437,7 @@ final class AppModel {
                 let detail = "发生变更的算法：\(algorithms.joined(separator: "、"))。同步 SSH 授权已被阻止。"
                 updateServer(id: serverID, status: .hostKeyMismatch, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(serverID, code: .hostKeyChanged, at: .hostKeyReview)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
                 pendingHostKeyCheckKind = .key
@@ -2312,6 +2462,7 @@ final class AppModel {
                 let detail = "此 Mac 没有可用于 SSH 授权的本地私钥。请先生成或导入密钥。"
                 updateServer(id: serverID, status: .missingLocalKey, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(serverID, code: .missingLocalKey, at: .localKeyRequired)
                 appendSSHCheckLog(detail, serverID: serverID)
                 appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "missing-key", level: .warning)
                 recordSSHConnectionEvidence(
@@ -2329,6 +2480,7 @@ final class AppModel {
                 let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
                 updateServer(id: serverID, status: .needsAuthorization, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 passwordSaveError = nil
                 requestPassword(for: serverID, endpoint: endpoint)
                 appendSSHCheckLog(detail, serverID: serverID)
@@ -2348,6 +2500,7 @@ final class AppModel {
             appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
             try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
             try await authorize(server: routeServer, key: key, transport: transport)
+            setFirstAccessStage(serverID, .authorized)
             await synchronizeMachineConfigurationWithKey(
                 server: routeServer,
                 key: key,
@@ -2363,23 +2516,33 @@ final class AppModel {
             case .missingPrivateKey:
                 status = .missingLocalKey
                 checkState = .blocked
+                blockFirstAccess(serverID, code: .missingLocalKey, at: .localKeyRequired)
             case .missingPassword:
                 status = .needsAuthorization
                 checkState = .blocked
+                blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 passwordSaveError = nil
                 requestPassword(for: serverID, endpoint: endpoint)
             case .hostKeyNotConfirmed:
                 status = .hostKeyPending
                 checkState = .blocked
+                blockFirstAccess(serverID, code: .hostKeyPending, at: .hostKeyReview)
             case .hostKeyChanged:
                 status = .hostKeyMismatch
                 checkState = .blocked
+                blockFirstAccess(serverID, code: .hostKeyChanged, at: .hostKeyReview)
             case .passwordAuthenticationRejected:
                 status = .passwordAuthenticationFailed
                 checkState = .failed
+                blockFirstAccess(serverID, code: .passwordRejected, at: .credentialVerified)
+            case .authorizationWrittenAwaitingVerification:
+                status = .authorizationWrittenAwaitingVerification
+                checkState = .failed
+                blockFirstAccess(serverID, code: .verificationFailedAfterWrite, at: .writtenAwaitingVerification)
             default:
                 status = .keyAuthenticationFailed
                 checkState = .failed
+                blockFirstAccess(serverID, code: authorizationFailureCode(for: error), at: .authorizing)
             }
             let detail = "SSH 授权同步失败：\(message)"
             updateServer(id: serverID, status: status, detail: detail)
@@ -2464,6 +2627,8 @@ final class AppModel {
         let checkKind = pendingHostKeyCheckKind ?? .key
         let endpoint = pendingHostKeyEndpointID.flatMap(topology.endpoint(id:))
         let resumesAuthorization = pendingHostKeyResumesAuthorization
+        let resumesBatch = authorizationBatchPlan?.phase == .paused
+            && authorizationBatchPlan?.blockedTargetID == serverID
         pendingHostKeys = []
         pendingHostKeyServerID = nil
         pendingHostKeyCheckKind = nil
@@ -2473,7 +2638,9 @@ final class AppModel {
             try await hostKeyService.persistConfirmedKeys(confirmed, allServers: snapshot.servers.filter { !$0.isDeleted })
             appendAudit(category: "host-key", action: isRotation ? "rotate" : "confirm", targetID: serverID.uuidString, result: "confirmed-\(confirmed.count)")
             await persist()
-            if resumesAuthorization {
+            if resumesBatch {
+                resumeAuthorizationBatch()
+            } else if resumesAuthorization {
                 await synchronizeSSHAuthorization(serverID: serverID, endpoint: endpoint)
             } else {
                 await check(serverID: serverID, kind: checkKind, endpointOverride: endpoint)
@@ -2507,68 +2674,417 @@ final class AppModel {
                 await persist()
             }
             guard hasStoredPassword(serverID: serverID) else {
+                blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 requestPassword(for: serverID, endpoint: endpoint)
                 return
             }
+            setFirstAccessStage(serverID, .readyToAuthorize)
             await synchronizeSSHAuthorization(serverID: serverID, endpoint: endpoint)
         } catch { present(error) }
     }
 
     func authorizePendingServers() async {
-        guard await authorizeLegacyMutation() else { return }
-        isBusy = true
-        defer { isBusy = false }
+        startAuthorizationBatch()
+        if let task = authorizationBatchTask {
+            await task.value
+        }
+    }
+
+    /// Starts an ordered, resumable batch. The plan is local-only and is
+    /// persisted after each item; successful targets are never included in a
+    /// retry run.
+    func startAuthorizationBatch(targetIDs: [UUID]? = nil) {
+        guard authorizationBatchTask == nil, !isBusy else { return }
+        guard awaitableLegacyMutationForBatch() else { return }
+        let selectedIDs = targetIDs ?? pendingAuthorizationServers.map(\.id)
+        guard !selectedIDs.isEmpty else {
+            errorMessage = "没有待处理的 SSH 授权目标。"
+            return
+        }
+        let deviceID = currentDevice?.id
+            ?? defaults.string(forKey: "KeyPort.deviceID")
+            ?? "local"
         do {
-            if preferredKey == nil {
-                guard let device = currentDevice else { throw SSHServiceError.missingPrivateKey }
-                let generated = try await keyService.generate(device: device)
-                snapshot.keys.append(generated)
-                selectedKeyID = generated.id
-                selectedKeyItemID = "identity:\(generated.id)"
-                for index in snapshot.servers.indices where snapshot.servers[index].status == .missingLocalKey {
-                    snapshot.servers[index].status = .needsAuthorization
-                    snapshot.servers[index].statusDetail = "当前 Mac 的密钥已就绪，可以启用免密。"
+            authorizationBatchPlan = try SSHAuthorizationBatchPlan(
+                targetIDs: selectedIDs,
+                deviceID: deviceID
+            )
+            persistLocalAuthorizationWorkflowState()
+        } catch {
+            present(error)
+            return
+        }
+        runAuthorizationBatch()
+    }
+
+    func resumeAuthorizationBatch() {
+        guard authorizationBatchTask == nil, !isBusy,
+              var plan = authorizationBatchPlan else { return }
+        guard plan.phase == .paused else { return }
+        do {
+            try plan.resumeAfterIntervention()
+            authorizationBatchPlan = plan
+            persistLocalAuthorizationWorkflowState()
+            runAuthorizationBatch()
+        } catch {
+            present(error)
+        }
+    }
+
+    func retryFailedAuthorizationBatch() {
+        guard authorizationBatchTask == nil, !isBusy,
+              var plan = authorizationBatchPlan else { return }
+        do {
+            try plan.retryFailed()
+            authorizationBatchPlan = plan
+            persistLocalAuthorizationWorkflowState()
+            runAuthorizationBatch()
+        } catch {
+            present(error)
+        }
+    }
+
+    func cancelAuthorizationBatch() {
+        authorizationBatchTask?.cancel()
+        guard var plan = authorizationBatchPlan else { return }
+        plan.cancel()
+        authorizationBatchPlan = plan
+        persistLocalAuthorizationWorkflowState()
+        if authorizationBatchTask == nil {
+            isBusy = false
+        }
+    }
+
+    private func awaitableLegacyMutationForBatch() -> Bool {
+        // This synchronous gate mirrors authorizeLegacyMutation for the
+        // target-selection action. The actual async authority gate is still
+        // checked by performAuthorizationBatch before any remote write.
+        guard hostV6Runtime == nil || !isMetadataReadOnly else {
+            errorMessage = "当前工作区只读，暂时不能执行 SSH 授权。"
+            return false
+        }
+        return true
+    }
+
+    private func runAuthorizationBatch() {
+        guard authorizationBatchTask == nil else { return }
+        isBusy = true
+        authorizationBatchTask = Task { [weak self] in
+            await self?.performAuthorizationBatch()
+        }
+    }
+
+    private func performAuthorizationBatch() async {
+        defer {
+            isBusy = false
+            authorizationBatchTask = nil
+            persistLocalAuthorizationWorkflowState()
+        }
+        guard await authorizeLegacyMutation(), var plan = authorizationBatchPlan else { return }
+
+        do {
+            if plan.phase == .pending {
+                try plan.begin()
+                authorizationBatchPlan = plan
+                persistLocalAuthorizationWorkflowState()
+            }
+
+            guard !Task.isCancelled else {
+                plan.cancel()
+                authorizationBatchPlan = plan
+                persistLocalAuthorizationWorkflowState()
+                return
+            }
+
+            do {
+                try await localAuthentication.authorize(reason: "为所选 SSH 账户启用当前 Mac 的免密")
+            } catch {
+                plan.pause(reason: .localAuthorizationFailed)
+                authorizationBatchPlan = plan
+                appendAudit(
+                    category: "authorization",
+                    action: "batch",
+                    targetID: nil,
+                    result: SSHAuthorizationFailureCode.localAuthorizationFailed.rawValue,
+                    level: .warning
+                )
+                persistLocalAuthorizationWorkflowState()
+                return
+            }
+
+            while let targetID = plan.nextPendingTargetID {
+                guard !Task.isCancelled else {
+                    plan.cancel()
+                    authorizationBatchPlan = plan
+                    persistLocalAuthorizationWorkflowState()
+                    return
                 }
-                appendAudit(category: "key", action: "generate", targetID: generated.id, result: "new-device-ed25519")
+                try plan.markInProgress(targetID: targetID)
+                authorizationBatchPlan = plan
+                persistLocalAuthorizationWorkflowState()
                 await persist()
+
+                await performAuthorizationBatchItem(targetID: targetID)
+                guard let latestPlan = authorizationBatchPlan else { return }
+                plan = latestPlan
+                if plan.phase == .paused || plan.phase == .cancelled { return }
             }
-            try await localAuthentication.authorize(reason: "为待处理的 KeyPort 服务器启用免密")
-            for server in activeServers where server.status == .needsAuthorization
-                || server.status == .missingLocalKey
-                || server.status == .syncPending {
-                guard let serverKey = key(for: server) else { continue }
-                updateServer(id: server.id, status: .syncing, detail: "正在同步 SSH 授权。")
-                updateAuthenticationCheck(id: server.id, kind: .key, state: .checking, detail: "正在安装公钥并进行复检。", checkedAt: nil)
-                do {
-                    try await authorize(server: server, key: serverKey)
-                } catch {
-                    let detail = "SSH 授权同步失败：\(UserFacingText.localizedError(error))"
-                    let status: AuthorizationStatus
-                    let checkState: AuthenticationCheckState
-                    switch error as? SSHServiceError {
-                    case .hostKeyNotConfirmed:
-                        status = .hostKeyPending
-                        checkState = .blocked
-                    case .hostKeyChanged:
-                        status = .hostKeyMismatch
-                        checkState = .blocked
-                    case .missingPrivateKey:
-                        status = .missingLocalKey
-                        checkState = .blocked
-                    case .missingPassword, .passwordAuthenticationRejected:
-                        status = .passwordAuthenticationFailed
-                        checkState = .failed
-                    default:
-                        status = .keyAuthenticationFailed
-                        checkState = .failed
-                    }
-                    updateServer(id: server.id, status: status, detail: detail)
-                    updateAuthenticationCheck(id: server.id, kind: .key, state: checkState, detail: detail)
-                    appendAudit(category: "authorization", action: "batch-sync", targetID: server.id.uuidString, result: "failed", level: .error)
-                    appendAudit(category: "authorization", action: "batch-item", targetID: server.id.uuidString, result: "failed", level: .error)
-                }
+            plan.finishIfPossible()
+            authorizationBatchPlan = plan
+            persistLocalAuthorizationWorkflowState()
+            await persist()
+        } catch {
+            plan.pause(reason: .remoteWriteFailed)
+            authorizationBatchPlan = plan
+            appendAudit(
+                category: "authorization",
+                action: "batch",
+                result: SSHAuthorizationFailureCode.remoteWriteFailed.rawValue,
+                level: .error
+            )
+            persistLocalAuthorizationWorkflowState()
+        }
+    }
+
+    private func performAuthorizationBatchItem(targetID: UUID) async {
+        guard let server = snapshot.servers.first(where: { $0.id == targetID && !$0.isDeleted }) else {
+            finishAuthorizationBatchItem(
+                targetID: targetID,
+                code: .invalidTarget,
+                detail: "目标 SSH 账户已不存在。"
+            )
+            return
+        }
+
+        // A target can become authorized while a persisted plan is waiting
+        // for user intervention. Treat that remote/local fact as complete so
+        // resuming the plan never repeats an already successful side effect.
+        guard server.status != .authorized else {
+            finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
+            return
+        }
+
+        guard let key = privateKey(for: server), key.isLocallyAvailable, key.privateKeyPath != nil else {
+            let detail = "此 Mac 没有可用于 SSH 授权的本地私钥。"
+            updateServer(id: targetID, status: .missingLocalKey, detail: detail)
+            updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+            blockFirstAccess(targetID, code: .missingLocalKey, at: .localKeyRequired)
+            finishAuthorizationBatchItem(targetID: targetID, code: .missingLocalKey, detail: detail)
+            await persist()
+            return
+        }
+
+        guard await storedCredentialOwnerID(forProfileID: targetID) != nil else {
+            let detail = "启用 SSH 授权前，请输入并验证此账户的密码。"
+            updateServer(id: targetID, status: .needsAuthorization, detail: detail)
+            updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+            blockFirstAccess(targetID, code: .missingPassword, at: .credentialRequired)
+            passwordSaveError = nil
+            requestPassword(for: targetID)
+            finishAuthorizationBatchItem(targetID: targetID, code: .missingPassword, detail: detail)
+            await persist()
+            return
+        }
+
+        guard let compatibleRouteServer = sshOperationServer(for: server) else {
+            let detail = "该账户没有可用的 SSH 路径。"
+            updateServer(id: targetID, status: .syncPending, detail: detail)
+            updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+            blockFirstAccess(targetID, code: .routeUnavailable, at: .readyToAuthorize)
+            finishAuthorizationBatchItem(targetID: targetID, code: .routeUnavailable, detail: detail)
+            await persist()
+            return
+        }
+
+        let transport = sshTransport(forProfileID: targetID)
+        let routeServer = self.server(compatibleRouteServer, using: nil)
+        updateServer(id: targetID, status: .syncing, detail: "正在安装公钥并进行强制复检。")
+        updateAuthenticationCheck(id: targetID, kind: .key, state: .checking, detail: "正在安装公钥并进行强制复检。", checkedAt: nil)
+        setFirstAccessStage(targetID, .authorizing)
+        var didReachEndpoint = false
+        do {
+            let observed = try await hostKeyService.scan(server: routeServer, transport: transport)
+            didReachEndpoint = true
+            switch HostKeyEvaluator.evaluate(observed: observed, confirmed: routeServer.confirmedHostKeys) {
+            case .pending:
+                let detail = "批量授权已暂停，请核对主机密钥指纹。"
+                updateServer(id: targetID, status: .hostKeyPending, detail: detail)
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(targetID, code: .hostKeyPending, at: .hostKeyReview)
+                pendingHostKeys = observed
+                pendingHostKeyServerID = targetID
+                pendingHostKeyCheckKind = .key
+                pendingHostKeyEndpointID = nil
+                pendingHostKeyResumesAuthorization = true
+                finishAuthorizationBatchItem(targetID: targetID, code: .hostKeyPending, detail: detail)
+                recordSSHConnectionEvidence(
+                    serverID: targetID,
+                    routedServer: routeServer,
+                    endpointOverride: nil,
+                    transport: transport,
+                    wasReachable: didReachEndpoint
+                )
+                await persist()
+                return
+            case .changed:
+                let detail = "批量授权已暂停，请核对变更后的主机密钥指纹。"
+                updateServer(id: targetID, status: .hostKeyMismatch, detail: detail)
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(targetID, code: .hostKeyChanged, at: .hostKeyReview)
+                pendingHostKeys = observed
+                pendingHostKeyServerID = targetID
+                pendingHostKeyCheckKind = .key
+                pendingHostKeyEndpointID = nil
+                pendingHostKeyResumesAuthorization = true
+                finishAuthorizationBatchItem(targetID: targetID, code: .hostKeyChanged, detail: detail)
+                recordSSHConnectionEvidence(
+                    serverID: targetID,
+                    routedServer: routeServer,
+                    endpointOverride: nil,
+                    transport: transport,
+                    wasReachable: didReachEndpoint
+                )
+                await persist()
+                return
+            case .confirmed:
+                break
             }
-        } catch { present(error) }
+
+            try await authorize(server: routeServer, key: key, transport: transport)
+            guard !Task.isCancelled else { return }
+            setFirstAccessStage(targetID, .authorized)
+            recordSSHConnectionEvidence(
+                serverID: targetID,
+                routedServer: routeServer,
+                endpointOverride: nil,
+                transport: transport,
+                wasReachable: didReachEndpoint
+            )
+            finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
+            appendAudit(category: "authorization", action: "batch-item", targetID: targetID.uuidString, result: "succeeded")
+        } catch {
+            if Task.isCancelled {
+                finishAuthorizationBatchItem(targetID: targetID, code: .cancelled, detail: "批量授权已取消。")
+                await persist()
+                return
+            }
+            let code = authorizationFailureCode(for: error)
+            let detail = "SSH 授权失败：\(UserFacingText.localizedError(error))"
+            applyAuthorizationFailure(targetID: targetID, code: code, detail: detail)
+            finishAuthorizationBatchItem(targetID: targetID, code: code, detail: detail)
+            appendAudit(category: "authorization", action: "batch-item", targetID: targetID.uuidString, result: code.rawValue, level: .warning)
+        }
+        recordSSHConnectionEvidence(
+            serverID: targetID,
+            routedServer: routeServer,
+            endpointOverride: nil,
+            transport: transport,
+            wasReachable: didReachEndpoint
+        )
+        await persist()
+    }
+
+    private func finishAuthorizationBatchItem(
+        targetID: UUID,
+        succeeded: Bool = false,
+        code: SSHAuthorizationFailureCode? = nil,
+        detail: String? = nil
+    ) {
+        guard var plan = authorizationBatchPlan,
+              plan.phase != .cancelled,
+              let item = plan.items.first(where: { $0.targetID == targetID }),
+              item.state == .inProgress else { return }
+        do {
+            if succeeded {
+                try plan.markSucceeded(targetID: targetID)
+            } else if let code,
+                      code.requiresUserAction,
+                      code != .invalidTarget,
+                      code != .interrupted {
+                try plan.markBlocked(targetID: targetID, code: code)
+            } else if let code {
+                try plan.markFailed(targetID: targetID, code: code)
+            }
+            authorizationBatchPlan = plan
+            persistLocalAuthorizationWorkflowState()
+        } catch {
+            present(error)
+        }
+        if let detail {
+            appendSSHCheckLog(detail, serverID: targetID)
+        }
+    }
+
+    private func applyAuthorizationFailure(
+        targetID: UUID,
+        code: SSHAuthorizationFailureCode,
+        detail: String
+    ) {
+        let status: AuthorizationStatus
+        let checkState: AuthenticationCheckState
+        switch code {
+        case .hostKeyPending:
+            status = .hostKeyPending
+            checkState = .blocked
+            blockFirstAccess(targetID, code: code, at: .hostKeyReview)
+        case .hostKeyChanged:
+            status = .hostKeyMismatch
+            checkState = .blocked
+            blockFirstAccess(targetID, code: code, at: .hostKeyReview)
+        case .missingPassword:
+            status = .needsAuthorization
+            checkState = .blocked
+            blockFirstAccess(targetID, code: code, at: .credentialRequired)
+        case .missingLocalKey:
+            status = .missingLocalKey
+            checkState = .blocked
+            blockFirstAccess(targetID, code: code, at: .localKeyRequired)
+        case .verificationFailedAfterWrite:
+            status = .authorizationWrittenAwaitingVerification
+            checkState = .failed
+            blockFirstAccess(targetID, code: code, at: .writtenAwaitingVerification)
+        case .passwordRejected:
+            status = .passwordAuthenticationFailed
+            checkState = .failed
+            blockFirstAccess(targetID, code: code, at: .credentialVerified)
+            passwordSaveError = nil
+            requestPassword(for: targetID)
+        case .routeUnavailable:
+            status = .syncPending
+            checkState = .blocked
+        case .unreachable:
+            status = .unreachable
+            checkState = .failed
+        case .keyAuthenticationFailed, .remoteWriteFailed, .localAuthorizationFailed,
+             .cancelled, .expired, .invalidTarget, .interrupted:
+            status = .keyAuthenticationFailed
+            checkState = .failed
+        }
+        updateServer(id: targetID, status: status, detail: detail)
+        updateAuthenticationCheck(id: targetID, kind: .key, state: checkState, detail: detail)
+    }
+
+    private func authorizationFailureCode(for error: Error) -> SSHAuthorizationFailureCode {
+        switch error as? SSHServiceError {
+        case .hostKeyNotConfirmed:
+            .hostKeyPending
+        case .hostKeyChanged:
+            .hostKeyChanged
+        case .missingPrivateKey:
+            .missingLocalKey
+        case .missingPassword:
+            .missingPassword
+        case .passwordAuthenticationRejected:
+            .passwordRejected
+        case .authorizationWrittenAwaitingVerification:
+            .verificationFailedAfterWrite
+        case .identityRouteUnavailable:
+            .routeUnavailable
+        case .operationFailed:
+            .remoteWriteFailed
+        case nil:
+            .remoteWriteFailed
+        }
     }
 
     func refreshRemoteAuthorizations(serverID: UUID) async {
@@ -3242,13 +3758,22 @@ final class AppModel {
             passwordPromptServerID = nil
             passwordPromptEndpointID = nil
             appendAudit(category: "keychain", action: "save-credential", targetID: server.id.uuidString, result: synchronizable ? "saved-synchronizable" : "saved-local")
+            setFirstAccessStage(server.id, .credentialVerified)
+            if privateKey(for: server) != nil {
+                setFirstAccessStage(server.id, .readyToAuthorize)
+            }
             if usernameChanged {
                 await writeConfig()
             }
             await persist(profileBindings: profileBinding.map { [$0] } ?? [])
             if authorizeAfterSave {
                 selectedServerID = server.id
-                await authorizeCurrentDevice(serverID: server.id, endpoint: authorizationEndpoint)
+                if authorizationBatchPlan?.phase == .paused,
+                   authorizationBatchPlan?.blockedTargetID == server.id {
+                    resumeAuthorizationBatch()
+                } else {
+                    await authorizeCurrentDevice(serverID: server.id, endpoint: authorizationEndpoint)
+                }
             }
         } catch {
             passwordSaveError = UserFacingText.localizedError(error)
@@ -3501,6 +4026,9 @@ final class AppModel {
                 let detail = "身份验证前，请核对主机密钥指纹。"
                 updateServer(id: serverID, status: .hostKeyPending, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+                if kind == .key {
+                    blockFirstAccess(serverID, code: .hostKeyPending, at: .hostKeyReview)
+                }
                 appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
@@ -3512,6 +4040,9 @@ final class AppModel {
                 let detail = "发生变更的算法：\(algorithms.joined(separator: "、"))。身份验证已被阻止。"
                 updateServer(id: serverID, status: .hostKeyMismatch, detail: detail)
                 updateAuthenticationCheck(id: serverID, kind: kind, state: .blocked, detail: detail)
+                if kind == .key {
+                    blockFirstAccess(serverID, code: .hostKeyChanged, at: .hostKeyReview)
+                }
                 appendSSHCheckLog(detail, serverID: serverID)
                 pendingHostKeys = observed
                 pendingHostKeyServerID = serverID
@@ -3538,7 +4069,12 @@ final class AppModel {
             updateAuthenticationCheck(id: serverID, kind: kind, state: .failed, detail: message)
             appendSSHCheckLog(message, serverID: serverID)
             if kind == .key {
-                updateServer(id: serverID, status: .unreachable, detail: message)
+                if initial.status == .authorizationWrittenAwaitingVerification {
+                    updateServer(id: serverID, status: .authorizationWrittenAwaitingVerification, detail: message)
+                    blockFirstAccess(serverID, code: .unreachable, at: .writtenAwaitingVerification)
+                } else {
+                    updateServer(id: serverID, status: .unreachable, detail: message)
+                }
             }
             appendAudit(category: "ssh-auth", action: kind.auditAction, targetID: serverID.uuidString, result: "failed", level: .warning)
         }
@@ -3654,6 +4190,9 @@ final class AppModel {
         guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
             let detail = "检查密码 SSH 前，请输入并测试服务器密码。"
             updateAuthenticationCheck(id: server.id, kind: .password, state: .blocked, detail: detail)
+            if server.status != .authorized {
+                blockFirstAccess(server.id, code: .missingPassword, at: .credentialRequired)
+            }
             passwordSaveError = nil
             passwordPromptServerID = server.id
             appendAudit(category: "ssh-auth", action: ServerCheckKind.password.auditAction, targetID: server.id.uuidString, result: "missing-password", level: .warning)
@@ -3671,6 +4210,12 @@ final class AppModel {
         updateAuthenticationCheck(id: server.id, kind: .password, state: authenticated ? .succeeded : .failed, detail: detail)
         appendSSHCheckLog(detail, serverID: server.id)
         if authenticated {
+            if server.status != .authorized {
+                setFirstAccessStage(server.id, .credentialVerified)
+                if privateKey(for: server) != nil {
+                    setFirstAccessStage(server.id, .readyToAuthorize)
+                }
+            }
             if server.status == .passwordAuthenticationFailed {
                 updateServer(
                     id: server.id,
@@ -3685,6 +4230,7 @@ final class AppModel {
             )
         } else if server.status != .authorized {
             updateServer(id: server.id, status: .passwordAuthenticationFailed, detail: detail)
+            blockFirstAccess(server.id, code: .passwordRejected, at: .credentialVerified)
         }
         appendAudit(
             category: "ssh-auth",
@@ -3703,6 +4249,7 @@ final class AppModel {
             let detail = "此 Mac 没有可用的本地私钥。"
             updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: detail)
             updateServer(id: server.id, status: .missingLocalKey, detail: detail)
+            blockFirstAccess(server.id, code: .missingLocalKey, at: .localKeyRequired)
             appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "missing-key", level: .warning)
             return
         }
@@ -3717,6 +4264,7 @@ final class AppModel {
         if authenticated {
             markMachineConfigurationRefreshAttempt(serverID: server.id)
             updateServer(id: server.id, status: .authorized, detail: detail)
+            setFirstAccessStage(server.id, .authorized)
             upsertAuthorization(serverID: server.id, key: key, authorizedAt: nil)
             await synchronizeMachineConfigurationWithKey(
                 server: server,
@@ -3725,7 +4273,17 @@ final class AppModel {
             )
             return
         }
-        updateServer(id: server.id, status: .needsAuthorization, detail: detail)
+        let writtenAwaitingVerification = server.status == .authorizationWrittenAwaitingVerification
+        updateServer(
+            id: server.id,
+            status: writtenAwaitingVerification ? .authorizationWrittenAwaitingVerification : .needsAuthorization,
+            detail: detail
+        )
+        blockFirstAccess(
+            server.id,
+            code: writtenAwaitingVerification ? .verificationFailedAfterWrite : .keyAuthenticationFailed,
+            at: writtenAwaitingVerification ? .writtenAwaitingVerification : .authorizing
+        )
         appendAudit(category: "ssh-auth", action: ServerCheckKind.key.auditAction, targetID: server.id.uuidString, result: "not-authorized", level: .warning)
     }
 
@@ -3771,8 +4329,23 @@ final class AppModel {
             key: key,
             transport: transport
         ) else {
-            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: "密钥已安装，但免密 SSH 验证失败。")
-            throw SSHServiceError.operationFailed("密钥已安装，但验证失败。")
+            let detail = "公钥已写入，但免密 SSH 复检失败。请重新检查或重试；不会把此连接标记为免密可用。"
+            updateAuthenticationCheck(id: server.id, kind: .key, state: .failed, detail: detail)
+            updateServer(id: server.id, status: .authorizationWrittenAwaitingVerification, detail: detail)
+            blockFirstAccess(
+                server.id,
+                code: .verificationFailedAfterWrite,
+                at: .writtenAwaitingVerification
+            )
+            appendAudit(
+                category: "authorization",
+                action: "install",
+                targetID: server.id.uuidString,
+                result: "written-awaiting-verification",
+                level: .warning
+            )
+            await persist()
+            throw SSHServiceError.authorizationWrittenAwaitingVerification
         }
         updateAuthenticationCheck(id: server.id, kind: .key, state: .succeeded, detail: "授权后免密 SSH 身份验证成功。")
         upsertAuthorization(serverID: server.id, key: key, authorizedAt: .now)

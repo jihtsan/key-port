@@ -81,6 +81,8 @@ struct DeviceOverviewView: View {
     let model: AppModel
     let onManageAccount: (TailscaleAccountEditorRequest) -> Void
     let onConfigureAccess: (UUID) -> Void
+    let onStartBatch: ([UUID]) -> Void
+    let onShowBatch: () -> Void
 
     var body: some View {
         if let item = model.selectedDeviceItem {
@@ -88,7 +90,9 @@ struct DeviceOverviewView: View {
                 item: item,
                 model: model,
                 onManageAccount: onManageAccount,
-                onConfigureAccess: onConfigureAccess
+                onConfigureAccess: onConfigureAccess,
+                onStartBatch: onStartBatch,
+                onShowBatch: onShowBatch
             )
         } else {
             ContentUnavailableView("未选择设备", systemImage: "laptopcomputer", description: Text("请选择一台设备。"))
@@ -101,6 +105,9 @@ private struct DeviceDetailView: View {
     let model: AppModel
     let onManageAccount: (TailscaleAccountEditorRequest) -> Void
     let onConfigureAccess: (UUID) -> Void
+    let onStartBatch: ([UUID]) -> Void
+    let onShowBatch: () -> Void
+    @State private var showsAuthorizationTargetSelection = false
 
     var body: some View {
         ScrollView {
@@ -180,8 +187,16 @@ private struct DeviceDetailView: View {
                                 "待启用免密的服务器",
                                 value: String(pendingPasswordlessServerCount)
                             )
-                            Button("为待处理服务器启用免密") { Task { await model.authorizePendingServers() } }
+                            Button("选择服务器并启用免密") {
+                                showsAuthorizationTargetSelection = true
+                            }
                                 .disabled(model.isBusy || pendingPasswordlessServerCount == 0)
+                            if model.authorizationBatchPlan != nil {
+                                Button("查看批量授权结果") {
+                                    onShowBatch()
+                                }
+                                .disabled(model.isBusy && model.authorizationBatchPlan?.phase != .authorizing)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 5)
@@ -190,6 +205,9 @@ private struct DeviceDetailView: View {
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
+        }
+        .sheet(isPresented: $showsAuthorizationTargetSelection) {
+            SSHAuthorizationTargetSelectionView(model: model, onStart: onStartBatch)
         }
     }
 
@@ -252,11 +270,7 @@ private struct DeviceDetailView: View {
     }
 
     private var pendingPasswordlessServerCount: Int {
-        model.activeServers.filter {
-            $0.status == .needsAuthorization
-                || $0.status == .missingLocalKey
-                || $0.status == .syncPending
-        }.count
+        model.pendingAuthorizationServers.count
     }
 
     private func tailscaleSSHManagement(

@@ -8,6 +8,7 @@ enum SSHServiceError: LocalizedError {
     case missingPrivateKey
     case missingPassword
     case passwordAuthenticationRejected
+    case authorizationWrittenAwaitingVerification
     case identityRouteUnavailable
     case operationFailed(String)
 
@@ -18,6 +19,7 @@ enum SSHServiceError: LocalizedError {
         case .missingPrivateKey: "所选密钥没有可用的本地私钥。"
         case .missingPassword: "Keychain 中未存储服务器密码。"
         case .passwordAuthenticationRejected: "服务器拒绝了密码登录。"
+        case .authorizationWrittenAwaitingVerification: "公钥已写入，但免密复检失败。"
         case .identityRouteUnavailable: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
         case .operationFailed(let message): message
         }
