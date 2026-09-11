@@ -472,6 +472,14 @@ final class AppModel {
         let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/KeyPortAskPass").path
         let siblingHelper = executableDirectory?.appendingPathComponent("KeyPortAskPass").path ?? bundledHelper
         let helper = FileManager.default.isExecutableFile(atPath: bundledHelper) ? bundledHelper : siblingHelper
+        let bundledRelay = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/\(SSHPreconnectRelayRuntime.executableName)")
+            .path
+        let siblingRelay = executableDirectory?
+            .appendingPathComponent(SSHPreconnectRelayRuntime.executableName)
+            .path
+        let relaySource = [bundledRelay, siblingRelay].compactMap { $0 }
+            .first(where: FileManager.default.isExecutableFile(atPath:))
 
         self.store = SnapshotStore(paths: paths)
         self.topologyStore = TopologyStore(paths: paths)
@@ -479,7 +487,11 @@ final class AppModel {
         self.keyService = SSHKeyService(runner: runner, paths: paths)
         self.hostKeyService = HostKeyService(runner: runner, paths: paths)
         self.sshService = OpenSSHService(runner: runner, paths: paths, askPassPath: helper)
-        self.configService = SSHConfigService(runner: runner, paths: paths)
+        self.configService = SSHConfigService(
+            runner: runner,
+            paths: paths,
+            relayHelperSourcePath: relaySource
+        )
         self.tailscaleService = TailscaleService(runner: runner)
         self.localAuthentication = LocalAuthenticationService()
         self.cloudSync = cloudSync
@@ -1152,7 +1164,8 @@ final class AppModel {
                 servers: activeServers,
                 keys: snapshot.keys,
                 authorizations: snapshot.authorizations,
-                transports: sshConfigTransports
+                transports: sshConfigTransports,
+                topology: topology
             )
             appendAudit(
                 category: "ssh-config",
@@ -1271,7 +1284,8 @@ final class AppModel {
             servers: activeServers,
             keys: snapshot.keys,
             authorizations: snapshot.authorizations,
-            transports: sshConfigTransports
+            transports: sshConfigTransports,
+            topology: topology
         )
         appendAudit(category: "ssh-config", action: "write", targetID: profileID.uuidString, result: "success")
         await persist()
@@ -1487,7 +1501,8 @@ final class AppModel {
                         servers: snapshot.servers.filter { !$0.isDeleted },
                         keys: snapshot.keys,
                         authorizations: snapshot.authorizations,
-                        transports: sshConfigTransports
+                        transports: sshConfigTransports,
+                        topology: topology
                     )
                     normalizeStableMetadataIDs()
                     ensureCurrentDevice()
@@ -1566,7 +1581,8 @@ final class AppModel {
                     servers: snapshot.servers.filter { !$0.isDeleted },
                     keys: snapshot.keys,
                     authorizations: snapshot.authorizations,
-                    transports: sshConfigTransports
+                    transports: sshConfigTransports,
+                    topology: topology
                 )
                 normalizeStableMetadataIDs()
                 ensureCurrentDevice()
@@ -2024,7 +2040,8 @@ final class AppModel {
             servers: activeServers,
             keys: snapshot.keys,
             authorizations: snapshot.authorizations,
-            transports: sshConfigTransports
+            transports: sshConfigTransports,
+            topology: topology
         )
         appendAudit(category: "ssh-config", action: "write", targetID: serverID.uuidString, result: "success")
         let profileBindings: [SSHConnectionProfileNodeBinding]
@@ -3764,7 +3781,8 @@ final class AppModel {
             servers: activeServers,
             keys: snapshot.keys,
             authorizations: snapshot.authorizations,
-            transports: sshConfigTransports
+            transports: sshConfigTransports,
+            topology: topology
         )
         appendAudit(category: "authorization", action: "install", targetID: server.id.uuidString, result: "verified")
         appendAudit(category: "ssh-config", action: "write", targetID: server.id.uuidString, result: "success")
@@ -3778,7 +3796,8 @@ final class AppModel {
                 servers: activeServers,
                 keys: snapshot.keys,
                 authorizations: snapshot.authorizations,
-                transports: sshConfigTransports
+                transports: sshConfigTransports,
+                topology: topology
             )
             appendAudit(category: "ssh-config", action: "write", result: "success")
         } catch { present(error) }

@@ -1,11 +1,58 @@
 import Foundation
 import KeyPortCore
+import Darwin
 
 enum SSHConfigError: LocalizedError {
     case aliasConflict(String)
+    case relayDependencyUnavailable
+    case relayConfigurationInvalid
 
     var errorDescription: String? {
-        switch self { case .aliasConflict(let alias): "SSH 别名“\(alias)”已存在于 ~/.ssh/config 中。" }
+        switch self {
+        case .aliasConflict(let alias): "SSH 别名“\(alias)”已存在于 ~/.ssh/config 中。"
+        case .relayDependencyUnavailable:
+            "连接前回退辅助程序不可用，已停止写入新的回退配置；请在设置中修复辅助程序。"
+        case .relayConfigurationInvalid:
+            "连接前回退配置无效，已停止写入 SSH 配置。"
+        }
+    }
+}
+
+enum SSHRelayDependencyStatus: Equatable, Sendable {
+    case ready
+    case repairable
+    case missing
+    case notExecutable
+    case wrongVersion
+}
+
+struct SSHRelayDependencyReport: Equatable, Sendable {
+    let status: SSHRelayDependencyStatus
+    let path: String
+    let detail: String
+
+    var isUsable: Bool { status == .ready }
+}
+
+enum SSHConfigHealthStatus: Equatable, Sendable {
+    case ready
+    case empty
+    case managedConfigDrifted
+    case relayManifestInvalid
+    case relayConfigDrifted
+    case relayDependency(SSHRelayDependencyStatus)
+}
+
+struct SSHConfigHealthReport: Equatable, Sendable {
+    let status: SSHConfigHealthStatus
+    let detail: String
+
+    var isUsable: Bool {
+        switch status {
+        case .ready, .empty: true
+        case .managedConfigDrifted, .relayManifestInvalid, .relayConfigDrifted, .relayDependency:
+            false
+        }
     }
 }
 
@@ -43,15 +90,24 @@ actor SSHConfigService {
     private let runner: ProcessRunner
     private let paths: KeyPortPaths
     private let transportAdapter: SSHTransportAdapter
+    private let relayHelperSourcePath: String?
+    private let fileManager: FileManager
+    private let dependencyExecutor: any ProcessExecuting
 
     init(
         runner: ProcessRunner = ProcessRunner(),
         paths: KeyPortPaths = KeyPortPaths(),
-        transportAdapter: SSHTransportAdapter = SSHTransportAdapter()
+        transportAdapter: SSHTransportAdapter = SSHTransportAdapter(),
+        relayHelperSourcePath: String? = nil,
+        fileManager: FileManager = .default,
+        dependencyExecutor: (any ProcessExecuting)? = nil
     ) {
         self.runner = runner
         self.paths = paths
         self.transportAdapter = transportAdapter
+        self.relayHelperSourcePath = relayHelperSourcePath
+        self.fileManager = fileManager
+        self.dependencyExecutor = dependencyExecutor ?? ProcessExecutor()
     }
 
     func discoverConnections() async -> [DiscoveredSSHConnection] {
@@ -82,20 +138,33 @@ actor SSHConfigService {
         servers: [ServerConnection],
         keys: [SSHKeyRecord],
         authorizations: [Authorization],
-        transports: [UUID: SSHConnectionTransport] = [:]
-    ) throws {
+        transports: [UUID: SSHConnectionTransport] = [:],
+        topology: TopologySnapshot? = nil
+    ) async throws {
         try paths.prepareDirectories()
         let existing = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
         let existingAliases = SSHConfigGenerator.aliases(in: existing)
+        let relayServers = servers.filter { server in
+            authorizations.contains {
+                $0.serverID == server.id
+                    && $0.status == .authorized
+                    && !$0.isDeleted
+            }
+        }
+        let relayManifest = try relayManifest(for: topology, servers: relayServers)
+        let relayHelperPath = try await prepareRelayHelperIfNeeded(for: relayManifest)
         let entries = try managedEntries(
             servers: servers,
             keys: keys,
             authorizations: authorizations,
             excludingAliases: existingAliases,
-            transports: transports
+            transports: transports,
+            relayManifest: relayManifest,
+            relayHelperPath: relayHelperPath
         )
         let managedConfig = SSHConfigGenerator.managedConfig(entries: entries)
         try writeManagedConfigFailingClosed(managedConfig)
+        try writeRelayManifest(relayManifest)
         if !entries.isEmpty {
             let updatedUserConfig = SSHConfigGenerator.addingManagedInclude(to: existing)
             if updatedUserConfig != existing {
@@ -108,16 +177,28 @@ actor SSHConfigService {
         servers: [ServerConnection],
         keys: [SSHKeyRecord],
         authorizations: [Authorization],
-        transports: [UUID: SSHConnectionTransport] = [:]
-    ) throws -> Bool {
+        transports: [UUID: SSHConnectionTransport] = [:],
+        topology: TopologySnapshot? = nil
+    ) async throws -> Bool {
         try paths.prepareDirectories()
         let existingUserConfig = (try? String(contentsOf: paths.userConfig, encoding: .utf8)) ?? ""
+        let relayServers = servers.filter { server in
+            authorizations.contains {
+                $0.serverID == server.id
+                    && $0.status == .authorized
+                    && !$0.isDeleted
+            }
+        }
+        let relayManifest = try relayManifest(for: topology, servers: relayServers)
+        let relayHelperPath = try await prepareRelayHelperIfNeeded(for: relayManifest)
         let desiredConfig = SSHConfigGenerator.managedConfig(entries: try managedEntries(
             servers: servers,
             keys: keys,
             authorizations: authorizations,
             excludingAliases: SSHConfigGenerator.aliases(in: existingUserConfig),
-            transports: transports
+            transports: transports,
+            relayManifest: relayManifest,
+            relayHelperPath: relayHelperPath
         ))
         let desiredData = Data(desiredConfig.utf8)
         guard FileManager.default.fileExists(atPath: paths.managedConfig.path) else {
@@ -184,7 +265,9 @@ actor SSHConfigService {
         keys: [SSHKeyRecord],
         authorizations: [Authorization],
         excludingAliases existingAliases: Set<String>,
-        transports: [UUID: SSHConnectionTransport]
+        transports: [UUID: SSHConnectionTransport],
+        relayManifest: SSHPreconnectRelayManifest,
+        relayHelperPath: URL?
     ) throws -> [SSHConfigEntry] {
         let keyByID = Dictionary(uniqueKeysWithValues: keys.compactMap { key in
             key.privateKeyPath.map { (key.id, $0) }
@@ -198,12 +281,257 @@ actor SSHConfigService {
             let transport = try transportAdapter.configuration(
                 for: transports[server.id] ?? .direct
             )
+            let relayProxyCommand = relayManifest.configuration(for: server.id).flatMap { configuration in
+                relayHelperPath.map { helperPath in
+                    makeRelayProxyCommand(
+                        helperPath: helperPath,
+                        manifestPath: paths.sshRelayManifest,
+                        profileID: configuration.profileID
+                    )
+                }
+            }
             return SSHConfigEntry(
                 server: server,
                 identityPath: identity.replacingOccurrences(of: paths.home.path, with: "~"),
-                proxyCommand: transport.proxyCommand
+                proxyCommand: relayProxyCommand ?? transport.proxyCommand
             )
         }
+    }
+
+    /// Reports whether the installed helper is executable and answers the
+    /// version probe. A repairable source is distinct from a usable target;
+    /// callers must not present a repairable dependency as ready.
+    func relayDependencyReport() async -> SSHRelayDependencyReport {
+        let targetPath = paths.sshRelayHelper.path
+        guard fileManager.fileExists(atPath: targetPath) else {
+            if let source = relayHelperSourcePath,
+               fileManager.isExecutableFile(atPath: source) {
+                return SSHRelayDependencyReport(
+                    status: .repairable,
+                    path: targetPath,
+                    detail: "辅助程序尚未安装到 KeyPort SSH 运行目录。"
+                )
+            }
+            return SSHRelayDependencyReport(
+                status: .missing,
+                path: targetPath,
+                detail: "未找到连接前回退辅助程序。"
+            )
+        }
+        guard isOwnedPrivateFile(paths.sshRelayHelper) else {
+            return SSHRelayDependencyReport(
+                status: .notExecutable,
+                path: targetPath,
+                detail: "辅助程序不是当前用户拥有的私有可执行文件。"
+            )
+        }
+        guard fileManager.isExecutableFile(atPath: targetPath) else {
+            return SSHRelayDependencyReport(
+                status: .notExecutable,
+                path: targetPath,
+                detail: "辅助程序没有可执行权限。"
+            )
+        }
+
+        let limits = ProcessExecutionLimits(
+            timeout: 2,
+            maximumStdoutBytes: 4 * 1024,
+            maximumStderrBytes: 4 * 1024,
+            maximumCombinedOutputBytes: 4 * 1024,
+            terminationGrace: 0.25
+        )
+        let result: ProcessExecutionResult?
+        do {
+            result = try await dependencyExecutor.execute(ProcessExecutionRequest(
+                executable: targetPath,
+                arguments: ["--version"],
+                limits: limits
+            ))
+        } catch {
+            return SSHRelayDependencyReport(
+                status: .wrongVersion,
+                path: targetPath,
+                detail: "辅助程序无法完成版本探测。"
+            )
+        }
+        guard let result,
+              result.succeeded,
+              String(decoding: result.stdout, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                == SSHPreconnectRelayRuntime.versionString else {
+            return SSHRelayDependencyReport(
+                status: .wrongVersion,
+                path: targetPath,
+                detail: "辅助程序版本或能力不符合当前配置协议。"
+            )
+        }
+        return SSHRelayDependencyReport(status: .ready, path: targetPath, detail: "辅助程序和配置协议可用。")
+    }
+
+    /// Copies the bundled helper into the owner-only runtime directory. This
+    /// is deliberately limited to KeyPort's own target path and uses an
+    /// atomic replacement, so a failed repair cannot leave a partial binary.
+    func repairRelayDependency() throws {
+        guard let source = relayHelperSourcePath,
+              fileManager.isExecutableFile(atPath: source) else {
+            throw SSHConfigError.relayDependencyUnavailable
+        }
+        try paths.prepareDirectories()
+        let destination = paths.sshRelayHelper
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        try fileManager.copyItem(at: URL(fileURLWithPath: source), to: temporary)
+        defer { try? fileManager.removeItem(at: temporary) }
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: temporary.path)
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try fileManager.moveItem(at: temporary, to: destination)
+        }
+        guard isOwnedPrivateFile(destination), fileManager.isExecutableFile(atPath: destination.path) else {
+            throw SSHConfigError.relayDependencyUnavailable
+        }
+    }
+
+    func configurationHealth() async -> SSHConfigHealthReport {
+        let managedState: ManagedConfigDerivationState?
+        do {
+            managedState = try loadDerivationState()
+        } catch {
+            return SSHConfigHealthReport(status: .managedConfigDrifted, detail: "KeyPort SSH 配置校验记录损坏。")
+        }
+        let hasManagedConfig = fileManager.fileExists(atPath: paths.managedConfig.path)
+        guard hasManagedConfig || managedState == nil else {
+            return SSHConfigHealthReport(status: .managedConfigDrifted, detail: "KeyPort SSH 配置文件缺失。")
+        }
+        if let managedState {
+            guard let data = try? Data(contentsOf: paths.managedConfig),
+                  managedState.phase == .steady,
+                  managedState.targetContentHash == HostV6.CanonicalJSON.sha256(data) else {
+                return SSHConfigHealthReport(status: .managedConfigDrifted, detail: "KeyPort SSH 配置已被外部修改。")
+            }
+        }
+
+        guard fileManager.fileExists(atPath: paths.sshRelayManifest.path) else {
+            if let config = try? String(contentsOf: paths.managedConfig, encoding: .utf8),
+               config.contains(SSHPreconnectRelayRuntime.executableName) {
+                return SSHConfigHealthReport(
+                    status: .relayManifestInvalid,
+                    detail: "SSH 配置引用了缺失的连接前回退清单。"
+                )
+            }
+            return SSHConfigHealthReport(status: hasManagedConfig ? .ready : .empty, detail: "KeyPort SSH 派生配置可用。")
+        }
+        guard isOwnedPrivateFile(paths.sshRelayManifest),
+              let data = try? Data(contentsOf: paths.sshRelayManifest),
+              let manifest = try? HostV6.CanonicalJSON.decode(
+                  SSHPreconnectRelayManifest.self,
+                  from: data
+              ),
+              (try? manifest.validate()) != nil else {
+            return SSHConfigHealthReport(status: .relayManifestInvalid, detail: "连接前回退配置无法通过校验。")
+        }
+        guard !manifest.configurations.isEmpty else {
+            if let config = try? String(contentsOf: paths.managedConfig, encoding: .utf8),
+               config.contains(SSHPreconnectRelayRuntime.executableName) {
+                return SSHConfigHealthReport(
+                    status: .relayConfigDrifted,
+                    detail: "SSH 配置仍引用连接前回退 helper，但当前清单为空。"
+                )
+            }
+            return SSHConfigHealthReport(status: hasManagedConfig ? .ready : .empty, detail: "KeyPort SSH 派生配置可用。")
+        }
+        let dependency = await relayDependencyReport()
+        guard dependency.isUsable else {
+            return SSHConfigHealthReport(
+                status: .relayDependency(dependency.status),
+                detail: dependency.detail
+            )
+        }
+        let expectedPath = shellQuote(paths.sshRelayHelper.path)
+        guard let config = try? String(contentsOf: paths.managedConfig, encoding: .utf8),
+              manifest.configurations.allSatisfy({ configuration in
+                  config.contains("--profile-id \(configuration.profileID.uuidString)")
+                      && config.contains(expectedPath)
+              }) else {
+            return SSHConfigHealthReport(status: .relayConfigDrifted, detail: "SSH 配置与连接前回退清单不一致。")
+        }
+        return SSHConfigHealthReport(status: .ready, detail: "KeyPort SSH 配置和连接前回退辅助程序可用。")
+    }
+
+    private func relayManifest(
+        for topology: TopologySnapshot?,
+        servers: [ServerConnection]
+    ) throws -> SSHPreconnectRelayManifest {
+        if let topology {
+            do {
+                return try SSHPreconnectRelayConfigurationBuilder.makeManifest(
+                    profiles: topology.activeConnectionProfiles,
+                    servers: servers,
+                    topology: topology
+                )
+            } catch is SSHPreconnectRelayConfigurationError {
+                throw SSHConfigError.relayConfigurationInvalid
+            }
+        }
+        guard fileManager.fileExists(atPath: paths.sshRelayManifest.path) else {
+            return SSHPreconnectRelayManifest(configurations: [])
+        }
+        guard isOwnedPrivateFile(paths.sshRelayManifest),
+              let data = try? Data(contentsOf: paths.sshRelayManifest),
+              let manifest = try? HostV6.CanonicalJSON.decode(
+                  SSHPreconnectRelayManifest.self,
+                  from: data
+              ),
+              (try? manifest.validate()) != nil else {
+            throw SSHConfigError.relayConfigurationInvalid
+        }
+        return manifest
+    }
+
+    private func prepareRelayHelperIfNeeded(
+        for manifest: SSHPreconnectRelayManifest
+    ) async throws -> URL? {
+        guard !manifest.configurations.isEmpty else { return nil }
+        let target = paths.sshRelayHelper
+        if isOwnedPrivateFile(target), fileManager.isExecutableFile(atPath: target.path) {
+            let dependency = await relayDependencyReport()
+            if dependency.isUsable { return target }
+        }
+        guard let source = relayHelperSourcePath,
+              fileManager.isExecutableFile(atPath: source) else {
+            throw SSHConfigError.relayDependencyUnavailable
+        }
+        try repairRelayDependency()
+        guard isOwnedPrivateFile(target), fileManager.isExecutableFile(atPath: target.path) else {
+            throw SSHConfigError.relayDependencyUnavailable
+        }
+        guard (await relayDependencyReport()).isUsable else {
+            throw SSHConfigError.relayDependencyUnavailable
+        }
+        return target
+    }
+
+    private func writeRelayManifest(_ manifest: SSHPreconnectRelayManifest) throws {
+        let data = try HostV6.CanonicalJSON.encode(manifest)
+        try atomicWrite(
+            String(decoding: data, as: UTF8.self),
+            to: paths.sshRelayManifest,
+            permissions: 0o600,
+            backup: true
+        )
+    }
+
+    private func makeRelayProxyCommand(
+        helperPath: URL,
+        manifestPath: URL,
+        profileID: UUID
+    ) -> String {
+        "\(shellQuote(helperPath.path)) --config \(shellQuote(manifestPath.path)) --profile-id \(profileID.uuidString) --forward-host %h --forward-port %p"
+    }
+
+    private func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func validateExistingManagedConfig(
@@ -251,7 +579,7 @@ actor SSHConfigService {
     }
 
     private func atomicWrite(_ text: String, to destination: URL, permissions: Int, backup: Bool) throws {
-        let manager = FileManager.default
+        let manager = fileManager
         if backup, manager.fileExists(atPath: destination.path) {
             let stamp = ISO8601DateFormatter().string(from: .now).replacingOccurrences(of: ":", with: "-")
             let backupURL = destination.appendingPathExtension("keyport-backup-\(stamp)")
@@ -265,5 +593,15 @@ actor SSHConfigService {
         } else {
             try manager.moveItem(at: temp, to: destination)
         }
+    }
+
+    private func isOwnedPrivateFile(_ url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid() else {
+            return false
+        }
+        return (info.st_mode & 0o077) == 0
     }
 }

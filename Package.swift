@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "KeyPort", targets: ["KeyPort"]),
         .executable(name: "KeyPortAskPass", targets: ["KeyPortAskPass"]),
+        .executable(name: "KeyPortSSHRelay", targets: ["KeyPortSSHRelay"]),
         .executable(name: "KeyPortTunnelBroker", targets: ["KeyPortTunnelBroker"]),
         .executable(name: "KeyPortCoreChecks", targets: ["KeyPortCoreChecks"]),
         .library(name: "KeyPortCore", targets: ["KeyPortCore"]),
@@ -28,6 +29,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "KeyPortAskPass"
+        ),
+        .executableTarget(
+            name: "KeyPortSSHRelay",
+            dependencies: ["KeyPortCore"]
         ),
         .executableTarget(
             name: "KeyPortTunnelBroker",
