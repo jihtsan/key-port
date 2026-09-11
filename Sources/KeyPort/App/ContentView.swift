@@ -184,6 +184,13 @@ struct ContentView: View {
                     model.selectedServerID = serverID
                     addAccount(forConnectionProfileID: serverID)
                 },
+                onAddAccountForNode: { nodeID in
+                    addAccount(nodeID: nodeID)
+                },
+                onSelectNode: { nodeID in
+                    model.selectedServerID = nil
+                    model.graphWorkspace.selectedNodeID = .node(nodeID)
+                },
                 onEdit: { serverID in
                     model.selectedServerID = serverID
                     configureAccess(connectionProfileID: serverID)
@@ -296,6 +303,12 @@ struct ContentView: View {
             ActivityDetailView(model: model, selectedEventID: selectedActivityEventID)
         case .servers:
             if model.serverWorkspaceMode == .graph {
+                serverGraphDetail
+            } else if let item = NodeWorkspacePresentation.item(
+                for: model.graphWorkspace.selectedNodeID,
+                model: model,
+                workspace: model.graphWorkspace
+            ), item.isServerNode {
                 serverGraphDetail
             } else if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)

@@ -28,10 +28,13 @@ struct ServerWorkspaceView: View {
     let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
     let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
     let onAddAccount: (UUID) -> Void
+    let onAddAccountForNode: (UUID) -> Void
+    let onSelectNode: (UUID) -> Void
     let onEdit: (UUID) -> Void
 
     var body: some View {
         @Bindable var model = model
+        @Bindable var graphWorkspace = model.graphWorkspace
 
         VStack(spacing: 0) {
             HStack(spacing: 12) {
@@ -55,6 +58,18 @@ struct ServerWorkspaceView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
 
+            HStack(spacing: 10) {
+                Label("服务器筛选", systemImage: "line.3.horizontal.decrease.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("仅异常", isOn: $graphWorkspace.onlyIssues)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 9)
+
             Divider()
 
             Group {
@@ -65,10 +80,12 @@ struct ServerWorkspaceView: View {
                         onAddAccount: onAddAccount,
                         onEdit: onEdit,
                         onAddDiscoveredServer: onAddDiscoveredServer,
-                        onAddDiscoveredConnection: onAddDiscoveredConnection
+                        onAddDiscoveredConnection: onAddDiscoveredConnection,
+                        onAddAccountForNode: onAddAccountForNode,
+                        onSelectNode: onSelectNode
                     )
                 case .graph:
-                    GraphWorkspaceView(model: model)
+                    GraphWorkspaceView(model: model, showsIssueFilter: false)
                 }
             }
         }
@@ -82,12 +99,15 @@ struct ServerWorkspaceView: View {
                 synchronizeGraphSelection()
             } else {
                 model.searchText = model.graphWorkspace.searchText
-                synchronizeServerSelection()
+                synchronizeListSelection()
             }
         }
         .onChange(of: model.selectedServerID) { _, _ in
-            guard model.serverWorkspaceMode == .graph else { return }
-            synchronizeGraphSelection()
+            if model.serverWorkspaceMode == .graph {
+                synchronizeGraphSelection()
+            } else {
+                synchronizeListSelection()
+            }
         }
         .onChange(of: model.graphWorkspace.selectedNodeID) { _, _ in
             guard model.serverWorkspaceMode == .graph else { return }
@@ -111,13 +131,13 @@ struct ServerWorkspaceView: View {
             model.graphWorkspace.searchText = model.searchText
             synchronizeGraphSelection()
         } else {
-            synchronizeServerSelection()
+            synchronizeListSelection()
         }
     }
 
     private func synchronizeGraphSelection() {
         guard let selectedServerID = model.selectedServerID else { return }
-        let items = NodeWorkspacePresentation.items(
+        let items = NodeWorkspacePresentation.serverItems(
             model: model,
             workspace: model.graphWorkspace
         )
@@ -149,6 +169,20 @@ struct ServerWorkspaceView: View {
         guard let account = item.accounts.first else { return }
         if model.selectedServerID != account.id {
             model.selectedServerID = account.id
+        }
+    }
+
+    private func synchronizeListSelection() {
+        guard let selectedServerID = model.selectedServerID else { return }
+        let items = NodeWorkspacePresentation.serverItems(
+            model: model,
+            workspace: model.graphWorkspace
+        )
+        guard let item = items.first(where: { item in
+            item.isServerNode && item.accounts.contains { $0.id == selectedServerID }
+        }) else { return }
+        if model.graphWorkspace.selectedNodeID != item.id {
+            model.graphWorkspace.selectedNodeID = item.id
         }
     }
 }
