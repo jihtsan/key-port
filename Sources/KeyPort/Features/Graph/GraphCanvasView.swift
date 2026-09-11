@@ -64,7 +64,7 @@ struct GraphCanvasView: View {
                     } label: {
                         Image(systemName: "minus.magnifyingglass")
                     }
-                    .help("缩小 Graph")
+                    .help("缩小图谱")
 
                     Text("\(Int((zoom * 100).rounded()))%")
                         .font(.caption.monospacedDigit())
@@ -75,7 +75,7 @@ struct GraphCanvasView: View {
                     } label: {
                         Image(systemName: "plus.magnifyingglass")
                     }
-                    .help("放大 Graph")
+                    .help("放大图谱")
 
                     Button("重置") { zoom = 1 }
                         .font(.caption)

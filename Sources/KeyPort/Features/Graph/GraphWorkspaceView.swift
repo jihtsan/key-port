@@ -19,7 +19,7 @@ struct GraphWorkspaceView: View {
                 let visibleSnapshot = NodeWorkspacePresentation.snapshot(model: model, workspace: workspace)
                 if visibleSnapshot.nodes.isEmpty {
                     ContentUnavailableView(
-                        "没有匹配的节点",
+                        "没有匹配的服务器",
                         systemImage: "magnifyingglass",
                         description: Text("调整搜索或筛选条件后重试。")
                     )
@@ -32,11 +32,11 @@ struct GraphWorkspaceView: View {
                 }
             }
         }
-        .navigationTitle("Graph")
+        .navigationTitle("服务器")
         .searchable(
             text: $workspace.searchText,
             placement: .toolbar,
-            prompt: "搜索节点、地址、账户或服务"
+            prompt: "搜索服务器、地址、账户或服务"
         )
     }
 }
@@ -46,11 +46,11 @@ private struct GraphUnavailableView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Graph 还没有数据", systemImage: "point.3.connected.trianglepath.dotted")
+            Label("服务器图谱还没有数据", systemImage: "point.3.connected.trianglepath.dotted")
         } description: {
             Text(message)
         } actions: {
-            Text("Graph 读取统一拓扑快照；SSH 管理继续通过兼容适配器工作。")
+            Text("图谱读取统一拓扑快照；账户、路径和授权请在服务器详情中管理。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

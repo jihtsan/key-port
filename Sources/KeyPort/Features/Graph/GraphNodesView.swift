@@ -13,7 +13,7 @@ struct GraphNodesView: View {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索节点", text: $workspace.searchText)
+                TextField("搜索服务器", text: $workspace.searchText)
                     .textFieldStyle(.plain)
                 if !workspace.searchText.isEmpty {
                     Button {
@@ -38,17 +38,17 @@ struct GraphNodesView: View {
             Divider()
             if !workspace.isAvailable {
                 ContentUnavailableView(
-                    "节点列表还没有数据",
+                    "服务器列表还没有数据",
                     systemImage: "circle.grid.3x3",
                     description: Text(workspace.unavailableMessage)
                 )
             } else if items.isEmpty {
                 ContentUnavailableView(
-                    workspace.searchText.isEmpty ? "暂无节点" : "没有匹配的节点",
+                    workspace.searchText.isEmpty ? "暂无服务器" : "没有匹配的服务器",
                     systemImage: workspace.searchText.isEmpty ? "server.rack" : "magnifyingglass",
                     description: Text(
                         workspace.searchText.isEmpty
-                            ? "添加一个节点后，它的端点和 SSH 用户会集中显示在这里。"
+                            ? "添加一个服务器后，它的地址和 SSH 用户会集中显示在这里。"
                             : "调整搜索或筛选条件后重试。"
                     )
                 )
@@ -62,7 +62,7 @@ struct GraphNodesView: View {
                 .listStyle(.sidebar)
             }
         }
-        .navigationTitle("节点")
+        .navigationTitle("服务器")
         .navigationSplitViewColumnWidth(min: 310, ideal: 340, max: 390)
         .onAppear {
             if workspace.viewMode != .allDevices {

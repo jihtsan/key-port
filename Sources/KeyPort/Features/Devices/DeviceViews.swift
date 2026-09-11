@@ -7,29 +7,40 @@ struct DeviceListView: View {
     var body: some View {
         @Bindable var model = model
         List(selection: $model.selectedDeviceItemID) {
-            ForEach(model.deviceListItems) { item in
-                DeviceListRow(item: item)
-                    .tag(item.id)
+            Section("我的设备") {
+                if model.registeredDeviceListItems.isEmpty {
+                    Label("尚未登记其他 KeyPort 设备", systemImage: "laptopcomputer.slash")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.registeredDeviceListItems) { item in
+                        DeviceListRow(item: item)
+                            .tag(item.id)
+                    }
+                }
             }
 
-            switch model.tailscaleDiscoveryState {
-            case .idle, .available:
-                EmptyView()
-            case .refreshing:
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在刷新 Tailscale")
+            Section("服务器发现") {
+                switch model.tailscaleDiscoveryState {
+                case .idle, .available:
+                    Label("Tailscale 发现的服务器在服务器工作区中管理。", systemImage: "network")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .refreshing:
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在刷新 Tailscale")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                case .unavailable(let message):
+                    Label(message, systemImage: "network.slash")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            case .unavailable(let message):
-                Label(message, systemImage: "network.slash")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("设备")
+        .navigationTitle("我的设备")
         .task { await model.refreshTailscale() }
     }
 }
@@ -79,18 +90,16 @@ private struct LocalDeviceTag: View {
 
 struct DeviceOverviewView: View {
     let model: AppModel
-    let onManageAccount: (TailscaleAccountEditorRequest) -> Void
-    let onConfigureAccess: (UUID) -> Void
     let onStartBatch: ([UUID]) -> Void
     let onShowBatch: () -> Void
 
     var body: some View {
-        if let item = model.selectedDeviceItem {
+        if model.selectedKeyID != nil, let key = model.selectedStandaloneKey {
+            KeyDetailView(key: key, model: model)
+        } else if let item = model.selectedDeviceItem {
             DeviceDetailView(
                 item: item,
                 model: model,
-                onManageAccount: onManageAccount,
-                onConfigureAccess: onConfigureAccess,
                 onStartBatch: onStartBatch,
                 onShowBatch: onShowBatch
             )
@@ -103,8 +112,6 @@ struct DeviceOverviewView: View {
 private struct DeviceDetailView: View {
     let item: DevicePresence
     let model: AppModel
-    let onManageAccount: (TailscaleAccountEditorRequest) -> Void
-    let onConfigureAccess: (UUID) -> Void
     let onStartBatch: ([UUID]) -> Void
     let onShowBatch: () -> Void
     @State private var showsAuthorizationTargetSelection = false
@@ -118,7 +125,7 @@ private struct DeviceDetailView: View {
                 }
 
                 if let device = item.registeredDevice {
-                    GroupBox("KeyPort") {
+                    GroupBox("工作区设备") {
                         VStack(alignment: .leading, spacing: 10) {
                             LabeledContent("设备 ID", value: device.id)
                             LabeledContent("登记时间", value: device.registeredAt.formatted(date: .abbreviated, time: .shortened))
@@ -131,7 +138,7 @@ private struct DeviceDetailView: View {
                 }
 
                 if let node = item.tailscaleNode {
-                    GroupBox("Tailscale") {
+                    GroupBox("发现信息 · Tailscale") {
                         VStack(alignment: .leading, spacing: 10) {
                             LabeledContent("状态") {
                                 Label(node.isOnline ? "在线" : "离线", systemImage: node.isOnline ? "checkmark.circle.fill" : "circle")
@@ -170,17 +177,12 @@ private struct DeviceDetailView: View {
                     tailscaleUnavailableContent
                 }
 
-                if let node = item.tailscaleNode,
-                   let suggestion = TailscaleSSHServerSuggestion(node: node) {
-                    tailscaleSSHManagement(node: node, suggestion: suggestion)
-                }
-
                 if item.registeredDevice != nil {
                     deviceKeyAccess
                 }
 
                 if item.isCurrent {
-                    GroupBox("设备授权") {
+                    GroupBox("本机授权") {
                         VStack(alignment: .leading, spacing: 10) {
                             LabeledContent("本地密钥", value: String(model.currentDeviceKeys.count))
                             LabeledContent(
@@ -216,6 +218,28 @@ private struct DeviceDetailView: View {
         let authorizedServers = model.authorizedServers(for: item)
         return GroupBox("密钥与访问") {
             VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(item.isCurrent ? "本机身份密钥" : "设备身份密钥")
+                        .fontWeight(.medium)
+                    Spacer()
+                    if item.isCurrent {
+                        Menu {
+                            Button("生成 Ed25519 密钥") {
+                                Task { await model.generateKey() }
+                            }
+                            Button("导入本机密钥") {
+                                Task { await model.importKey() }
+                            }
+                            Button("扫描密钥") {
+                                Task { try? await model.refreshKeys() }
+                            }
+                        } label: {
+                            Label("管理密钥", systemImage: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                    }
+                }
+
                 if keys.isEmpty {
                     Label("这台设备还没有同步的 SSH 密钥", systemImage: "key.slash")
                         .foregroundStyle(.secondary)
@@ -273,168 +297,6 @@ private struct DeviceDetailView: View {
         model.pendingAuthorizationServers.count
     }
 
-    private func tailscaleSSHManagement(
-        node: TailscaleNode,
-        suggestion: TailscaleSSHServerSuggestion
-    ) -> some View {
-        let servers = model.managedServers(for: suggestion)
-        let accounts = model.keyPortNodeID(for: suggestion).map {
-            model.sshAccounts(forNodeID: $0)
-        } ?? []
-        let unmanagedConnections = model.unmanagedSSHConnections(for: item)
-        return GroupBox("SSH 管理") {
-            VStack(alignment: .leading, spacing: 10) {
-                if accounts.isEmpty && servers.isEmpty && unmanagedConnections.isEmpty {
-                    Label("尚未添加 SSH 账户", systemImage: "person.crop.circle.badge.questionmark")
-                        .foregroundStyle(.secondary)
-                } else {
-                    if !accounts.isEmpty {
-                        Text("SSH 用户")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
-                            if index > 0 { Divider() }
-                            tailscaleUserRow(account, suggestion: suggestion)
-                        }
-                    }
-                    if !servers.isEmpty {
-                        Divider()
-                        Text("连接配置")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(servers.enumerated()), id: \.element.id) { index, server in
-                        if index > 0 { Divider() }
-                        tailscaleAccountRow(server, node: node, suggestion: suggestion)
-                    }
-                    ForEach(Array(unmanagedConnections.enumerated()), id: \.element.alias) { index, connection in
-                        if !accounts.isEmpty || !servers.isEmpty || index > 0 { Divider() }
-                        discoveredAccountRow(connection)
-                    }
-                }
-
-                Divider()
-                Button {
-                    onManageAccount(TailscaleAccountEditorRequest(suggestion: suggestion))
-                } label: {
-                    Label("添加 SSH 账户", systemImage: "person.badge.plus")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!node.isOnline || model.isBusy)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 5)
-        }
-    }
-
-    private func tailscaleUserRow(
-        _ account: SSHAccount,
-        suggestion: TailscaleSSHServerSuggestion
-    ) -> some View {
-        HStack(spacing: 10) {
-            Label(
-                account.label.isEmpty ? account.username : account.label,
-                systemImage: "person.crop.circle"
-            )
-            .fontWeight(.medium)
-            if !account.label.isEmpty {
-                Text(account.username)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(model.topology.connectionProfiles(for: account.id).count) 个连接配置")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button {
-                onManageAccount(TailscaleAccountEditorRequest(
-                    suggestion: suggestion,
-                    accountID: account.id
-                ))
-            } label: {
-                Label("编辑用户", systemImage: "pencil")
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.isBusy)
-        }
-    }
-
-    private func discoveredAccountRow(_ connection: DiscoveredSSHConnection) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(connection.username, systemImage: "person.crop.circle")
-                    .fontWeight(.medium)
-                Spacer()
-                Label("SSH Config", systemImage: "doc.text")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text("\(connection.alias) · \(connection.host):\(connection.port)")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .textSelection(.enabled)
-            Button {
-                Task { await model.addDiscoveredConnectionToServers(connection) }
-            } label: {
-                Label("添加到服务器", systemImage: "plus.circle")
-            }
-            .disabled(model.isBusy)
-        }
-    }
-
-    private func tailscaleAccountRow(
-        _ server: ServerConnection,
-        node: TailscaleNode,
-        suggestion: TailscaleSSHServerSuggestion
-    ) -> some View {
-        let action = model.passwordlessPrimaryAction(for: server)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(server.username, systemImage: "person.crop.circle")
-                    .fontWeight(.medium)
-                Spacer()
-                StatusLabel(status: server.status)
-                    .font(.caption)
-            }
-
-            HStack(spacing: 14) {
-                Text(server.alias)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                Label(
-                    model.hasStoredPassword(serverID: server.id) ? "本机密码可用" : "本机需要密码",
-                    systemImage: model.hasStoredPassword(serverID: server.id) ? "key.fill" : "key.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Button {
-                    model.showServer(server.id)
-                } label: {
-                    Label("查看", systemImage: "arrow.right.circle")
-                }
-                Button {
-                    onConfigureAccess(server.id)
-                } label: {
-                    Label("编辑连接配置", systemImage: "pencil")
-                }
-                .disabled(!node.isOnline || model.isBusy)
-
-                Button {
-                    Task { await model.performPasswordlessPrimaryAction(serverID: server.id) }
-                } label: {
-                    Label(action.title, systemImage: action.systemImage)
-                }
-                .help(action.help)
-                .disabled(!node.isOnline || model.isBusy || action == .checking)
-            }
-        }
-    }
-
     @ViewBuilder
     private var tailscaleUnavailableContent: some View {
         switch model.tailscaleDiscoveryState {
@@ -461,22 +323,5 @@ private struct DeviceDetailView: View {
         case .idle:
             EmptyView()
         }
-    }
-}
-
-struct TailscaleAccountEditorRequest: Identifiable {
-    let suggestion: TailscaleSSHServerSuggestion
-    let accountID: UUID?
-
-    init(
-        suggestion: TailscaleSSHServerSuggestion,
-        accountID: UUID? = nil
-    ) {
-        self.suggestion = suggestion
-        self.accountID = accountID
-    }
-
-    var id: String {
-        "\(suggestion.nodeID):\(accountID?.uuidString ?? "new")"
     }
 }

@@ -161,11 +161,11 @@ extension TopologyGraphVerificationStatus {
 extension TopologyGraphSyncStatus {
     var displayTitle: String {
         switch self {
-        case .clean: "V6 权威"
+        case .clean: "数据一致"
         case .conflict: "同步冲突"
-        case .canary: "Canary 只读"
+        case .canary: "只读预览"
         case .readOnly: "只读"
-        case .compatibilityRollback: "兼容回滚"
+        case .compatibilityRollback: "回退只读"
         }
     }
 }
@@ -183,10 +183,10 @@ extension TopologyGraphQuery.ViewMode {
 extension HostV6.AuthorityMode {
     var displayTitle: String {
         switch self {
-        case .legacyAuthoritative: "兼容写入"
-        case .v6Canary: "V6 Canary 只读"
-        case .v6Authoritative: "V6 权威"
-        case .compatibilityRollback: "兼容回滚"
+        case .legacyAuthoritative: "当前数据"
+        case .v6Canary: "只读预览"
+        case .v6Authoritative: "统一数据"
+        case .compatibilityRollback: "回退只读"
         }
     }
 }
@@ -234,14 +234,14 @@ struct GraphAuthorityBanner: View {
             HStack(spacing: 8) {
                 if workspace.usesUnifiedTopology {
                     Image(systemName: "checkmark.shield")
-                    Text("Graph · 统一拓扑")
+                    Text("服务器图谱 · 统一拓扑")
                 } else {
                     let mode = workspace.authorityMode
                     Image(systemName: mode == .v6Authoritative ? "checkmark.shield" : "lock.shield")
-                    Text("Graph · \(mode?.displayTitle ?? "V6 Shadow 只读")")
+                    Text("服务器图谱 · \(mode?.displayTitle ?? "只读")")
                 }
                 Spacer()
-                Text("Graph 只展示已记录事实；授权请在节点属性中操作")
+                Text("图谱只展示已记录事实；账户、路径和授权请在服务器详情中操作")
                     .foregroundStyle(.secondary)
             }
             .font(.caption)

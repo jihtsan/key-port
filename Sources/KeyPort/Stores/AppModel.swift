@@ -6,7 +6,11 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case graph, nodes, activity
     case servers, keys, devices, logs
 
-    static let workspaceCases: [Self] = [.graph, .nodes, .activity]
+    /// The only first-level workspaces exposed by the product navigation.
+    /// The remaining cases stay internal for deep links and compatibility
+    /// while their unique capabilities finish moving into the new workspaces.
+    static let primaryCases: [Self] = [.servers, .devices, .activity]
+    static let workspaceCases: [Self] = primaryCases
     static let compatibilityCases: [Self] = [.servers, .keys, .devices, .logs]
 
     var id: String { rawValue }
@@ -16,9 +20,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .nodes: "节点"
         case .activity: "活动"
         case .servers: "服务器"
-        case .keys: "密钥"
-        case .devices: "设备"
-        case .logs: "审计日志"
+        case .keys: "密钥管理"
+        case .devices: "我的设备"
+        case .logs: "活动"
         }
     }
     var systemImage: String {
@@ -393,7 +397,8 @@ final class AppModel {
     /// Unified Node/Endpoint/Service authority. `snapshot` is retained only as
     /// the SSH/Keychain compatibility projection during this refactor.
     private(set) var topology = TopologySnapshot.empty
-    var destination: SidebarDestination = .nodes
+    var destination: SidebarDestination = .servers
+    var serverWorkspaceMode: ServerWorkspaceMode = .list
     var selectedServerID: UUID?
     var selectedKeyID: String?
     var selectedKeyItemID: String?
@@ -569,9 +574,18 @@ final class AppModel {
     var deviceListItems: [DevicePresence] {
         DevicePresenceMerger.merge(devices: snapshot.devices, tailscaleNodes: tailscaleStatus?.nodes ?? [])
     }
+
+    /// Tailscale-only discoveries are useful evidence for server discovery,
+    /// but they are not synchronized KeyPort devices. Keep them out of the
+    /// device workspace while preserving the merged view for address matching.
+    var registeredDeviceListItems: [DevicePresence] {
+        deviceListItems.filter { $0.registeredDevice != nil }
+    }
+
     var selectedDeviceItem: DevicePresence? {
-        guard let selectedDeviceItemID else { return deviceListItems.first(where: \.isCurrent) ?? deviceListItems.first }
-        return deviceListItems.first { $0.id == selectedDeviceItemID }
+        let items = registeredDeviceListItems
+        guard let selectedDeviceItemID else { return items.first(where: \.isCurrent) ?? items.first }
+        return items.first { $0.id == selectedDeviceItemID }
     }
 
     func managedServers(for suggestion: TailscaleSSHServerSuggestion) -> [ServerConnection] {
@@ -3782,18 +3796,24 @@ final class AppModel {
 
     func showServer(_ serverID: UUID) {
         destination = .servers
+        serverWorkspaceMode = .list
+        selectedKeyID = nil
         selectedServerID = serverID
     }
 
     func showDevice(_ itemID: DevicePresence.ID) {
+        guard registeredDeviceListItems.contains(where: { $0.id == itemID }) else { return }
         destination = .devices
+        selectedKeyID = nil
         selectedDeviceItemID = itemID
     }
 
     func showKey(_ keyID: String) {
-        destination = .keys
+        guard let key = snapshot.keys.first(where: { $0.id == keyID }) else { return }
+        destination = .devices
         selectedKeyID = keyID
         selectedKeyItemID = "identity:\(keyID)"
+        selectedDeviceItemID = devicePresence(for: key)?.id
     }
 
     func synchronizeKeySelection() {

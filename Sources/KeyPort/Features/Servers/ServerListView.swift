@@ -5,6 +5,8 @@ struct ServerListView: View {
     let model: AppModel
     let onAddAccount: (UUID) -> Void
     let onEdit: (UUID) -> Void
+    let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
+    let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
 
     var body: some View {
         @Bindable var model = model
@@ -43,12 +45,41 @@ struct ServerListView: View {
                     }
                 }
             }
+
+            if !discoveredServers.isEmpty {
+                Section("发现的服务器") {
+                    ForEach(discoveredServers) { suggestion in
+                        TailscaleDiscoveryRow(
+                            suggestion: suggestion,
+                            managedServers: model.managedServers(for: suggestion),
+                            onShowServer: { model.showServer($0) },
+                            onAddAccount: onAddAccount,
+                            onAddServer: onAddDiscoveredServer
+                        )
+                    }
+                }
+            }
+
+            if !discoveredConnections.isEmpty {
+                Section("发现的 SSH 配置") {
+                    ForEach(discoveredConnections) { connection in
+                        DiscoveredSSHConfigRow(
+                            connection: connection,
+                            managedServer: model.server(matching: connection),
+                            onShowServer: { model.showServer($0) },
+                            onAdd: onAddDiscoveredConnection
+                        )
+                    }
+                }
+            }
         }
         .listStyle(.inset)
         .searchable(text: $model.searchText, prompt: "名称、地址、用户、分组")
         .navigationTitle("服务器")
         .overlay {
-            if model.activeServerGroups.isEmpty {
+            if model.activeServerGroups.isEmpty,
+               discoveredServers.isEmpty,
+               discoveredConnections.isEmpty {
                 if model.searchText.isEmpty {
                     ContentUnavailableView("暂无服务器", systemImage: "server.rack", description: Text("请添加服务器和首个 SSH 用户。"))
                 } else {
@@ -56,6 +87,165 @@ struct ServerListView: View {
                 }
             }
         }
+    }
+
+    private var discoveredServers: [TailscaleSSHServerSuggestion] {
+        (model.tailscaleStatus?.nodes ?? [])
+            .compactMap { TailscaleSSHServerSuggestion(node: $0) }
+            .filter { suggestion in
+                matchesSearch([
+                    suggestion.name,
+                    suggestion.host,
+                    suggestion.nodeID,
+                    suggestion.group,
+                    suggestion.alias
+                ])
+            }
+            .sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
+    private var discoveredConnections: [DiscoveredSSHConnection] {
+        model.discoveredSSHConnections
+            .filter { connection in
+                matchesSearch([
+                    connection.alias,
+                    connection.host,
+                    connection.username,
+                    String(connection.port),
+                    connection.proxyJump ?? "",
+                    connection.hostKeyAlias ?? ""
+                ])
+            }
+            .sorted {
+                $0.alias.localizedCaseInsensitiveCompare($1.alias) == .orderedAscending
+            }
+    }
+
+    private func matchesSearch(_ values: [String]) -> Bool {
+        let needle = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        guard !needle.isEmpty else { return true }
+        return values.contains { $0.localizedLowercase.contains(needle) }
+    }
+}
+
+private struct TailscaleDiscoveryRow: View {
+    let suggestion: TailscaleSSHServerSuggestion
+    let managedServers: [ServerConnection]
+    let onShowServer: (UUID) -> Void
+    let onAddAccount: (UUID) -> Void
+    let onAddServer: (TailscaleSSHServerSuggestion) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Image(systemName: "network")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(suggestion.name)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(verbatim: "\(suggestion.host):\(suggestion.port)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if managedServers.isEmpty {
+                    Label("未添加", systemImage: "plus.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("已添加", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+
+            HStack {
+                if let server = managedServers.first {
+                    Button {
+                        onShowServer(server.id)
+                    } label: {
+                        Label("查看服务器", systemImage: "arrow.right.circle")
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button {
+                        onAddAccount(server.id)
+                    } label: {
+                        Label("添加账户", systemImage: "person.badge.plus")
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Button {
+                        onAddServer(suggestion)
+                    } label: {
+                        Label("添加服务器", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Spacer()
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct DiscoveredSSHConfigRow: View {
+    let connection: DiscoveredSSHConnection
+    let managedServer: ServerConnection?
+    let onShowServer: (UUID) -> Void
+    let onAdd: (DiscoveredSSHConnection) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connection.alias)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(verbatim: "\(connection.username)@\(connection.host):\(connection.port)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Label(
+                    managedServer == nil ? "未添加" : "已添加",
+                    systemImage: managedServer == nil ? "plus.circle" : "checkmark.circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(managedServer == nil ? Color.secondary : Color.green)
+            }
+
+            HStack {
+                if let managedServer {
+                    Button {
+                        onShowServer(managedServer.id)
+                    } label: {
+                        Label("查看服务器", systemImage: "arrow.right.circle")
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Button {
+                        onAdd(connection)
+                    } label: {
+                        Label("添加服务器", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Spacer()
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 4)
     }
 }
 

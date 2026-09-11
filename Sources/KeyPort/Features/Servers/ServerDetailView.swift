@@ -23,7 +23,7 @@ struct ServerDetailView: View {
                 quickConnection
                 machineConfiguration
                 credentialsAndSecurity
-                testCaseNodeAssociation
+                serverAssociation
                 deviceAuthorizations
             }
             .padding(24)
@@ -130,25 +130,25 @@ struct ServerDetailView: View {
     }
 
     private var machineConfiguration: some View {
-        GroupBox("机器配置") {
+        GroupBox("机器信息") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     if model.machineConfigurationSyncingServerID == server.id {
-                        Label("正在同步", systemImage: "arrow.triangle.2.circlepath")
+                        Label("正在刷新", systemImage: "arrow.triangle.2.circlepath")
                             .foregroundStyle(.blue)
                         ProgressView().controlSize(.small)
                     } else if server.machineConfiguration != nil {
-                        Label("已同步", systemImage: "checkmark.circle.fill")
+                        Label("已读取", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     } else {
-                        Label("尚未同步", systemImage: "minus.circle")
+                        Label("尚未读取", systemImage: "minus.circle")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button {
                         Task { await model.synchronizeMachineConfiguration(serverID: server.id) }
                     } label: {
-                        Label("同步", systemImage: "arrow.triangle.2.circlepath")
+                        Label("刷新信息", systemImage: "arrow.triangle.2.circlepath")
                     }
                     .disabled(server.status != .authorized || model.isBusy)
                 }
@@ -339,13 +339,13 @@ struct ServerDetailView: View {
         }
     }
 
-    private var testCaseNodeAssociation: some View {
-        GroupBox("Test Case 节点关联") {
+    private var serverAssociation: some View {
+        GroupBox("服务器关联") {
             VStack(alignment: .leading, spacing: 10) {
                 let associations = model.nodeAssociations(for: server.id)
                 if !associations.isEmpty {
                     HStack {
-                        Text("已配置 \(associations.count) 个逻辑节点")
+                        Text("已配置 \(associations.count) 个关联目标")
                             .foregroundStyle(.secondary)
                         Spacer()
                         Button("添加关联") { associationEditorSelection = AssociationEditorSelection() }
@@ -359,7 +359,7 @@ struct ServerDetailView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Label("尚未配置", systemImage: "link.badge.plus")
                                 .foregroundStyle(.secondary)
-                            Text("默认使用标准化后的 Server 名称；唯一同名 Tailscale HostName 可自动关联，歧义时需人工确认。")
+                            Text("默认使用规范化后的服务器名称；唯一同名 Tailscale HostName 可自动关联，歧义时需人工确认。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -415,8 +415,8 @@ struct ServerDetailView: View {
             }
             Label(
                 model.canExecuteTestCaseNode(association.testCaseNodeID)
-                    ? "允许关联驱动的 Test Case 执行"
-                    : "已阻止关联驱动的 Test Case 执行",
+                    ? "允许按关联目标执行"
+                    : "已阻止按关联目标执行",
                 systemImage: model.canExecuteTestCaseNode(association.testCaseNodeID)
                     ? "checkmark.shield.fill"
                     : "exclamationmark.shield.fill"

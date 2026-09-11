@@ -25,7 +25,7 @@ struct AuditLogListView: View {
     }
 }
 
-private extension AuditEvent {
+extension AuditEvent {
     var localizedCategory: String {
         switch category {
         case "app": "应用"

@@ -12,7 +12,7 @@ struct GraphInspectorView: View {
     var body: some View {
         if !workspace.isAvailable {
             ContentUnavailableView(
-                "节点属性",
+                "服务器属性",
                 systemImage: "sidebar.right",
                 description: Text(workspace.unavailableMessage)
             )
@@ -37,12 +37,12 @@ struct GraphInspectorView: View {
                 .padding(18)
                 .frame(maxWidth: 520, alignment: .leading)
             }
-            .navigationTitle("节点属性")
+            .navigationTitle("服务器属性")
         } else {
             ContentUnavailableView(
-                "未选择节点",
+                "未选择服务器",
                 systemImage: "cursorarrow.click",
-                description: Text("从 Graph 或节点列表中选择一个节点。")
+                description: Text("从服务器图谱或列表中选择一个服务器。")
             )
         }
     }

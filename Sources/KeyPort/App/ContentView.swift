@@ -4,10 +4,12 @@ import SwiftUI
 struct ContentView: View {
     let model: AppModel
     @State private var showsAddServer = false
+    @State private var serverEditorDraft: ServerDraft?
     @State private var sshAccountEditorRequest: SSHAccountEditorRequest?
     @State private var endpointNodeID: UUID?
     @State private var sshAccessSetupRequest: SSHAccessSetupRequest?
     @State private var showsAuthorizationBatch = false
+    @State private var selectedActivityEventID: UUID?
 
     var body: some View {
         @Bindable var model = model
@@ -20,10 +22,10 @@ struct ContentView: View {
             detailColumn
         }
         .toolbar { toolbar }
-        .sheet(isPresented: $showsAddServer) {
+        .sheet(isPresented: $showsAddServer, onDismiss: { serverEditorDraft = nil }) {
             ServerEditorView(
-                title: "添加节点和首个 SSH 账户",
-                initialDraft: model.newServerDraft(),
+                title: "添加服务器和首个 SSH 账户",
+                initialDraft: serverEditorDraft ?? model.newServerDraft(),
                 canSynchronize: model.canSynchronizePasswords,
                 onCheck: { draft, password, hostKeys in
                     return await model.validateServerEditor(
@@ -164,24 +166,85 @@ struct ContentView: View {
             GraphWorkspaceView(model: model)
         case .nodes:
             GraphNodesView(model: model) {
-                showsAddServer = true
+                presentAddServer()
             }
         case .activity:
-            GraphActivityListView(model: model)
+            GraphActivityListView(model: model, selectedEventID: $selectedActivityEventID)
         case .servers:
-            ServerListView(model: model) { serverID in
-                model.selectedServerID = serverID
-                addAccount(forConnectionProfileID: serverID)
-            } onEdit: { serverID in
-                model.selectedServerID = serverID
-                configureAccess(connectionProfileID: serverID)
-            }
+            ServerWorkspaceView(
+                model: model,
+                onAddServer: { presentAddServer() },
+                onAddDiscoveredServer: { suggestion in
+                    presentAddServer(draft: model.tailscaleServerDraft(for: suggestion))
+                },
+                onAddDiscoveredConnection: { connection in
+                    Task { await model.addDiscoveredConnectionToServers(connection) }
+                },
+                onAddAccount: { serverID in
+                    model.selectedServerID = serverID
+                    addAccount(forConnectionProfileID: serverID)
+                },
+                onEdit: { serverID in
+                    model.selectedServerID = serverID
+                    configureAccess(connectionProfileID: serverID)
+                }
+            )
         case .keys:
             KeyListView(model: model)
         case .devices:
             DeviceListView(model: model)
         case .logs:
-            AuditLogListView(model: model)
+            GraphActivityListView(model: model, selectedEventID: $selectedActivityEventID)
+        }
+    }
+
+    @ViewBuilder
+    private var serverGraphDetail: some View {
+        if NodeWorkspacePresentation.item(
+            for: model.graphWorkspace.selectedNodeID,
+            model: model,
+            workspace: model.graphWorkspace
+        ) != nil {
+            NodeWorkspaceDetailView(
+                model: model,
+                onAddAccount: { nodeID in
+                    addAccount(nodeID: nodeID)
+                },
+                onAddEndpoint: { nodeID in
+                    addEndpoint(nodeID: nodeID)
+                },
+                onEditAccount: { accountID in
+                    editAccount(accountID: accountID)
+                },
+                onConfigureAccess: { nodeID, profileID, endpointID in
+                    configureAccess(
+                        nodeID: nodeID,
+                        profileID: profileID,
+                        endpointID: endpointID
+                    )
+                }
+            )
+        } else {
+            GraphInspectorView(
+                workspace: model.graphWorkspace,
+                model: model,
+                onAddAccount: { nodeID in
+                    addAccount(nodeID: nodeID)
+                },
+                onAddEndpoint: { nodeID in
+                    addEndpoint(nodeID: nodeID)
+                },
+                onEditAccount: { accountID in
+                    editAccount(accountID: accountID)
+                },
+                onConfigureAccess: { nodeID, profileID, endpointID in
+                    configureAccess(
+                        nodeID: nodeID,
+                        profileID: profileID,
+                        endpointID: endpointID
+                    )
+                }
+            )
         }
     }
 
@@ -230,12 +293,14 @@ struct ContentView: View {
                 }
             )
         case .activity:
-            AuditOverviewView(model: model)
+            ActivityDetailView(model: model, selectedEventID: selectedActivityEventID)
         case .servers:
-            if let server = model.selectedServer {
+            if model.serverWorkspaceMode == .graph {
+                serverGraphDetail
+            } else if let server = model.selectedServer {
                 ServerDetailView(server: server, model: model)
             } else {
-                ContentUnavailableView("未选择用户", systemImage: "person.crop.circle", description: Text("请在服务器下选择一个 SSH 用户。"))
+                ContentUnavailableView("未选择服务器账户", systemImage: "person.crop.circle", description: Text("请在服务器列表中选择一个 SSH 账户。"))
             }
         case .keys:
             if let row = model.selectedKeyServerRow {
@@ -250,10 +315,6 @@ struct ContentView: View {
         case .devices:
             DeviceOverviewView(
                 model: model,
-                onManageAccount: manageTailscaleAccount,
-                onConfigureAccess: { profileID in
-                    configureAccess(connectionProfileID: profileID)
-                },
                 onStartBatch: { targetIDs in
                     showsAuthorizationBatch = true
                     model.startAuthorizationBatch(targetIDs: targetIDs)
@@ -263,7 +324,7 @@ struct ContentView: View {
                 }
             )
         case .logs:
-            AuditOverviewView(model: model)
+            ActivityDetailView(model: model, selectedEventID: selectedActivityEventID)
         }
     }
 
@@ -272,11 +333,11 @@ struct ContentView: View {
         if model.destination == .graph || model.destination == .nodes {
             ToolbarItem {
                 Button {
-                    showsAddServer = true
+                    presentAddServer()
                 } label: {
-                    Label("添加节点", systemImage: "plus")
+                    Label("添加服务器", systemImage: "plus")
                 }
-                .help("添加节点和首个 SSH 账户；V6 权威模式下不可用")
+                .help("添加服务器和首个 SSH 账户")
                 .disabled(model.isMetadataReadOnly || model.isBusy)
             }
         }
@@ -284,9 +345,9 @@ struct ContentView: View {
         if model.destination == .servers {
             ToolbarItemGroup {
                 Button {
-                    showsAddServer = true
+                    presentAddServer()
                 } label: {
-                    Label("添加节点", systemImage: "plus")
+                    Label("添加服务器", systemImage: "plus")
                 }
                 .keyboardShortcut("n", modifiers: .command)
 
@@ -351,6 +412,11 @@ struct ContentView: View {
         }
     }
 
+    private func presentAddServer(draft: ServerDraft? = nil) {
+        serverEditorDraft = draft
+        showsAddServer = true
+    }
+
     private func addAccount(nodeID: UUID) {
         guard !model.isBusy, !model.isMetadataReadOnly else { return }
         guard model.sshAccountDraft(forNodeID: nodeID) != nil else {
@@ -401,18 +467,6 @@ struct ContentView: View {
             profileID: profile.id,
             endpointID: profile.routePolicy.fixedEndpointID
         )
-    }
-
-    private func manageTailscaleAccount(_ request: TailscaleAccountEditorRequest) {
-        if let accountID = request.accountID {
-            editAccount(accountID: accountID)
-            return
-        }
-        guard let nodeID = model.keyPortNodeID(for: request.suggestion) else {
-            model.errorMessage = "尚未找到这个 Tailscale 设备对应的 KeyPort 节点，请先刷新 Tailscale。"
-            return
-        }
-        addAccount(nodeID: nodeID)
     }
 
     private func configureAccess(nodeID: UUID, profileID: UUID?, endpointID: UUID?) {

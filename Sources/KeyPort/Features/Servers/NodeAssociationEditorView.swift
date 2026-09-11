@@ -24,16 +24,16 @@ struct NodeAssociationEditorView: View {
     var body: some View {
         @Bindable var model = model
         VStack(alignment: .leading, spacing: 18) {
-            Text("Test Case 节点关联")
+            Text("服务器关联")
                 .font(.title2)
                 .fontWeight(.semibold)
 
             Form {
-                TextField("Test Case 节点 ID", text: $testCaseNodeID)
+                TextField("服务器标识", text: $testCaseNodeID)
                     .textFieldStyle(.roundedBorder)
                     .disabled(existingAssociation != nil)
 
-                Picker("实际 Tailscale 节点", selection: $selectedTargetID) {
+                Picker("发现的 Tailscale 节点", selection: $selectedTargetID) {
                     Text("请选择").tag("")
                     ForEach(model.stableAssociationTargets, id: \.target.id) { item in
                         Text(item.node.name).tag(item.target.id)
@@ -50,7 +50,7 @@ struct NodeAssociationEditorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("一期默认使用标准化后的 Server 名称作为逻辑节点键；仅与同一 tailnet 中唯一的 Tailscale HostName 精确同名时自动关联。未来接入上游后可改用其稳定节点 ID。")
+            Text("当前使用规范化后的服务器名称作为关联键；仅与同一 tailnet 中唯一的 Tailscale HostName 精确同名时自动关联。未来可改用更稳定的节点 ID。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
