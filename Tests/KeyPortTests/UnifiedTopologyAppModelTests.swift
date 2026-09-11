@@ -133,6 +133,15 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         )]
         let paths = KeyPortPaths(home: home)
         try await SnapshotStore(paths: paths).save(legacy)
+        try paths.prepareDirectories()
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: paths.sshRelayHelper)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: paths.sshRelayHelper.path
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: paths.sshRelayHelper)
+        }
         var seededTopology = TopologySnapshotMigration.fromLegacy(
             legacy,
             currentDeviceID: currentDeviceID,

@@ -10,6 +10,13 @@ struct KeyPortPaths: Sendable {
     var sshDirectory: URL { home.appendingPathComponent(".ssh", isDirectory: true) }
     var keyPortDirectory: URL { sshDirectory.appendingPathComponent("keyport", isDirectory: true) }
     var identitiesDirectory: URL { keyPortDirectory.appendingPathComponent("identities", isDirectory: true) }
+    var sshRelayDirectory: URL { keyPortDirectory.appendingPathComponent("relay", isDirectory: true) }
+    var sshRelayHelper: URL {
+        sshRelayDirectory.appendingPathComponent("KeyPortSSHRelay")
+    }
+    var sshRelayManifest: URL {
+        sshRelayDirectory.appendingPathComponent("routes-v1.json")
+    }
     var managedConfig: URL { keyPortDirectory.appendingPathComponent("config") }
     var managedConfigDerivationState: URL {
         keyPortDirectory.appendingPathComponent("config.derivation.json")
@@ -65,6 +72,7 @@ struct KeyPortPaths: Sendable {
         try secureDirectory(sshDirectory)
         try secureDirectory(keyPortDirectory)
         try secureDirectory(identitiesDirectory)
+        try secureDirectory(sshRelayDirectory)
         try secureDirectory(applicationSupport)
     }
 

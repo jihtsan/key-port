@@ -13,7 +13,7 @@ ssh <ssh-alias>
 - 项目阶段：一期 MVP，当前以源码构建为主。
 - 支持平台：macOS 14 或更高版本。
 - 工具链：Swift 6；当前仓库验证环境使用 Swift 6.3.3 和 Apple Command Line Tools。
-- 当前验证：核心回归检查、AskPass FIFO 集成检查和 SwiftPM 构建通过。
+- 当前验证：核心回归检查、AskPass FIFO 集成检查、连接前回退 helper fixture 和 SwiftPM 构建通过。
 - 发布状态：仓库提供可选的团队签名构建流程；正式发行仍需 Developer ID、公证和 CloudKit Production schema。
 
 ## 功能概览
@@ -26,6 +26,7 @@ ssh <ssh-alias>
 | 公钥授权 | 通过一次密码认证将本机公钥安装到远端 `authorized_keys`，安装后再用密钥认证验证。 |
 | 授权读取与撤销 | 读取 KeyPort 管理的远端授权，按公钥指纹精确撤销指定设备密钥，并保留未知公钥和选项。 |
 | SSH 别名与配置 | 生成 `~/.ssh/keyport/config`，并在用户配置中加入幂等的 Include；已有 SSH 配置不会被整体覆盖。 |
+| 多地址连接前回退 | 对明确配置的有序 SSH 候选地址生成独立 `KeyPortSSHRelay` helper 配置；在 OpenSSH 接管连接前按有界超时尝试，接通后不切换。 |
 | 设备与 Tailscale | 记录当前 Mac 和其他设备的密钥授权；自动读取本机 Tailscale 节点，把 `Tailnet + Node ID` 绑定到 Graph 的 Node，并展示 MagicDNS、Tailscale IP、在线状态和刷新时间。 |
 | Test Case 节点关联 | 一期以标准化 Server 名称匹配同 tailnet 唯一 Tailscale HostName，并保留 MagicDNS/Tailscale IP 强证据；稳定保存 `ServerConnection.id` 与 Tailscale `nodeId`，支持人工确认、改绑、解除及漂移复核。 |
 | 同步与归档 | 通过 CloudKit 同步非敏感元数据；可选使用 iCloud Keychain 同步服务器密码；支持加密元数据归档。 |
@@ -41,6 +42,7 @@ KeyPort 将连接元数据、密码和私钥分开处理：
 - 密码认证通过 LocalAuthentication 后由主应用从 Keychain 读取，再经权限为 `0600` 的一次性 FIFO 交给 `KeyPortAskPass` helper；密码不会作为命令行参数传递。
 - 远端 `authorized_keys` 更新会按公钥内容查重，保留未知行和选项，写入前创建受限备份，使用同目录临时文件原子替换，并在操作后重新验证。
 - SSH 操作限定为 Host Key 扫描、认证检查、机器信息读取和授权文件维护，不开启交互式 Shell 或 PTY。
+- 连接前回退 helper 只读取 KeyPort 生成的 owner-only 路由清单，执行 TCP 连接和双向字节转发；不读取密码、私钥、Agent 或 `known_hosts`，也不执行认证重试、会话迁移或修改 SSH 配置。
 
 ## 环境要求
 
@@ -49,6 +51,7 @@ KeyPort 将连接元数据、密码和私钥分开处理：
 - macOS 14+
 - Swift 6 工具链，可通过 Xcode 或 Apple Command Line Tools 提供
 - 系统 OpenSSH 工具：`ssh`、`ssh-keyscan`、`ssh-keygen` 和 `ssh-add`
+- 本地 relay fixture 还需要系统 `nc`；它只用于测试，不是日常 SSH 运行时依赖。
 
 ### 远端 SSH 环境
 
@@ -70,6 +73,9 @@ swift build
 
 # 运行核心检查和 AskPass FIFO 集成检查
 ./script/test.sh
+
+# 单独验证 KeyPortSSHRelay 与系统 OpenSSH 的本地闭环
+./script/test_ssh_relay.sh
 
 # 启动隔离本地 sshd 并验证 C4 隧道闭环
 ./script/test_c4.sh
@@ -131,6 +137,8 @@ KeyPort 使用以下路径保存 SSH 文件和非敏感应用状态：
 | `~/.ssh/keyport/identities/` | 当前 Mac 的 KeyPort 私钥和公钥，目录权限为 `0700`。 |
 | `~/.ssh/keyport/config` | KeyPort 生成的 `Host` 配置，文件权限为 `0600`。 |
 | `~/.ssh/keyport/known_hosts` | 已确认的服务器 Host Key，文件权限为 `0600`。 |
+| `~/.ssh/keyport/relay/KeyPortSSHRelay` | 当前版本的连接前回退 helper，文件权限为 `0700`；缺失或版本不匹配时不会启用新回退配置。 |
+| `~/.ssh/keyport/relay/routes-v1.json` | 有序候选路由清单，文件权限为 `0600`；只含端点、目标、超时和操作标识，不含凭据或 Host Key 材料。 |
 | `~/.ssh/config` | 仅在需要时加入 `Include ~/.ssh/keyport/config`，不会替换用户原有内容。 |
 | `~/Library/Application Support/KeyPort/topology-v1.json` | 统一 Node/Endpoint/Service/SSH 领域快照，Graph 的默认事实源，目录和文件权限受控。 |
 | `~/Library/Application Support/KeyPort/state-v1.json` | SSH、Keychain 和 OpenSSH 配置适配器使用的兼容投影，目录和文件权限受控。 |
@@ -146,6 +154,7 @@ CloudKit 上传前会移除本地私钥路径、SSH Agent 状态、当前设备�
 | `KeyPort` | SwiftUI/AppKit macOS 主应用。 |
 | `KeyPortCore` | 领域模型、SSH Config、Host Key、公钥、Tailscale 和归档解析/生成逻辑。 |
 | `KeyPortAskPass` | 通过受限 FIFO 为系统 OpenSSH 提供一次性密码输入的 helper。 |
+| `KeyPortSSHRelay` | 独立的有序候选连接前回退与双向字节转发 helper；不承担 SSH 认证。 |
 | `KeyPortCoreChecks` | 不依赖 UI 的核心回归检查。 |
 | `KeyPortCoreTests` | 节点关联、迁移、漂移、并发与敏感数据边界的 XCTest。 |
 
@@ -156,6 +165,7 @@ Sources/
   KeyPort/        macOS 应用、视图、状态模型和系统服务
   KeyPortCore/    可测试的领域模型与解析器
   KeyPortAskPass/ OpenSSH AskPass helper
+  KeyPortSSHRelay/有序候选的连接前回退 helper
   KeyPortCoreChecks/
                   核心回归检查
 Resources/        entitlements
@@ -182,7 +192,7 @@ git diff --check
 ./script/build_and_run.sh --verify
 ```
 
-其中 `./script/test.sh` 会执行 `KeyPortCoreChecks`、构建 `KeyPortAskPass`，并通过受保护 FIFO 验证 helper 只消费一次密码输入。`./script/test_c4.sh` 仅使用临时 key、loopback `sshd` 和临时端口，覆盖支持版本的前台 broker、IPv4/IPv6 target、open-confirm/open-failed、target response、stdin EOF 与端口清理；不支持 allow-list 的 OpenSSH 版本会安全跳过成功路径。
+其中 `./script/test.sh` 会执行 `KeyPortCoreChecks`、构建 `KeyPortAskPass` 和 `KeyPortSSHRelay`，通过受保护 FIFO 验证 AskPass 只消费一次密码输入，并调用 `script/test_ssh_relay.sh` 验证 helper。后者仅使用临时路由清单、loopback `nc`、loopback `sshd` 和临时端口；系统 OpenSSH fixture 使用临时密钥和严格 Host Key 校验。`./script/test_c4.sh` 仅使用临时 key、loopback `sshd` 和临时端口，覆盖支持版本的前台 broker、IPv4/IPv6 target、open-confirm/open-failed、target response、stdin EOF 与端口清理；不支持 allow-list 的 OpenSSH 版本会安全跳过成功路径。
 
 ## 已知限制
 

@@ -6,6 +6,8 @@ cd "$ROOT_DIR"
 swift test
 swift run KeyPortCoreChecks
 swift build --product KeyPortAskPass
+swift build --product KeyPortSSHRelay
+./script/test_ssh_relay.sh
 
 BUILD_DIR="$(swift build --show-bin-path)"
 FIXTURE_DIR="$(mktemp -d)"
