@@ -33,6 +33,9 @@ struct NodeWorkspaceDetailView: View {
                     sshAccounts: item.node.id.topologyUUID.map {
                         model.sshAccounts(forNodeID: $0)
                     } ?? [],
+                    connectionProfiles: item.node.id.topologyUUID.map {
+                        model.topology.connectionProfiles(forNodeID: $0)
+                    } ?? [],
                     accountRows: accountRows(for: item),
                     selectedAccountID: model.selectedServerID,
                     selectedEndpointID: selectedEndpointID,
@@ -276,6 +279,7 @@ private struct NodeWorkspaceContentView: View {
     let item: NodeWorkspaceItem
     let tags: [String]
     let sshAccounts: [SSHAccount]
+    let connectionProfiles: [SSHConnectionProfile]
     let accountRows: [NodeWorkspaceAccountDisplay]
     let selectedAccountID: UUID?
     let selectedEndpointID: UUID?
@@ -301,6 +305,7 @@ private struct NodeWorkspaceContentView: View {
                     item: item,
                     tags: tags,
                     accounts: accountRows.map(\.account),
+                    connectionProfiles: connectionProfiles,
                     endpoints: endpoints,
                     selectedAccountID: selectedAccountID,
                     selectedEndpointID: selectedEndpointID,
