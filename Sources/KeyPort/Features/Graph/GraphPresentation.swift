@@ -203,6 +203,12 @@ struct GraphStatusBadge: View {
 
 struct GraphFilterBar: View {
     @Bindable var workspace: GraphWorkspaceModel
+    let showsIssueFilter: Bool
+
+    init(workspace: GraphWorkspaceModel, showsIssueFilter: Bool = true) {
+        self._workspace = Bindable(workspace)
+        self.showsIssueFilter = showsIssueFilter
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -214,7 +220,9 @@ struct GraphFilterBar: View {
             .pickerStyle(.segmented)
             .frame(maxWidth: 270)
 
-            Toggle("仅异常", isOn: $workspace.onlyIssues)
+            if showsIssueFilter {
+                Toggle("仅异常", isOn: $workspace.onlyIssues)
+            }
             Toggle("展开关联", isOn: $workspace.includesSupportingNodes)
             Toggle("实际节点", isOn: $workspace.includesActualNodes)
                 .disabled(!workspace.includesSupportingNodes)

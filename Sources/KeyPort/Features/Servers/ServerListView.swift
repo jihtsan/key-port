@@ -7,42 +7,52 @@ struct ServerListView: View {
     let onEdit: (UUID) -> Void
     let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
     let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
+    let onAddAccountForNode: (UUID) -> Void
+    let onSelectNode: (UUID) -> Void
 
     var body: some View {
         @Bindable var model = model
         List(selection: $model.selectedServerID) {
-            ForEach(model.activeServerGroups) { group in
-                if group.accounts.count == 1, let account = group.accounts.first {
-                    ServerAccountRow(
+            ForEach(serverItems) { item in
+                if item.accounts.count == 1, let account = item.accounts.first {
+                    ServerWorkspaceAccountRow(
                         account: account,
-                        group: group,
+                        item: item,
+                        showsServerSummary: true,
                         onEdit: onEdit,
-                        onAddAccount: onAddAccount,
+                        onAddAccount: { addAccountForNode(item) },
                         onCopyAlias: { model.copyAlias(serverID: $0) },
                         onDelete: { serverID in Task { await model.deleteServer(serverID) } }
                     )
                     .tag(account.id)
-                } else {
+                } else if !item.accounts.isEmpty {
                     Section {
-                        ForEach(group.accounts) { account in
-                            ServerAccountRow(
+                        ForEach(item.accounts) { account in
+                            ServerWorkspaceAccountRow(
                                 account: account,
-                                group: nil,
+                                item: item,
+                                showsServerSummary: false,
                                 onEdit: onEdit,
-                                onAddAccount: onAddAccount,
+                                onAddAccount: { addAccountForNode(item) },
                                 onCopyAlias: { model.copyAlias(serverID: $0) },
                                 onDelete: { serverID in Task { await model.deleteServer(serverID) } }
                             )
                             .tag(account.id)
                         }
                     } header: {
-                        ServerGroupHeader(
-                            group: group,
-                            onSelect: { model.selectedServerID = group.representative.id },
+                        ServerWorkspaceGroupHeader(
+                            item: item,
+                            onSelect: { model.selectedServerID = item.accounts.first?.id },
                             onEdit: onEdit,
-                            onAddAccount: { onAddAccount(group.representative.id) }
+                            onAddAccount: { addAccountForNode(item) }
                         )
                     }
+                } else {
+                    ServerWorkspaceUnconfiguredRow(
+                        item: item,
+                        onSelect: { selectNode(item) },
+                        onAddAccount: { addAccountForNode(item) }
+                    )
                 }
             }
 
@@ -77,7 +87,7 @@ struct ServerListView: View {
         .searchable(text: $model.searchText, prompt: "名称、地址、用户、分组")
         .navigationTitle("服务器")
         .overlay {
-            if model.activeServerGroups.isEmpty,
+            if serverItems.isEmpty,
                discoveredServers.isEmpty,
                discoveredConnections.isEmpty {
                 if model.searchText.isEmpty {
@@ -87,6 +97,23 @@ struct ServerListView: View {
                 }
             }
         }
+    }
+
+    private var serverItems: [NodeWorkspaceItem] {
+        NodeWorkspacePresentation.serverItems(
+            model: model,
+            workspace: model.graphWorkspace
+        )
+    }
+
+    private func addAccountForNode(_ item: NodeWorkspaceItem) {
+        guard let nodeID = item.topologyNodeID else { return }
+        onAddAccountForNode(nodeID)
+    }
+
+    private func selectNode(_ item: NodeWorkspaceItem) {
+        guard let nodeID = item.topologyNodeID else { return }
+        onSelectNode(nodeID)
     }
 
     private var discoveredServers: [TailscaleSSHServerSuggestion] {
@@ -249,8 +276,8 @@ private struct DiscoveredSSHConfigRow: View {
     }
 }
 
-private struct ServerGroupHeader: View {
-    let group: ServerConnectionGroup
+private struct ServerWorkspaceGroupHeader: View {
+    let item: NodeWorkspaceItem
     let onSelect: () -> Void
     let onEdit: (UUID) -> Void
     let onAddAccount: () -> Void
@@ -263,42 +290,48 @@ private struct ServerGroupHeader: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 18)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(group.representative.name)
+                        Text(item.node.title)
                             .font(.headline)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         HStack(spacing: 8) {
-                            Text("\(group.host):\(group.port)")
+                            Text(item.endpointSummary)
                                 .monospaced()
-                            Text("\(group.accounts.count) 个连接配置")
+                            Text("\(item.connectionProfileCount) 个连接配置")
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if let capacity = group.representative.machineConfiguration?.capacitySummary {
+                    if let capacity = item.machineConfiguration?.capacitySummary {
                         Text(capacity)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+                    GraphStatusBadge(status: item.node.status)
                 }
             }
             .buttonStyle(.plain)
-            .help("选择此服务器端点")
+            .disabled(item.accounts.isEmpty)
+            .help("选择此服务器")
             .contextMenu {
-                Button {
-                    onEdit(group.representative.id)
-                } label: {
-                    Label("编辑连接配置", systemImage: "pencil")
+                if let account = item.accounts.first {
+                    Button {
+                        onEdit(account.id)
+                    } label: {
+                        Label("编辑连接配置", systemImage: "pencil")
+                    }
                 }
             }
-            Button {
-                onEdit(group.representative.id)
-            } label: {
-                Image(systemName: "pencil")
+            if let account = item.accounts.first {
+                Button {
+                    onEdit(account.id)
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("编辑连接配置")
             }
-            .buttonStyle(.borderless)
-            .help("编辑连接配置")
             Button(action: onAddAccount) {
                 Image(systemName: "person.badge.plus")
             }
@@ -310,25 +343,26 @@ private struct ServerGroupHeader: View {
     }
 }
 
-private struct ServerAccountRow: View {
+private struct ServerWorkspaceAccountRow: View {
     let account: ServerConnection
-    let group: ServerConnectionGroup?
+    let item: NodeWorkspaceItem
+    let showsServerSummary: Bool
     let onEdit: (UUID) -> Void
-    let onAddAccount: (UUID) -> Void
+    let onAddAccount: () -> Void
     let onCopyAlias: (UUID) -> Void
     let onDelete: (UUID) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: group == nil ? "person.crop.circle" : "server.rack")
+            Image(systemName: showsServerSummary ? "server.rack" : "person.crop.circle")
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 3) {
-                if let group {
-                    Text(group.representative.name)
+                if showsServerSummary {
+                    Text(item.node.title)
                         .fontWeight(.medium)
                         .lineLimit(1)
-                    Text("\(group.host):\(group.port) · \(account.username) · \(account.alias)")
+                    Text("\(account.host):\(account.port) · \(account.username) · \(account.alias)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -343,14 +377,15 @@ private struct ServerAccountRow: View {
                 }
             }
             Spacer()
-            if let group, let capacity = group.representative.machineConfiguration?.capacitySummary {
+            if showsServerSummary,
+               let capacity = item.machineConfiguration?.capacitySummary {
                 Text(capacity)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
             StatusLabel(status: account.status)
         }
-        .padding(.vertical, group == nil ? 3 : 5)
+        .padding(.vertical, showsServerSummary ? 5 : 3)
         .contentShape(Rectangle())
         .contextMenu {
             Button {
@@ -358,9 +393,7 @@ private struct ServerAccountRow: View {
             } label: {
                 Label("编辑连接配置", systemImage: "pencil")
             }
-            Button {
-                onAddAccount(account.id)
-            } label: {
+            Button(action: onAddAccount) {
                 Label("添加用户", systemImage: "person.badge.plus")
             }
             Button {
@@ -375,6 +408,65 @@ private struct ServerAccountRow: View {
                 Label("删除连接配置", systemImage: "trash")
             }
         }
+    }
+}
+
+private struct ServerWorkspaceUnconfiguredRow: View {
+    let item: NodeWorkspaceItem
+    let onSelect: () -> Void
+    let onAddAccount: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: onSelect) {
+                HStack(spacing: 10) {
+                    Image(systemName: "server.rack")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(item.node.title)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                        Text(item.unconfiguredSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    GraphStatusBadge(status: item.node.status)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("查看服务器详情")
+            Spacer()
+            Button(action: onAddAccount) {
+                Label("添加账户", systemImage: "person.badge.plus")
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+    }
+}
+
+private extension NodeWorkspaceItem {
+    var endpointSummary: String {
+        let sshEndpoints = endpoints.filter { !$0.isDeleted && $0.protocol == .ssh }
+        if sshEndpoints.count == 1, let endpoint = sshEndpoints.first {
+            return endpoint.displayAddress
+        }
+        if sshEndpoints.isEmpty {
+            return endpointCount == 0 ? "暂无网络路径" : "\(endpointCount) 条网络路径"
+        }
+        return "\(sshEndpoints.count) 条 SSH 路径"
+    }
+
+    var unconfiguredSummary: String {
+        if accountCount > 0 {
+            return "\(accountCount) 个 SSH 用户，尚未创建连接配置 · \(endpointSummary)"
+        }
+        return "尚未添加 SSH 用户 · \(endpointSummary)"
     }
 }
 

@@ -85,12 +85,10 @@ struct AppSidebarView: View {
     }
 
     private var serverCount: Int {
-        let workspaceCount = NodeWorkspacePresentation.items(
+        NodeWorkspacePresentation.serverItems(
             model: model,
             workspace: model.graphWorkspace
-        ).filter { $0.isHostNode && $0.accountCount > 0 }.count
-        if workspaceCount > 0 { return workspaceCount }
-        return ServerConnectionGrouping.groups(model.activeServers).count
+        ).count
     }
 
     private var tags: [AppSidebarTag] {

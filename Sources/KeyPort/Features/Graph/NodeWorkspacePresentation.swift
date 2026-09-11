@@ -16,8 +16,18 @@ struct NodeWorkspaceItem: Identifiable {
 
     var id: TopologyGraphNodeID { node.id }
 
+    var topologyNodeID: UUID? {
+        node.id.uuid
+    }
+
     var isHostNode: Bool {
-        node.kind == .node || node.kind == .host
+        isServerNode
+    }
+
+    /// A server is a persisted host/node, not a workspace Mac represented by
+    /// the same graph projection.
+    var isServerNode: Bool {
+        !node.isWorkspaceDevice && (node.kind == .node || node.kind == .host)
     }
 
     var accountCount: Int {
@@ -158,6 +168,24 @@ enum NodeWorkspacePresentation {
     ) -> NodeWorkspaceItem? {
         guard let nodeID else { return nil }
         return items(model: model, workspace: workspace).first { $0.id == nodeID }
+    }
+
+    /// The canonical server projection consumed by both the list and graph
+    /// workspaces. A Node is enough to show a server; its account, endpoint,
+    /// and connection-profile facts enrich the row and its detail actions.
+    static func serverItems(
+        model: AppModel,
+        workspace: GraphWorkspaceModel
+    ) -> [NodeWorkspaceItem] {
+        items(model: model, workspace: workspace)
+            .filter(\.isServerNode)
+            .sorted { lhs, rhs in
+                let titleOrder = lhs.node.title.localizedCaseInsensitiveCompare(rhs.node.title)
+                if titleOrder != .orderedSame {
+                    return titleOrder == .orderedAscending
+                }
+                return lhs.id.rawValue < rhs.id.rawValue
+            }
     }
 
     private static func accounts(

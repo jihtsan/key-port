@@ -3,13 +3,19 @@ import SwiftUI
 
 struct GraphWorkspaceView: View {
     let model: AppModel
+    let showsIssueFilter: Bool
+
+    init(model: AppModel, showsIssueFilter: Bool = true) {
+        self.model = model
+        self.showsIssueFilter = showsIssueFilter
+    }
 
     var body: some View {
         @Bindable var workspace = model.graphWorkspace
         let nodeItems = NodeWorkspacePresentation.items(model: model, workspace: workspace)
 
         VStack(spacing: 0) {
-            GraphFilterBar(workspace: workspace)
+            GraphFilterBar(workspace: workspace, showsIssueFilter: showsIssueFilter)
             Divider()
             GraphAuthorityBanner(workspace: workspace)
 
