@@ -213,7 +213,7 @@ public extension HostV6 {
                             detail: result.servers[index].statusDetail ?? "keyAuthenticationSucceeded",
                             checkedAt: checkedAt
                         )
-                    case .needsAuthorization, .keyAuthenticationFailed:
+                    case .needsAuthorization, .keyAuthenticationFailed, .authorizationWrittenAwaitingVerification:
                         check = AuthenticationCheck(
                             state: .failed,
                             detail: result.servers[index].statusDetail ?? "keyAuthenticationFailed",

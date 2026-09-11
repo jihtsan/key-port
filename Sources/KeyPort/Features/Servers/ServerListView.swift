@@ -220,7 +220,7 @@ private extension AuthorizationStatus {
         case .authorized: "checkmark.circle.fill"
         case .checking: "arrow.trianglehead.2.clockwise.rotate.90"
         case .syncing: "arrow.triangle.2.circlepath"
-        case .hostKeyMismatch, .authorizationConflict: "exclamationmark.shield.fill"
+        case .hostKeyMismatch, .authorizationConflict, .authorizationWrittenAwaitingVerification: "exclamationmark.shield.fill"
         case .hostKeyPending: "questionmark.diamond.fill"
         case .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: "xmark.circle.fill"
         case .missingLocalKey: "key.slash"
@@ -234,7 +234,7 @@ private extension AuthorizationStatus {
         case .authorized: .green
         case .checking, .syncing, .syncPending: .blue
         case .hostKeyPending, .needsAuthorization, .missingLocalKey: .orange
-        case .hostKeyMismatch, .authorizationConflict, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
+        case .hostKeyMismatch, .authorizationConflict, .authorizationWrittenAwaitingVerification, .unreachable, .passwordAuthenticationFailed, .keyAuthenticationFailed: .red
         }
     }
 }

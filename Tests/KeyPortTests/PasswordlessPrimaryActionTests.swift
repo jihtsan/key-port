@@ -10,6 +10,16 @@ final class PasswordlessPrimaryActionTests: XCTestCase {
         XCTAssertEqual(model.passwordlessPrimaryAction(for: server), .verify)
     }
 
+    func testWrittenAuthorizationUsesVerifyInsteadOfInstallingAgain() {
+        let (model, server) = makeModel(
+            status: .authorizationWrittenAwaitingVerification,
+            hasPrivateKey: true,
+            hasPassword: true
+        )
+
+        XCTAssertEqual(model.passwordlessPrimaryAction(for: server), .verify)
+    }
+
     func testUnauthorisedServerWithPrivateKeyAndPasswordUsesEnable() {
         let (model, server) = makeModel(status: .needsAuthorization, hasPrivateKey: true, hasPassword: true)
 

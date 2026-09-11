@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var sshAccountEditorRequest: SSHAccountEditorRequest?
     @State private var endpointNodeID: UUID?
     @State private var sshAccessSetupRequest: SSHAccessSetupRequest?
+    @State private var showsAuthorizationBatch = false
 
     var body: some View {
         @Bindable var model = model
@@ -87,6 +88,9 @@ struct ContentView: View {
                     .frame(minWidth: 480, minHeight: 300)
                 }
             }
+        }
+        .sheet(isPresented: $showsAuthorizationBatch) {
+            SSHAuthorizationBatchView(model: model)
         }
         .sheet(isPresented: Binding(
             get: { endpointNodeID != nil },
@@ -249,6 +253,13 @@ struct ContentView: View {
                 onManageAccount: manageTailscaleAccount,
                 onConfigureAccess: { profileID in
                     configureAccess(connectionProfileID: profileID)
+                },
+                onStartBatch: { targetIDs in
+                    showsAuthorizationBatch = true
+                    model.startAuthorizationBatch(targetIDs: targetIDs)
+                },
+                onShowBatch: {
+                    showsAuthorizationBatch = true
                 }
             )
         case .logs:
