@@ -1,29 +1,4 @@
 import KeyPortCore
-import SwiftUI
-
-struct AuditLogListView: View {
-    let model: AppModel
-
-    var body: some View {
-        List(model.snapshot.auditEvents) { event in
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(event.localizedAction).fontWeight(.medium)
-                    Spacer()
-                    Text(event.timestamp, style: .time).font(.caption).foregroundStyle(.secondary)
-                }
-                Text("\(event.localizedCategory) · \(event.localizedResult)").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 3)
-        }
-        .navigationTitle("审计日志")
-        .overlay {
-            if model.snapshot.auditEvents.isEmpty {
-                ContentUnavailableView("暂无审计事件", systemImage: "list.bullet.rectangle")
-            }
-        }
-    }
-}
 
 extension AuditEvent {
     var localizedCategory: String {
@@ -112,22 +87,5 @@ extension AuditEvent {
         case "rsa": "RSA"
         default: result
         }
-    }
-}
-
-struct AuditOverviewView: View {
-    let model: AppModel
-
-    var body: some View {
-        Form {
-            Section("结构化审计日志") {
-                LabeledContent("保留的事件", value: String(model.snapshot.auditEvents.count))
-                Text("日志仅包含操作分类、稳定的目标标识符、阶段和结果类型，绝不会记录密码、私钥、命令输出或原始身份验证数据。")
-                    .foregroundStyle(.secondary)
-                Button("清除日志", role: .destructive) { Task { await model.clearAuditLog() } }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("审计日志")
     }
 }

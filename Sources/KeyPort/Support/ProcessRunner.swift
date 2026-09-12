@@ -8,14 +8,6 @@ struct ProcessResult: Sendable {
     var succeeded: Bool { status == 0 }
 }
 
-enum ProcessRunnerError: LocalizedError {
-    case launch(String)
-
-    var errorDescription: String? {
-        switch self { case .launch(let message): message }
-    }
-}
-
 actor ProcessRunner {
     func run(
         _ executable: String,
