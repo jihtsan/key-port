@@ -771,18 +771,6 @@ final class AppModel {
         }
     }
 
-    func unmanagedSSHConnections(for item: DevicePresence) -> [DiscoveredSSHConnection] {
-        let managedAccounts = servers(for: item)
-        return discoveredSSHConnections.filter { connection in
-            item.matches(host: connection.host)
-                && !managedAccounts.contains {
-                    $0.port == connection.port && $0.username == connection.username
-                }
-        }.sorted {
-            SSHAccountSortKey($0) < SSHAccountSortKey($1)
-        }
-    }
-
     func keys(for item: DevicePresence) -> [SSHKeyRecord] {
         guard let deviceID = item.registeredDevice?.id else { return [] }
         return snapshot.keys.filter { $0.deviceID == deviceID }.sorted {
@@ -1445,20 +1433,6 @@ final class AppModel {
         return draft
     }
 
-    func existingTailscaleServerID(
-        for suggestion: TailscaleSSHServerSuggestion,
-        draft: ServerDraft
-    ) -> UUID? {
-        let username = draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
-        return activeServers.first {
-            suggestion.matchesAccount(
-                host: draft.host,
-                port: draft.port,
-                username: username,
-                server: $0
-            )
-        }?.id
-    }
     var pendingPreviousHostKeys: [HostKeyRecord] {
         guard let pendingHostKeyServerID else { return [] }
         return snapshot.servers.first(where: { $0.id == pendingHostKeyServerID })?.confirmedHostKeys ?? []
@@ -1838,12 +1812,6 @@ final class AppModel {
         }
         listenerDiscoveryResults[serverID] = result
         return result
-    }
-
-    /// 页面关闭或用户取消时立即丢弃本机内存中的候选，并取消远端进程。
-    func clearListenerDiscovery(for serverID: UUID) async {
-        await cancelListenerDiscovery(for: serverID)
-        listenerDiscoveryResults.removeValue(forKey: serverID)
     }
 
     func cancelListenerDiscovery(for serverID: UUID) async {
@@ -2226,11 +2194,6 @@ final class AppModel {
         return serverID
     }
 
-    func deleteSelectedServer() async {
-        guard let id = selectedServerID else { return }
-        await deleteServer(id)
-    }
-
     func deleteServer(_ id: UUID) async {
         guard await authorizeLegacyMutation() else { return }
         guard let index = snapshot.servers.firstIndex(where: { $0.id == id }) else { return }
@@ -2325,11 +2288,6 @@ final class AppModel {
     func checkPasswordSelected() async {
         guard let id = selectedServerID else { return }
         await checkPassword(serverID: id)
-    }
-
-    func checkKeySelected() async {
-        guard let id = selectedServerID else { return }
-        await checkKey(serverID: id)
     }
 
     func checkPassword(serverID: UUID) async {
@@ -2579,11 +2537,6 @@ final class AppModel {
         }
     }
 
-    func synchronizeMachineConfigurationSelected() async {
-        guard let id = selectedServerID else { return }
-        await synchronizeMachineConfiguration(serverID: id)
-    }
-
     func synchronizeMachineConfiguration(serverID: UUID) async {
         guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
@@ -2608,21 +2561,6 @@ final class AppModel {
         defer { isBusy = false }
         await synchronizeMachineConfigurationWithKey(server: routeServer, key: key)
         await persist()
-    }
-
-    func checkAll() async {
-        guard await authorizeLegacyMutation() else { return }
-        guard !isBusy, !isInitialLoadInProgress else {
-            scheduleCloudRetry(after: 5)
-            return
-        }
-        isBusy = true
-        let ids = activeServers.map(\.id)
-        for id in ids {
-            await check(serverID: id, kind: .password, ownsBusyState: false)
-            await check(serverID: id, kind: .key, ownsBusyState: false)
-        }
-        isBusy = false
     }
 
     func confirmPendingHostKeys() async {
@@ -2670,10 +2608,6 @@ final class AppModel {
         pendingHostKeyResumesAuthorization = false
     }
 
-    func authorizeSelected() async {
-        await synchronizeSSHAuthorizationSelected()
-    }
-
     func authorizeCurrentDevice(serverID: UUID) async {
         await authorizeCurrentDevice(serverID: serverID, endpoint: nil)
     }
@@ -2695,13 +2629,6 @@ final class AppModel {
             setFirstAccessStage(serverID, .readyToAuthorize)
             await synchronizeSSHAuthorization(serverID: serverID, endpoint: endpoint)
         } catch { present(error) }
-    }
-
-    func authorizePendingServers() async {
-        startAuthorizationBatch()
-        if let task = authorizationBatchTask {
-            await task.value
-        }
     }
 
     /// Starts an ordered, resumable batch. The plan is local-only and is
@@ -3881,16 +3808,6 @@ final class AppModel {
             snapshot.servers[index].statusDetail = "当前 Mac 的密钥已就绪，可以启用免密。"
         }
         return key
-    }
-
-    private func authorizeServer(_ serverID: UUID) async throws {
-        try await requireLegacyMutation()
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
-            throw SSHServiceError.operationFailed("找不到要启用免密的服务器。")
-        }
-        guard let key = privateKey(for: server) else { throw SSHServiceError.missingPrivateKey }
-        try await localAuthentication.authorize(reason: "为 \(server.name) 启用免密")
-        try await authorize(server: server, key: key)
     }
 
     private var preferredKey: SSHKeyRecord? {

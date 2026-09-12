@@ -314,15 +314,3 @@ actor CloudKitSyncService: CloudSyncing {
         try await Task.sleep(nanoseconds: nanoseconds)
     }
 }
-
-actor InMemoryCloudSyncService: CloudSyncing {
-    private var remote = TopologySnapshot.empty
-
-    func availability() async -> CloudSyncAvailability { .available }
-
-    func synchronize(_ local: TopologySnapshot) async throws -> TopologySnapshot {
-        let merged = TopologyCloudMetadataSnapshotPolicy.merge(local: local, remote: remote)
-        remote = merged
-        return TopologyCloudMetadataSnapshotPolicy.restoringLocalState(in: merged, from: local)
-    }
-}
