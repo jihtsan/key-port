@@ -367,13 +367,13 @@ struct GraphInspectorView: View {
         if let account = item.accounts.first(where: { $0.id == model.selectedServerID })
             ?? item.accounts.first {
             NodeWorkspaceAuthorizationSection(
+                model: model,
                 account: account,
                 summaries: model.deviceAuthorizationSummaries(for: account),
                 deviceNames: Dictionary(
                     uniqueKeysWithValues: model.snapshot.devices.map { ($0.id, $0.name) }
                 ),
-                isBusy: model.isBusy,
-                onShowAccountDetail: { model.showServer(account.id) }
+                isBusy: model.isBusy
             )
         }
     }

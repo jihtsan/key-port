@@ -132,8 +132,8 @@ V6 runtime 当前在 `Sources/KeyPort/App/HostV6RuntimeAssembly.swift:22-28,66-1
 | `Sources/KeyPort/Stores/GraphWorkspaceModel.swift` | 从 V6 envelope 或 topology 生成 graph projection，拥有选中/过滤 | 保留并改为单一 `AccessSnapshot` 输入 | `GraphProjection`；#82 | list/graph 查询同一 snapshot；不再有 topology/envelope 双入口造成可见状态分叉 |
 | `Sources/KeyPort/Stores/HostV6MutationWorkflow.swift` | V6 command journal、幂等、外部 effect、撤销远端分段流程 | 保留并扩展 command 覆盖账户/地址/profile/授权流程 | V6 repository command boundary；#80–#83 | 不是仅删除命令；所有敏感副作用有可恢复 journal，remote revoke 的失败状态可见 |
 | `Sources/KeyPort/App/HostV6RuntimeAssembly.swift` | feature flags、canary/authoritative/rollback、compatibility projection | 保留为一次性迁移/回滚入口，移除“authoritative 阻断旧写”的长期状态 | `AccessRuntimeAssembly`；#83 | 新路径在 authoritative 下可工作；rollback 明确只读；feature flag 无永久 V2/V6 分叉 |
-| `Sources/KeyPort/Features/Servers/ServerEditorView.swift` | 旧服务器 + 首个账户表单、单独检查/保存 | 替换 | `SSHAccessSetupView` 的单一首访表单；#81 | 新表单覆盖新增和导入；旧 sheet/多步入口无调用；密码默认不持久化 |
-| `Sources/KeyPort/Features/Servers/ServerWorkspaceView.swift` / `ServerListView.swift` / `ServerDetailView.swift` | 服务器账户中心列表/详情/工具栏 | 重构并最终收敛到节点工作区 | `NodeWorkspace*` + `GraphWorkspaceView`；#81–#82 | 3 pane 下名称/地址/账户/授权/策略可完整操作；不再存在重复服务器状态 |
+| `Sources/KeyPort/Features/Servers/ServerAccessFormView.swift` | 旧服务器 + 首个账户表单、单独检查/保存 | 替换 | `SSHAccessSetupView` 的单一首访表单；#81 | 新表单覆盖新增和导入；旧 sheet/多步入口无调用；密码默认不持久化 |
+| `Sources/KeyPort/Features/Servers/ServerWorkspaceView.swift` / `ServerListView.swift` / 旧 `ServerDetailView.swift` | 服务器账户中心列表/详情/工具栏 | 重构并最终收敛到节点工作区；旧详情入口在 #83 移除 | `NodeWorkspace*` + `GraphWorkspaceView`；#81–#83 | 3 pane 下名称/地址/账户/授权/策略可完整操作；不再存在重复服务器详情状态 |
 | `Sources/KeyPort/Features/Servers/SSHAuthorizationWorkflowViews.swift` | 批量授权、旧授权动作和多步状态 | 保留能力，替换交互和状态输入 | `AccessCoordinator` + 账户详情；#81/#83 | 失败阶段、取消、重试、写后复检可从同一状态恢复；不再有独立旧流程入口 |
 | `Sources/KeyPort/Features/Servers/PasswordEntryView.swift` | 后置密码补录/可同步保存/授权后动作 | 降级为恢复路径，不作为首访主路径 | 单表单临时密码；#81 | 首次添加不再强制二次 sheet；后置补录仍可在失败恢复中使用且默认不保存 |
 | `Sources/KeyPort/Features/Graph/*` | Graph/list/detail 投影和节点编辑入口 | 保留并成为主工作区 | `AccessSnapshot`/`GraphProjection`；#81–#82 | 图和列表共享选择、过滤和 CRUD；图只显示真实关系、方向和验证事实 |
