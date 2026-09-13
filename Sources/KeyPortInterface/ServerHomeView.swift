@@ -104,7 +104,14 @@ public struct ServerHomeView: View {
                         Spacer(minLength: 0)
                     }.frame(height: 68)
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack(spacing: 12) { Text("登录账户").foregroundStyle(.secondary); Picker("登录账户", selection: .constant(account)) { Text(selected == "tencent-cloud" ? "待添加登录账户" : account).font(InterfaceStyle.technical(13)).tag(account) }.labelsHidden().frame(width: 142).frame(height: 30) }
+                        HStack(spacing: 12) { Text("登录账户").foregroundStyle(.secondary); Menu {
+                            Button(selected == "tencent-cloud" ? "添加登录账户" : account) { if selected == "tencent-cloud" { showsForm = true } }
+                        } label: {
+                            HStack { Text(selected == "tencent-cloud" ? "待添加登录账户" : account).font(InterfaceStyle.technical(13, medium: true)); Spacer(minLength: 0); Image(systemName: "chevron.up.chevron.down").font(.system(size: 10)) }
+                                .padding(.horizontal, 8).frame(width: 142, height: 30)
+                                .background(.white, in: RoundedRectangle(cornerRadius: 5))
+                                .overlay(RoundedRectangle(cornerRadius: 5).stroke(InterfaceStyle.color(0xD7DCE3)))
+                        }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().accessibilityLabel("登录账户") }
                         Label(stateText, systemImage: displayStatus == .ready ? "checkmark" : "exclamationmark.circle").foregroundStyle(stateColor).frame(height: 27)
                     }.padding(18).frame(maxWidth: .infinity, alignment: .leading).frame(height: 116).background(InterfaceStyle.color(0xF7F8FA), in: RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).stroke(InterfaceStyle.color(0xE2E5EA)))
                     HStack(spacing: 10) {

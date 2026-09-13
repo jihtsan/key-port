@@ -4,7 +4,7 @@ public struct AccessFormView: View {
     @State private var draft: AccessFormDraft
     @State private var showsPassword = false
     @State private var advanced = false
-    @State private var submitted = false
+    @State private var submissionState = AccessFormSubmissionState()
     private let onCancel: () -> Void
     private let onSubmit: (AccessFormDraft) -> Void
     private let fixture: Bool
@@ -37,8 +37,8 @@ public struct AccessFormView: View {
                         Text("使用本机现有 SSH 密钥").frame(maxWidth: .infinity, alignment: .leading).modifier(InputSurface())
                     } else {
                         HStack(spacing: 12) {
-                            if showsPassword { TextField("登录密码", text: $draft.password).frame(width: 100) }
-                            else { SecureField("登录密码", text: $draft.password).frame(width: 100) }
+                            if showsPassword { TextField("登录密码", text: $draft.password).frame(width: 84) }
+                            else { SecureField("登录密码", text: $draft.password).frame(width: 84) }
                             Button(showsPassword ? "隐藏" : "显示") { showsPassword.toggle() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(InterfaceStyle.blue)
                             Spacer(minLength: 0)
                         }.modifier(InputSurface())
@@ -65,17 +65,18 @@ public struct AccessFormView: View {
             }.padding(24).frame(height: 464).frame(maxWidth: .infinity).background(InterfaceStyle.color(0xF7F9FC), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {
                 Button("验证并配置免密") {
-                    submitted = true
-                    guard draft.validationMessage == nil else { return }
-                    onSubmit(draft); draft.password = ""
+                    guard let submission = submissionState.prepare(&draft) else { return }
+                    showsPassword = false
+                    onSubmit(submission)
                 }.buttonStyle(InterfaceButtonStyle(primary: true, width: 137, height: 38)).keyboardShortcut(.defaultAction)
                 Button("取消") { draft.password = ""; onCancel() }.buttonStyle(InterfaceButtonStyle(width: 112, height: 38)).keyboardShortcut(.cancelAction)
-                if submitted, let error = draft.validationMessage { Text(error).font(.system(size: 11)).foregroundStyle(.red) }
+                if let error = submissionState.error { Text(error).font(.system(size: 11)).foregroundStyle(.red) }
             }.frame(height: 38)
             Text(fixture ? "可点击演示 · 固定示例数据，无真实凭据与网络操作" : "密码仅在本次操作中使用。")
                 .font(.system(size: 10)).foregroundStyle(InterfaceStyle.color(0x9AA5B5)).frame(height: 15)
         }.padding(32).frame(width: 880, height: 740, alignment: .topLeading).foregroundStyle(InterfaceStyle.ink).background(.white)
         .onDisappear { draft.password = "" }
+        .onChange(of: draft) { _, _ in submissionState.edited() }
     }
     private func row<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 20) { Text(label).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x5A6F8B)).frame(width: 120, alignment: .leading); content() }.frame(height: 48)
