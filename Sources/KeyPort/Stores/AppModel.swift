@@ -230,9 +230,31 @@ struct ServerEditorSubmission: Sendable {
     let draft: ServerDraft
     let password: String
     let synchronizable: Bool
+    /// A first-access password is ephemeral by default. Existing callers that
+    /// construct this legacy value retain the old storage behavior explicitly
+    /// through the default for compatibility.
+    let savePassword: Bool
     let confirmedHostKeys: [HostKeyRecord]
     let passwordCheck: AuthenticationCheck?
     let machineConfiguration: RemoteMachineConfiguration?
+
+    init(
+        draft: ServerDraft,
+        password: String,
+        synchronizable: Bool,
+        savePassword: Bool = true,
+        confirmedHostKeys: [HostKeyRecord],
+        passwordCheck: AuthenticationCheck?,
+        machineConfiguration: RemoteMachineConfiguration?
+    ) {
+        self.draft = draft
+        self.password = password
+        self.synchronizable = synchronizable
+        self.savePassword = savePassword
+        self.confirmedHostKeys = confirmedHostKeys
+        self.passwordCheck = passwordCheck
+        self.machineConfiguration = machineConfiguration
+    }
 }
 
 struct SSHCheckLog: Sendable {
@@ -2048,43 +2070,44 @@ final class AppModel {
         let trimmedGroup = submission.draft.group.trimmingCharacters(in: .whitespacesAndNewlines)
         let serverID = existingServerID ?? UUID()
 
-        var passwordData: Data
         let hasNewPassword = !submission.password.isEmpty
-        if hasNewPassword {
-            passwordData = Data(submission.password.utf8)
-        } else if let existingServerID {
-            var credential = try await serverCredential(forProfileID: existingServerID)
-            passwordData = credential.passwordData
-            credential.passwordData.resetBytes(in: credential.passwordData.indices)
-        } else {
+        if existingServerID == nil && !hasNewPassword {
             throw SSHServiceError.missingPassword
         }
-        defer { passwordData.resetBytes(in: passwordData.indices) }
-        let credentialOwnerID = credentialOwnerID(
-            forProfileID: serverID,
-            targetNodeID: submission.draft.targetNodeID,
-            username: trimmedUsername
-        )
-        let passwordStorageChanged = hasStoredPassword(serverID: serverID)
-            && isPasswordSynchronizable(serverID: serverID) != submission.synchronizable
-        try await keychain.saveServerCredential(
-            username: trimmedUsername,
-            passwordData: passwordData,
-            serverID: credentialOwnerID,
-            synchronizable: submission.synchronizable
-        )
-        cacheCredentialAvailability(
-            ownerID: credentialOwnerID,
-            profileID: serverID,
-            synchronizable: submission.synchronizable
-        )
-        if passwordStorageChanged {
-            appendAudit(
-                category: "keychain",
-                action: "change-password-storage",
-                targetID: serverID.uuidString,
-                result: submission.synchronizable ? "synchronizable" : "local"
+
+        // The first-access form deliberately keeps a password in memory only
+        // unless the user opts into storage. An empty password on an existing
+        // profile means "keep the existing credential"; it never deletes or
+        // rewrites that credential as a side effect of editing metadata.
+        if submission.savePassword && hasNewPassword {
+            var passwordData = Data(submission.password.utf8)
+            defer { passwordData.resetBytes(in: passwordData.indices) }
+            let credentialOwnerID = credentialOwnerID(
+                forProfileID: serverID,
+                targetNodeID: submission.draft.targetNodeID,
+                username: trimmedUsername
             )
+            let passwordStorageChanged = hasStoredPassword(serverID: serverID)
+                && isPasswordSynchronizable(serverID: serverID) != submission.synchronizable
+            try await keychain.saveServerCredential(
+                username: trimmedUsername,
+                passwordData: passwordData,
+                serverID: credentialOwnerID,
+                synchronizable: submission.synchronizable
+            )
+            cacheCredentialAvailability(
+                ownerID: credentialOwnerID,
+                profileID: serverID,
+                synchronizable: submission.synchronizable
+            )
+            if passwordStorageChanged {
+                appendAudit(
+                    category: "keychain",
+                    action: "change-password-storage",
+                    targetID: serverID.uuidString,
+                    result: submission.synchronizable ? "synchronizable" : "local"
+                )
+            }
         }
 
         let peerServerIDs = existingServerID.map(serverIDsSharingEndpoint(with:)) ?? []
@@ -2375,7 +2398,11 @@ final class AppModel {
         await synchronizeSSHAuthorization(serverID: serverID, endpoint: nil)
     }
 
-    func synchronizeSSHAuthorization(serverID: UUID, endpoint: Endpoint?) async {
+    func synchronizeSSHAuthorization(
+        serverID: UUID,
+        endpoint: Endpoint?,
+        password: String? = nil
+    ) async {
         guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
@@ -2491,6 +2518,7 @@ final class AppModel {
                     throw SSHServiceError.operationFailed("此地址未通过既有账户授权验证；为避免误写入，KeyPort 不会重新安装公钥。")
                 }
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .succeeded, detail: "既有账户授权在此地址验证成功。")
+                updateServer(id: serverID, status: .authorized, detail: "既有账户授权已在此地址验证成功。")
                 upsertAuthorization(serverID: serverID, key: key, authorizedAt: nil)
                 setFirstAccessStage(serverID, .authorized)
                 await synchronizeMachineConfigurationWithKey(
@@ -2513,7 +2541,8 @@ final class AppModel {
                     result: "verified-existing-account-authorization"
                 )
             } else {
-                guard await storedCredentialOwnerID(forProfileID: serverID) != nil else {
+                guard await storedCredentialOwnerID(forProfileID: serverID) != nil
+                    || !(password?.isEmpty ?? true) else {
                     let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
                     updateServer(id: serverID, status: .needsAuthorization, detail: detail)
                     updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
@@ -2536,7 +2565,12 @@ final class AppModel {
                 updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
                 appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
                 try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-                try await authorize(server: routeServer, key: key, transport: transport)
+                try await authorize(
+                    server: routeServer,
+                    key: key,
+                    transport: transport,
+                    password: password
+                )
                 setFirstAccessStage(serverID, .authorized)
                 await synchronizeMachineConfigurationWithKey(
                     server: routeServer,
@@ -2674,13 +2708,19 @@ final class AppModel {
         pendingHostKeyResumesAuthorization = false
     }
 
-    func authorizeCurrentDevice(serverID: UUID) async {
-        await authorizeCurrentDevice(serverID: serverID, endpoint: nil)
+    @discardableResult
+    func authorizeCurrentDevice(serverID: UUID) async -> Bool {
+        await authorizeCurrentDevice(serverID: serverID, endpoint: nil, password: nil)
     }
 
-    func authorizeCurrentDevice(serverID: UUID, endpoint: Endpoint?) async {
-        guard await authorizeLegacyMutation() else { return }
-        guard !isBusy else { return }
+    @discardableResult
+    func authorizeCurrentDevice(
+        serverID: UUID,
+        endpoint: Endpoint?,
+        password: String? = nil
+    ) async -> Bool {
+        guard await authorizeLegacyMutation() else { return false }
+        guard !isBusy else { return false }
         do {
             if preferredKey == nil {
                 let key = try await generateCurrentDeviceKey()
@@ -2688,14 +2728,24 @@ final class AppModel {
                 await persist()
             }
             guard hasStoredPassword(serverID: serverID)
-                || canReuseAccountAuthorization(forProfileID: serverID) else {
+                || canReuseAccountAuthorization(forProfileID: serverID)
+                || !(password?.isEmpty ?? true) else {
                 blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 requestPassword(for: serverID, endpoint: endpoint)
-                return
+                return false
             }
             setFirstAccessStage(serverID, .readyToAuthorize)
-            await synchronizeSSHAuthorization(serverID: serverID, endpoint: endpoint)
-        } catch { present(error) }
+            await synchronizeSSHAuthorization(
+                serverID: serverID,
+                endpoint: endpoint,
+                password: password
+            )
+            return snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted })?.status == .authorized
+                && snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted })?.keyCheck?.state == .succeeded
+        } catch {
+            present(error)
+            return false
+        }
     }
 
     /// Starts an ordered, resumable batch. The plan is local-only and is
@@ -3399,37 +3449,67 @@ final class AppModel {
         copyAlias(serverID: serverID)
     }
 
-    func copyAlias(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(server.alias)
-        appendAudit(category: "server", action: "copy-alias", targetID: serverID.uuidString, result: "success")
+    @discardableResult
+    func copyAlias(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(server.alias)
+        appendAudit(
+            category: "server",
+            action: "copy-alias",
+            targetID: serverID.uuidString,
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
     }
 
-    func copyHost(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(server.host)
-        appendAudit(category: "server", action: "copy-host", targetID: serverID.uuidString, result: "success")
+    @discardableResult
+    func copyHost(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(server.host)
+        appendAudit(
+            category: "server",
+            action: "copy-host",
+            targetID: serverID.uuidString,
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
     }
 
-    func copySSHCommand(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(SSHCommandPresentation.command(server: server))
-        appendAudit(category: "server", action: "copy-ssh-command", targetID: serverID.uuidString, result: "success")
-    }
-
-    func copySSHCommand(serverID: UUID, endpoint: Endpoint?) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(SSHCommandPresentation.command(server: server, endpoint: endpoint))
+    @discardableResult
+    func copySSHCommand(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(SSHCommandPresentation.command(server: server))
         appendAudit(
             category: "server",
             action: "copy-ssh-command",
             targetID: serverID.uuidString,
-            result: endpoint == nil ? "alias" : "selected-route"
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
         )
+        return copied
     }
 
-    func openTerminal(serverID: UUID, endpoint: Endpoint?) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+    @discardableResult
+    func copySSHCommand(serverID: UUID, endpoint: Endpoint?) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(SSHCommandPresentation.command(server: server, endpoint: endpoint))
+        appendAudit(
+            category: "server",
+            action: "copy-ssh-command",
+            targetID: serverID.uuidString,
+            result: copied
+                ? (endpoint == nil ? "alias" : "selected-route")
+                : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
+    }
+
+    @discardableResult
+    func openTerminal(serverID: UUID, endpoint: Endpoint?) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
         guard terminal.open(server: server, endpoint: endpoint) else {
             errorMessage = "无法打开系统默认的 SSH 终端。请先确认 macOS 已为 ssh:// 链接配置可用的终端应用。"
             appendAudit(
@@ -3439,7 +3519,7 @@ final class AppModel {
                 result: "unavailable",
                 level: .warning
             )
-            return
+            return false
         }
         appendAudit(
             category: "server",
@@ -3447,6 +3527,7 @@ final class AppModel {
             targetID: serverID.uuidString,
             result: endpoint == nil ? "alias" : "selected-route"
         )
+        return true
     }
 
     func clearAuditLog() async {
@@ -4338,16 +4419,26 @@ final class AppModel {
     private func authorize(
         server: ServerConnection,
         key: SSHKeyRecord,
-        transport requestedTransport: SSHConnectionTransport? = nil
+        transport requestedTransport: SSHConnectionTransport? = nil,
+        password: String? = nil
     ) async throws {
         let transport = requestedTransport
             ?? sshTransport(forProfileID: server.id)
-        guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
-            throw SSHServiceError.missingPassword
+        var passwordData: Data
+        let authenticatedServer: ServerConnection
+        if let password, !password.isEmpty {
+            passwordData = Data(password.utf8)
+            authenticatedServer = server
+        } else {
+            guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
+                throw SSHServiceError.missingPassword
+            }
+            var credential = try await serverCredential(forProfileID: server.id)
+            passwordData = credential.passwordData
+            credential.passwordData.resetBytes(in: credential.passwordData.indices)
+            authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
         }
-        var credential = try await serverCredential(forProfileID: server.id)
-        defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
-        let authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
+        defer { passwordData.resetBytes(in: passwordData.indices) }
         let observed = try await hostKeyService.scan(
             server: server,
             transport: transport
@@ -4361,7 +4452,7 @@ final class AppModel {
             try await sshService.installPublicKey(
                 server: authenticatedServer,
                 key: key,
-                passwordData: credential.passwordData,
+                passwordData: passwordData,
                 transport: transport
             )
             updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "授权期间服务器密码身份验证成功。")

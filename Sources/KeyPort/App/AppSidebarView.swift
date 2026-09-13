@@ -88,7 +88,7 @@ struct AppSidebarView: View {
         NodeWorkspacePresentation.serverItems(
             model: model,
             workspace: model.graphWorkspace
-        ).count
+        ).filter { !$0.accounts.isEmpty }.count
     }
 
     private var tags: [AppSidebarTag] {

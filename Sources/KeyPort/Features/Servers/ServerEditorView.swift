@@ -1,396 +1,413 @@
 import KeyPortCore
 import SwiftUI
 
-enum ServerEditorPrimaryAction: Equatable, Sendable {
-    case testConnection
-    case save
-    case saveAndAuthorize
-}
+enum ServerAccessFormPhase: Equatable {
+    case idle
+    case checking
+    case hostKeyConfirmation
+    case authorizing
+    case succeeded
+    case failed
 
-func serverEditorPrimaryAction(
-    offersPasswordlessSetup: Bool,
-    passwordValidationPassed: Bool,
-    metadataOnlySaveAllowed: Bool
-) -> ServerEditorPrimaryAction {
-    if offersPasswordlessSetup {
-        return passwordValidationPassed ? .saveAndAuthorize : .testConnection
+    var isRunning: Bool {
+        self == .checking || self == .authorizing
     }
-    return passwordValidationPassed || metadataOnlySaveAllowed ? .save : .testConnection
 }
 
-struct ServerEditorView: View {
+/// The single first-access form. It validates the password and host identity,
+/// then immediately persists the profile and verifies this Mac's key without a
+/// second save button or an artificial delay.
+struct ServerAccessFormView: View {
     @Environment(\.dismiss) private var dismiss
 
     let title: String
-    let existingServerID: UUID?
-    let hasStoredPassword: Bool
-    let storedPasswordSynchronizable: Bool
     let canSynchronize: Bool
-    let primaryActionTitle: String
-    let offersPasswordlessSetup: Bool
-    let showsNotes: Bool
-    let locksServerFields: Bool
     let onCheck: (ServerDraft, String, [HostKeyRecord]) async -> ServerEditorValidationResult
-    let onSave: (ServerEditorSubmission, Bool) async throws -> Void
+    let onSave: (ServerEditorSubmission) async throws -> UUID
+    let onOpenTerminal: (UUID) -> Bool
+    let onCopyCommand: (UUID) -> Bool
 
-    private let initialDraft: ServerDraft
-    private let initialHostKeys: [HostKeyRecord]
     @State private var draft: ServerDraft
     @State private var portText: String
     @State private var password = ""
+    @State private var savePassword = false
+    @State private var synchronizable = false
     @State private var trustedHostKeys: [HostKeyRecord]
     @State private var validation: ServerEditorValidationResult?
     @State private var logLines: [String] = []
-    @State private var isChecking = false
-    @State private var isSaving = false
-    @State private var saveError: String?
-    @State private var checkTask: Task<Void, Never>?
-    @State private var pendingSave: PendingServerSave?
+    @State private var phase: ServerAccessFormPhase = .idle
+    @State private var errorMessage: String?
+    @State private var savedServerID: UUID?
+    @State private var copyMessage: String?
+    @State private var terminalMessage: String?
+    @State private var operationTask: Task<Void, Never>?
 
     init(
         title: String,
-        existingServerID: UUID? = nil,
         initialDraft: ServerDraft = ServerDraft(),
-        initialHostKeys: [HostKeyRecord] = [],
-        hasStoredPassword: Bool = false,
-        storedPasswordSynchronizable: Bool = false,
         canSynchronize: Bool,
-        primaryActionTitle: String = "保存",
-        offersPasswordlessSetup: Bool = true,
-        showsNotes: Bool = true,
-        locksServerFields: Bool = false,
         onCheck: @escaping (ServerDraft, String, [HostKeyRecord]) async -> ServerEditorValidationResult,
-        onSave: @escaping (ServerEditorSubmission, Bool) async throws -> Void
+        onSave: @escaping (ServerEditorSubmission) async throws -> UUID,
+        onOpenTerminal: @escaping (UUID) -> Bool,
+        onCopyCommand: @escaping (UUID) -> Bool
     ) {
         self.title = title
-        self.existingServerID = existingServerID
-        self.hasStoredPassword = hasStoredPassword
-        self.storedPasswordSynchronizable = storedPasswordSynchronizable
         self.canSynchronize = canSynchronize
-        self.primaryActionTitle = primaryActionTitle
-        self.offersPasswordlessSetup = offersPasswordlessSetup
-        self.showsNotes = showsNotes
-        self.locksServerFields = locksServerFields
         self.onCheck = onCheck
         self.onSave = onSave
-        self.initialDraft = initialDraft
-        self.initialHostKeys = initialHostKeys
+        self.onOpenTerminal = onOpenTerminal
+        self.onCopyCommand = onCopyCommand
         _draft = State(initialValue: initialDraft)
         _portText = State(initialValue: String(initialDraft.port))
-        _trustedHostKeys = State(initialValue: initialHostKeys)
+        _trustedHostKeys = State(initialValue: [])
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Text(title)
-                .font(.title2)
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding([.top, .horizontal])
+            if let savedServerID, phase == .succeeded {
+                successView(serverID: savedServerID)
+            } else {
+                Text(title)
+                    .font(.title2.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding([.top, .horizontal])
 
-            Form {
-                Section("服务器") {
-                    TextField("名称", text: $draft.name)
-                        .onChange(of: draft.name) { _, _ in
-                            draft.updateSuggestedAlias()
-                        }
-                    TextField("主机或 IP", text: $draft.host)
-                        .onChange(of: draft.host) { _, _ in invalidateValidation(resetHostKeys: true) }
-                    TextField("分组", text: $draft.group)
-                        .onChange(of: draft.group) { _, _ in
-                            draft.updateSuggestedAlias()
-                        }
-                    TextField("端口", text: $portText)
-                        .frame(width: 120)
-                        .onChange(of: portText) { _, newValue in
-                            updatePort(from: newValue)
-                        }
-                }
-                .disabled(locksServerFields)
+                Form {
+                    Section("服务器") {
+                        TextField("名称", text: $draft.name)
+                            .onChange(of: draft.name) { _, _ in
+                                draft.updateSuggestedAlias()
+                                invalidateValidation()
+                            }
 
-                Section("SSH 用户") {
-                    TextField("SSH 别名", text: $draft.alias)
-                        .textContentType(.URL)
-                        .onChange(of: draft.alias) { _, _ in
-                            draft.noteAliasEdit()
+                        HStack {
+                            TextField("地址或主机名", text: $draft.host)
+                                .onChange(of: draft.host) { _, _ in
+                                    invalidateValidation(resetHostKeys: true)
+                                }
+                            TextField("端口", text: $portText)
+                                .frame(width: 92)
+                                .onChange(of: portText) { _, value in
+                                    updatePort(from: value)
+                                }
                         }
-                }
+                    }
 
-                Section("凭据") {
-                    TextField("用户", text: $draft.username)
-                        .onChange(of: draft.username) { _, _ in
-                            draft.updateSuggestedAlias()
-                            invalidateValidation()
-                        }
-                    SecureField(hasStoredPassword ? "新密码（留空则保留当前密码）" : "密码", text: $password)
-                        .disabled(isChecking || isSaving)
-                        .onChange(of: password) { _, _ in invalidateValidation() }
+                    Section("SSH 账户") {
+                        TextField("登录账户", text: $draft.username)
+                            .onChange(of: draft.username) { _, _ in
+                                draft.updateSuggestedAlias()
+                                invalidateValidation()
+                            }
 
-                    if hasStoredPassword && password.isEmpty {
-                        Label("此次检查将使用 Keychain 中已存储的密码。", systemImage: "key.fill")
+                        SecureField("首次授权密码", text: $password)
+                            .disabled(phase.isRunning)
+                            .onChange(of: password) { _, _ in
+                                invalidateValidation()
+                            }
+                        Text("密码只用于本次验证；默认不会保存到 Keychain。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        Toggle("保存密码供以后使用", isOn: $savePassword)
+                            .onChange(of: savePassword) { _, enabled in
+                                if !enabled { synchronizable = false }
+                            }
+                        if savePassword {
+                            if canSynchronize {
+                                Toggle("使用 iCloud Keychain 同步", isOn: $synchronizable)
+                            } else {
+                                Label("当前签名不支持 iCloud Keychain，将仅保存到此 Mac。", systemImage: "lock.laptopcomputer")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    Section {
+                        DisclosureGroup("高级选项") {
+                            TextField("SSH 别名", text: $draft.alias)
+                                .textContentType(.URL)
+                                .onChange(of: draft.alias) { _, _ in
+                                    draft.noteAliasEdit()
+                                    invalidateValidation()
+                                }
+                            TextField("分组", text: $draft.group)
+                                .onChange(of: draft.group) { _, _ in
+                                    draft.updateSuggestedAlias()
+                                    invalidateValidation()
+                                }
+                            TextField("备注", text: $draft.notes, axis: .vertical)
+                                .lineLimit(2...4)
+                                .onChange(of: draft.notes) { _, _ in invalidateValidation() }
+                        }
+                    }
+
+                    Section("连接与授权") {
+                        progressPanel
+
+                        if phase == .hostKeyConfirmation {
+                            hostKeyConfirmation
+                        }
+
+                        if !logLines.isEmpty {
+                            checkLog
+                        }
+
+                        if let errorMessage {
+                            Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
+                .formStyle(.grouped)
+                .disabled(phase.isRunning)
 
-                Section("连接测试") {
-                    HStack(spacing: 12) {
-                        checkStatus
-                        Spacer()
+                Divider()
+                HStack {
+                    if phase.isRunning {
+                        ProgressView().controlSize(.small)
                     }
-
-                    if validation?.state == .confirmationRequired {
-                        hostKeyConfirmation
+                    Spacer()
+                    Button("取消", role: .cancel) {
+                        cancel()
                     }
-
-                    if shouldShowLog {
-                        checkLog
-                    }
-
-                    if let saveError {
-                        Label(saveError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                if showsNotes {
-                    Section("备注") {
-                        TextField("可选备注", text: $draft.notes, axis: .vertical)
-                            .lineLimit(2...4)
-                    }
-                }
-            }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                if isChecking || isSaving {
-                    ProgressView().controlSize(.small)
-                }
-                Spacer()
-                Button("取消", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isChecking || isSaving || pendingSave != nil)
-                if offersPasswordlessSetup {
-                    Button("仅保存") { requestSave(enablesPasswordless: false) }
-                        .disabled(!validationPassed || isChecking || isSaving || pendingSave != nil)
-                }
-                Button(primaryButtonTitle) {
-                    performPrimaryAction()
-                }
+                    .disabled(phase.isRunning)
+
+                    Button(primaryActionTitle) {
+                        if phase == .hostKeyConfirmation {
+                            trustHostKeysAndContinue()
+                        } else {
+                            beginCheck()
+                        }
+                    }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(primaryButtonDisabled)
+                    .disabled(!canBeginCheck || phase.isRunning)
+                }
+                .padding()
             }
-            .padding()
         }
-        .frame(width: 620)
-        .frame(minHeight: 650)
-        .sheet(item: $pendingSave) { request in
-            PasswordSyncConfirmationView(
-                initialSynchronizable: request.initialSynchronizable,
-                onConfirm: { synchronizable in
-                    pendingSave = nil
-                    save(
-                        enablesPasswordless: request.enablesPasswordless,
-                        synchronizable: synchronizable
-                    )
-                },
-                onCancel: { pendingSave = nil }
-            )
-        }
+        .frame(width: 640)
+        .frame(minHeight: 700)
+        .interactiveDismissDisabled(phase.isRunning)
         .onDisappear {
-            checkTask?.cancel()
-            checkTask = nil
+            operationTask?.cancel()
+            operationTask = nil
+            password = ""
+        }
+    }
+
+    private var canBeginCheck: Bool {
+        isValidDraft && !password.isEmpty
+    }
+
+    private var isValidDraft: Bool {
+        !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !draft.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !draft.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (1...65_535).contains(draft.port)
+            && KeyPortNaming.isValidAlias(draft.alias)
+    }
+
+    private var primaryActionTitle: String {
+        switch phase {
+        case .hostKeyConfirmation:
+            "确认身份并继续"
+        case .failed:
+            "重新连接并授权"
+        default:
+            "连接并启用免密"
         }
     }
 
     @ViewBuilder
-    private var checkStatus: some View {
-        if isChecking {
-            Label("正在测试连接", systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
-                .foregroundStyle(.blue)
-        } else if validation?.state == .succeeded {
-            Label("连接测试已通过", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        } else if validation?.state == .confirmationRequired {
-            Label("需要确认主机身份", systemImage: "exclamationmark.shield.fill")
-                .foregroundStyle(.orange)
-        } else if validation?.state == .failed {
-            Label("SSH 检查失败", systemImage: "xmark.circle.fill")
-                .foregroundStyle(.red)
-        } else if metadataOnlySaveAllowed {
-            Label("可直接保存资料修改", systemImage: "pencil.circle.fill")
-                .foregroundStyle(.blue)
-        } else {
-            Label("未检查", systemImage: "minus.circle")
-                .foregroundStyle(.secondary)
+    private var progressPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("一次完成首次访问", systemImage: "lock.shield")
+                    .font(.headline)
+                Spacer()
+                if phase.isRunning {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            progressRow("验证地址、端口和密码", state: passwordStepState)
+            progressRow("确认服务器主机身份", state: hostKeyStepState)
+            progressRow("安装并复检当前 Mac 公钥", state: authorizationStepState)
+        }
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(.quaternary, lineWidth: 1)
+        }
+    }
+
+    private func progressRow(_ title: String, state: ProgressRowState) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: state.systemImage)
+                .foregroundStyle(state.tint)
+                .frame(width: 18)
+            Text(title)
+                .font(.callout)
+            if state == .active {
+                Spacer()
+                Text("进行中")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var passwordStepState: ProgressRowState {
+        switch phase {
+        case .idle: .pending
+        case .checking: .active
+        case .hostKeyConfirmation, .authorizing, .succeeded: .complete
+        case .failed: .failed
+        }
+    }
+
+    private var hostKeyStepState: ProgressRowState {
+        switch phase {
+        case .idle, .checking: .pending
+        case .hostKeyConfirmation: .active
+        case .authorizing, .succeeded: .complete
+        case .failed: validation?.state == .confirmationRequired ? .failed : .pending
+        }
+    }
+
+    private var authorizationStepState: ProgressRowState {
+        switch phase {
+        case .idle, .checking, .hostKeyConfirmation: .pending
+        case .authorizing: .active
+        case .succeeded: .complete
+        case .failed: .failed
         }
     }
 
     private var hostKeyConfirmation: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            Text(trustedHostKeys.isEmpty ? "确认服务器身份" : "确认主机密钥变更")
-                .fontWeight(.medium)
-            Text("继续前，请将这些指纹与可信来源进行核对。")
+        VStack(alignment: .leading, spacing: 9) {
+            Text("核对服务器身份")
+                .font(.callout.weight(.medium))
+            Text("请将下面的指纹与可信来源核对。确认后会继续密码验证和公钥授权。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(validation?.observedHostKeys ?? []) { key in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(key.algorithm).font(.caption).fontWeight(.medium)
+                    Text(key.algorithm)
+                        .font(.caption.weight(.medium))
                     Text(key.fingerprint)
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                 }
             }
-            Button {
-                trustHostKeysAndContinue()
-            } label: {
-                Label("信任并继续", systemImage: "checkmark.shield")
-            }
-            .disabled(isChecking || isSaving)
         }
+        .padding(.top, 6)
     }
 
     private var checkLog: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Divider()
-            Label("检查日志", systemImage: "terminal")
-                .fontWeight(.medium)
+        VStack(alignment: .leading, spacing: 6) {
+            Label("操作记录", systemImage: "list.bullet.rectangle")
+                .font(.callout.weight(.medium))
             ScrollView {
                 Text(logLines.joined(separator: "\n"))
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(9)
             }
-            .frame(minHeight: 86, maxHeight: 150)
+            .frame(minHeight: 74, maxHeight: 150)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 
-    private var canCheck: Bool {
-        isValidDraft && (!password.isEmpty || hasStoredPassword)
-    }
+    private func successView(serverID: UUID) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("服务器已连接并启用免密", systemImage: "checkmark.circle.fill")
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(.green)
+            Text("密码登录、主机身份确认和当前 Mac 的公钥复检均已完成。")
+                .foregroundStyle(.secondary)
 
-    private var passwordValidationPassed: Bool {
-        validation?.state == .succeeded && validation?.check.state == .succeeded
-    }
+            HStack {
+                Button {
+                    terminalMessage = onOpenTerminal(serverID)
+                        ? "已请求系统默认终端打开 SSH 连接。"
+                        : "无法打开系统默认终端。请确认 macOS 已配置 ssh:// 链接处理程序。"
+                } label: {
+                    Label("在终端中打开", systemImage: "terminal")
+                }
+                .buttonStyle(.borderedProminent)
 
-    private var validationPassed: Bool {
-        passwordValidationPassed || metadataOnlySaveAllowed
-    }
+                Button {
+                    copyMessage = onCopyCommand(serverID)
+                        ? "SSH 命令已复制到剪贴板。"
+                        : "复制失败，剪贴板没有接受这条命令。"
+                } label: {
+                    Label("复制 SSH 命令", systemImage: "doc.on.doc")
+                }
+            }
 
-    private var metadataOnlySaveAllowed: Bool {
-        existingServerID != nil
-            && !isChecking
-            && password.isEmpty
-            && !authenticationContextChanged
-            && trustedHostKeys == initialHostKeys
-            && isValidDraft
-    }
+            if let terminalMessage {
+                Label(terminalMessage, systemImage: terminalMessage.hasPrefix("已") ? "checkmark.circle" : "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(terminalMessage.hasPrefix("已") ? Color.green : Color.red)
+            }
+            if let copyMessage {
+                Label(copyMessage, systemImage: copyMessage.hasPrefix("SSH") ? "checkmark.circle" : "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(copyMessage.hasPrefix("SSH") ? Color.green : Color.red)
+            }
 
-    private var authenticationContextChanged: Bool {
-        draft.host.trimmingCharacters(in: .whitespacesAndNewlines)
-            != initialDraft.host.trimmingCharacters(in: .whitespacesAndNewlines)
-            || draft.port != initialDraft.port
-            || draft.username.trimmingCharacters(in: .whitespacesAndNewlines)
-            != initialDraft.username.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var shouldShowLog: Bool {
-        isChecking || validation?.state == .confirmationRequired || validation?.state == .failed
-    }
-
-    private var currentPrimaryAction: ServerEditorPrimaryAction {
-        serverEditorPrimaryAction(
-            offersPasswordlessSetup: offersPasswordlessSetup,
-            passwordValidationPassed: passwordValidationPassed,
-            metadataOnlySaveAllowed: metadataOnlySaveAllowed
-        )
-    }
-
-    private var primaryButtonTitle: String {
-        switch currentPrimaryAction {
-        case .testConnection:
-            "测试连接"
-        case .save:
-            primaryActionTitle
-        case .saveAndAuthorize:
-            "保存并授权"
+            Spacer(minLength: 12)
+            HStack {
+                Spacer()
+                Button("完成") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.bordered)
+            }
         }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var primaryButtonDisabled: Bool {
-        guard !isChecking, !isSaving, pendingSave == nil else { return true }
-        switch currentPrimaryAction {
-        case .testConnection:
-            return !canCheck
-        case .save, .saveAndAuthorize:
-            return false
-        }
-    }
-
-    private var canOfferPasswordSync: Bool {
-        canSynchronize && (!password.isEmpty || hasStoredPassword)
-    }
-
-    private var initialSynchronizableChoice: Bool {
-        if hasStoredPassword {
-            return storedPasswordSynchronizable
-        }
-        return UserDefaults.standard.bool(forKey: "KeyPort.defaultPasswordSync")
-    }
-
-    private func performPrimaryAction() {
-        switch currentPrimaryAction {
-        case .testConnection:
-            checkConnection()
-        case .save:
-            requestSave(enablesPasswordless: false)
-        case .saveAndAuthorize:
-            requestSave(enablesPasswordless: true)
-        }
-    }
-
-    private var isValidDraft: Bool {
-        !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !draft.host.trimmingCharacters(in: .whitespaces).isEmpty
-            && !draft.username.trimmingCharacters(in: .whitespaces).isEmpty
-            && (1...65_535).contains(draft.port)
-            && KeyPortNaming.isValidAlias(draft.alias)
-    }
-
-    private func updatePort(from value: String) {
-        let digits = value.filter { $0.isNumber }
-        if digits != value {
-            portText = digits
-        }
-        draft.port = Int(digits) ?? 0
-        invalidateValidation(resetHostKeys: true)
-    }
-
-    private func checkConnection() {
-        guard canCheck, !isChecking, !isSaving else { return }
-        checkTask?.cancel()
-        isChecking = true
-        saveError = nil
+    private func beginCheck() {
+        guard canBeginCheck, !phase.isRunning else { return }
+        operationTask?.cancel()
         validation = nil
+        errorMessage = nil
+        copyMessage = nil
+        terminalMessage = nil
         logLines = ["正在开始 SSH 检查..."]
+        phase = .checking
+
         let candidateDraft = draft
         let candidatePassword = password
         let candidateHostKeys = trustedHostKeys
-
-        checkTask = Task { @MainActor in
+        operationTask = Task { @MainActor in
             let result = await onCheck(candidateDraft, candidatePassword, candidateHostKeys)
             guard !Task.isCancelled else { return }
-            isChecking = false
             validation = result
             trustedHostKeys = result.confirmedHostKeys
-            logLines = result.state == .succeeded ? [] : result.logLines
+            logLines = result.logLines
+
+            switch result.state {
+            case .confirmationRequired:
+                phase = .hostKeyConfirmation
+            case .failed:
+                phase = .failed
+                errorMessage = result.check.detail
+                password = ""
+            case .succeeded:
+                phase = .authorizing
+                await save(result: result, password: candidatePassword)
+            }
         }
     }
 
@@ -406,62 +423,83 @@ struct ServerEditorView: View {
                 lastSeenAt: now
             )
         }
-        checkConnection()
+        beginCheck()
     }
 
-    private func requestSave(enablesPasswordless: Bool) {
-        let canSave = enablesPasswordless ? passwordValidationPassed : validationPassed
-        guard canSave, !isSaving, pendingSave == nil else { return }
-        if canOfferPasswordSync {
-            pendingSave = PendingServerSave(
-                enablesPasswordless: enablesPasswordless,
-                initialSynchronizable: initialSynchronizableChoice
-            )
-        } else {
-            save(
-                enablesPasswordless: enablesPasswordless,
-                synchronizable: hasStoredPassword && storedPasswordSynchronizable
-            )
-        }
-    }
-
-    private func save(enablesPasswordless: Bool, synchronizable: Bool) {
-        let canSave = enablesPasswordless ? passwordValidationPassed : validationPassed
-        guard canSave, !isSaving else { return }
-        isSaving = true
-        saveError = nil
+    private func save(result: ServerEditorValidationResult, password passwordValue: String) async {
         let submission = ServerEditorSubmission(
             draft: draft,
-            password: password,
-            synchronizable: synchronizable,
+            password: passwordValue,
+            synchronizable: savePassword && canSynchronize && synchronizable,
+            savePassword: savePassword,
             confirmedHostKeys: trustedHostKeys,
-            passwordCheck: validation?.check,
-            machineConfiguration: validation?.machineConfiguration
+            passwordCheck: result.check,
+            machineConfiguration: result.machineConfiguration
         )
-        Task { @MainActor in
-            do {
-                try await onSave(submission, enablesPasswordless)
-                dismiss()
-            } catch {
-                isSaving = false
-                let message = UserFacingText.localizedError(error)
-                saveError = message
-                logLines.append("保存失败：\(message)")
-            }
+        do {
+            let serverID = try await onSave(submission)
+            guard !Task.isCancelled else { return }
+            savedServerID = serverID
+            self.password = ""
+            phase = .succeeded
+        } catch is CancellationError {
+            self.password = ""
+        } catch {
+            guard !Task.isCancelled else { return }
+            let message = UserFacingText.localizedError(error)
+            errorMessage = message
+            logLines.append("授权失败：\(message)")
+            self.password = ""
+            phase = .failed
         }
+    }
+
+    private func updatePort(from value: String) {
+        let digits = value.filter(\.isNumber)
+        if digits != value { portText = digits }
+        draft.port = Int(digits) ?? 0
+        invalidateValidation(resetHostKeys: true)
     }
 
     private func invalidateValidation(resetHostKeys: Bool = false) {
-        guard !isChecking, !isSaving else { return }
+        guard !phase.isRunning else { return }
         validation = nil
+        errorMessage = nil
         logLines = []
-        saveError = nil
+        phase = .idle
         if resetHostKeys { trustedHostKeys = [] }
+    }
+
+    private func cancel() {
+        guard !phase.isRunning else { return }
+        operationTask?.cancel()
+        operationTask = nil
+        password = ""
+        dismiss()
     }
 }
 
-private struct PendingServerSave: Identifiable {
-    let id = UUID()
-    let enablesPasswordless: Bool
-    let initialSynchronizable: Bool
+private enum ProgressRowState: Equatable {
+    case pending
+    case active
+    case complete
+    case failed
+
+    var systemImage: String {
+        switch self {
+        case .pending: "circle"
+        case .active: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .complete: "checkmark.circle.fill"
+        case .failed: "xmark.circle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .pending: .secondary
+        case .active: .blue
+        case .complete: .green
+        case .failed: .red
+        }
+    }
 }

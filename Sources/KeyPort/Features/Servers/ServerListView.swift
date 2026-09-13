@@ -5,15 +5,12 @@ struct ServerListView: View {
     let model: AppModel
     let onAddAccount: (UUID) -> Void
     let onEdit: (UUID) -> Void
-    let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
-    let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
     let onAddAccountForNode: (UUID) -> Void
-    let onSelectNode: (UUID) -> Void
 
     var body: some View {
         @Bindable var model = model
         List(selection: $model.selectedServerID) {
-            ForEach(serverItems) { item in
+            ForEach(managedServerItems) { item in
                 if item.accounts.count == 1, let account = item.accounts.first {
                     ServerWorkspaceAccountRow(
                         account: account,
@@ -47,39 +44,6 @@ struct ServerListView: View {
                             onAddAccount: { addAccountForNode(item) }
                         )
                     }
-                } else {
-                    ServerWorkspaceUnconfiguredRow(
-                        item: item,
-                        onSelect: { selectNode(item) },
-                        onAddAccount: { addAccountForNode(item) }
-                    )
-                }
-            }
-
-            if !discoveredServers.isEmpty {
-                Section("发现的服务器") {
-                    ForEach(discoveredServers) { suggestion in
-                        TailscaleDiscoveryRow(
-                            suggestion: suggestion,
-                            managedServers: model.managedServers(for: suggestion),
-                            onShowServer: { model.showServer($0) },
-                            onAddAccount: onAddAccount,
-                            onAddServer: onAddDiscoveredServer
-                        )
-                    }
-                }
-            }
-
-            if !discoveredConnections.isEmpty {
-                Section("发现的 SSH 配置") {
-                    ForEach(discoveredConnections) { connection in
-                        DiscoveredSSHConfigRow(
-                            connection: connection,
-                            managedServer: model.server(matching: connection),
-                            onShowServer: { model.showServer($0) },
-                            onAdd: onAddDiscoveredConnection
-                        )
-                    }
                 }
             }
         }
@@ -87,11 +51,9 @@ struct ServerListView: View {
         .searchable(text: $model.searchText, prompt: "名称、地址、用户、分组")
         .navigationTitle("服务器")
         .overlay {
-            if serverItems.isEmpty,
-               discoveredServers.isEmpty,
-               discoveredConnections.isEmpty {
+            if managedServerItems.isEmpty {
                 if model.searchText.isEmpty {
-                    ContentUnavailableView("暂无服务器", systemImage: "server.rack", description: Text("请添加服务器和首个 SSH 用户。"))
+                    ContentUnavailableView("暂无托管服务器", systemImage: "server.rack", description: Text("请添加服务器和首个 SSH 用户，或打开发现与导入。"))
                 } else {
                     ContentUnavailableView.search(text: model.searchText)
                 }
@@ -99,11 +61,11 @@ struct ServerListView: View {
         }
     }
 
-    private var serverItems: [NodeWorkspaceItem] {
+    private var managedServerItems: [NodeWorkspaceItem] {
         NodeWorkspacePresentation.serverItems(
             model: model,
             workspace: model.graphWorkspace
-        )
+        ).filter { !$0.accounts.isEmpty }
     }
 
     private func addAccountForNode(_ item: NodeWorkspaceItem) {
@@ -111,14 +73,96 @@ struct ServerListView: View {
         onAddAccountForNode(nodeID)
     }
 
-    private func selectNode(_ item: NodeWorkspaceItem) {
-        guard let nodeID = item.topologyNodeID else { return }
-        onSelectNode(nodeID)
+}
+
+struct ServerDiscoveryView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let model: AppModel
+    let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
+    let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
+
+    @State private var searchText = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !discoveredServers.isEmpty {
+                    Section("Tailscale 服务器") {
+                        ForEach(discoveredServers) { suggestion in
+                            TailscaleDiscoveryRow(
+                                suggestion: suggestion,
+                                managedServers: model.managedServers(for: suggestion),
+                                onShowServer: { serverID in
+                                    model.showServer(serverID)
+                                    dismiss()
+                                },
+                                onAddAccount: { serverID in
+                                    model.showServer(serverID)
+                                    dismiss()
+                                },
+                                onAddServer: { suggestion in
+                                    onAddDiscoveredServer(suggestion)
+                                    dismiss()
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if !discoveredConnections.isEmpty {
+                    Section("本机 SSH 配置") {
+                        ForEach(discoveredConnections) { connection in
+                            DiscoveredSSHConfigRow(
+                                connection: connection,
+                                managedServer: model.server(matching: connection),
+                                onShowServer: { serverID in
+                                    model.showServer(serverID)
+                                    dismiss()
+                                },
+                                onAdd: { connection in
+                                    onAddDiscoveredConnection(connection)
+                                    dismiss()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+            .overlay {
+                if discoveredServers.isEmpty && discoveredConnections.isEmpty {
+                    ContentUnavailableView(
+                        "没有新的发现结果",
+                        systemImage: "magnifyingglass",
+                        description: Text("可刷新 Tailscale 或重新读取本机 SSH 配置。")
+                    )
+                }
+            }
+            .searchable(text: $searchText, prompt: "名称、地址、用户、别名")
+            .navigationTitle("发现与导入")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task {
+                            await model.refreshTailscale()
+                            try? await model.refreshKeys(recordAudit: false)
+                        }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.isBusy)
+                }
+            }
+        }
+        .frame(minWidth: 580, minHeight: 480)
     }
 
     private var discoveredServers: [TailscaleSSHServerSuggestion] {
         (model.tailscaleStatus?.nodes ?? [])
-            .compactMap { TailscaleSSHServerSuggestion(node: $0) }
+            .compactMap(TailscaleSSHServerSuggestion.init(node:))
             .filter { suggestion in
                 matchesSearch([
                     suggestion.name,
@@ -151,7 +195,7 @@ struct ServerListView: View {
     }
 
     private func matchesSearch(_ values: [String]) -> Bool {
-        let needle = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
         guard !needle.isEmpty else { return true }
         return values.contains { $0.localizedLowercase.contains(needle) }
     }
@@ -411,45 +455,6 @@ private struct ServerWorkspaceAccountRow: View {
     }
 }
 
-private struct ServerWorkspaceUnconfiguredRow: View {
-    let item: NodeWorkspaceItem
-    let onSelect: () -> Void
-    let onAddAccount: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button(action: onSelect) {
-                HStack(spacing: 10) {
-                    Image(systemName: "server.rack")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.node.title)
-                            .fontWeight(.medium)
-                            .lineLimit(1)
-                        Text(item.unconfiguredSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    GraphStatusBadge(status: item.node.status)
-                }
-            }
-            .buttonStyle(.plain)
-            .help("查看服务器详情")
-            Spacer()
-            Button(action: onAddAccount) {
-                Label("添加账户", systemImage: "person.badge.plus")
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-        }
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
-    }
-}
-
 private extension NodeWorkspaceItem {
     var endpointSummary: String {
         let sshEndpoints = endpoints.filter { !$0.isDeleted && $0.protocol == .ssh }
@@ -462,12 +467,6 @@ private extension NodeWorkspaceItem {
         return "\(sshEndpoints.count) 条 SSH 路径"
     }
 
-    var unconfiguredSummary: String {
-        if accountCount > 0 {
-            return "\(accountCount) 个 SSH 用户，尚未创建连接配置 · \(endpointSummary)"
-        }
-        return "尚未添加 SSH 用户 · \(endpointSummary)"
-    }
 }
 
 struct AuthenticationCheckLabel: View {

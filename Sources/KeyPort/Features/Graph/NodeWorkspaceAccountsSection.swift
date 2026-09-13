@@ -11,6 +11,7 @@ struct NodeWorkspaceAccountsSection: View {
     let onEdit: (UUID) -> Void
     let onTest: (ServerConnection) -> Void
     let onCopyCommand: (ServerConnection) -> Void
+    let onDelete: (ServerConnection) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -51,7 +52,8 @@ struct NodeWorkspaceAccountsSection: View {
                             onSelect: { onSelect(row.id) },
                             onEdit: { onEdit(row.id) },
                             onTest: { onTest(row.account) },
-                            onCopyCommand: { onCopyCommand(row.account) }
+                            onCopyCommand: { onCopyCommand(row.account) },
+                            onDelete: { onDelete(row.account) }
                         )
                     }
                 }
@@ -80,6 +82,7 @@ private struct NodeWorkspaceAccountRow: View {
     let onEdit: () -> Void
     let onTest: () -> Void
     let onCopyCommand: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -135,6 +138,10 @@ private struct NodeWorkspaceAccountRow: View {
                 }
                 Button(action: onEdit) {
                     Label("编辑连接配置", systemImage: "pencil")
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("删除连接配置", systemImage: "trash")
                 }
             } label: {
                 Image(systemName: "ellipsis")

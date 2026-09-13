@@ -23,7 +23,7 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer, onDismiss: { serverEditorDraft = nil }) {
-            ServerEditorView(
+            ServerAccessFormView(
                 title: "添加服务器和首个 SSH 账户",
                 initialDraft: serverEditorDraft ?? model.newServerDraft(),
                 canSynchronize: model.canSynchronizePasswords,
@@ -35,12 +35,14 @@ struct ContentView: View {
                         trustedHostKeys: hostKeys
                     )
                 },
-                onSave: { submission, enablesPasswordless in
-                    try await saveServer(
-                        submission,
-                        existingServerID: nil,
-                        enablesPasswordless: enablesPasswordless
-                    )
+                onSave: { submission in
+                    try await saveServer(submission, existingServerID: nil)
+                },
+                onOpenTerminal: { serverID in
+                    model.openTerminal(serverID: serverID, endpoint: nil)
+                },
+                onCopyCommand: { serverID in
+                    model.copySSHCommand(serverID: serverID)
                 }
             )
         }
@@ -186,10 +188,6 @@ struct ContentView: View {
                 },
                 onAddAccountForNode: { nodeID in
                     addAccount(nodeID: nodeID)
-                },
-                onSelectNode: { nodeID in
-                    model.selectedServerID = nil
-                    model.graphWorkspace.selectedNodeID = .node(nodeID)
                 },
                 onEdit: { serverID in
                     model.selectedServerID = serverID
@@ -506,13 +504,20 @@ struct ContentView: View {
 
     private func saveServer(
         _ submission: ServerEditorSubmission,
-        existingServerID: UUID?,
-        enablesPasswordless: Bool
-    ) async throws {
+        existingServerID: UUID?
+    ) async throws -> UUID {
         let serverID = try await model.saveServerEditor(submission, existingServerID: existingServerID)
-        if enablesPasswordless {
-            await model.authorizeCurrentDevice(serverID: serverID)
+        let authorized = await model.authorizeCurrentDevice(
+            serverID: serverID,
+            endpoint: nil,
+            password: submission.savePassword ? nil : submission.password
+        )
+        guard authorized else {
+            let detail = model.snapshot.servers.first(where: { $0.id == serverID })?.statusDetail
+                ?? "服务器已保存，但当前 Mac 的免密授权未完成。"
+            throw SSHServiceError.operationFailed(detail)
         }
+        return serverID
     }
 }
 
