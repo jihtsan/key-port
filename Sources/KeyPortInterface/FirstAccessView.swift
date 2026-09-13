@@ -131,11 +131,11 @@ public struct FirstAccessView<Controls: View>: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "exclamationmark.circle").font(.system(size: 26)).foregroundStyle(InterfaceStyle.color(0xB66A26)).frame(width: 28, height: 28)
             Text(failure == .authentication ? "第 1 步 · 登录验证失败" : failureTitle(failure)).font(.system(size: 20, weight: .medium)).foregroundStyle(InterfaceStyle.color(0x9C622D)).frame(height: 30)
-            Text(failureExplanation(failure)).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x74859E))
+            Text(failureExplanation(failure)).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x74859E)).frame(height: 20)
             Text(failure == .identityMismatch ? "请通过可信渠道核对主机身份；此处不能忽略或自动继续。" : "检查后修改表单或重新验证；已有授权会先核对。")
-                .font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x4C6688))
-            Text("名称、地址与账户保留。密码已清空，不落盘保存。").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC))
-            Text(authorizationText).font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC))
+                .font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x4C6688)).frame(height: 21)
+            Text("名称、地址与账户保留。密码已清空，不落盘保存。").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
+            Text(authorizationText).font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
         }
     }
     private func failureExplanation(_ failure: AccessFlowFailure) -> String {
