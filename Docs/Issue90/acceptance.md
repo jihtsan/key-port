@@ -71,3 +71,11 @@
 - `./script/test.sh` 完整复跑退出 0：KeyPortTests 193/193、KeyPortCoreTests 312/312、新界面测试 2/2；CoreChecks、SSH relay IPv4/IPv6 fixture、AskPass FIFO 检查通过。
 - 最后主页 fixture 调整后重新构建并启动；表单测试再次通过。`git diff --check` 通过。
 - 真实服务器、用户 SSH 配置、钥匙串、CloudKit 未作为测试目标。
+
+## 确切运行版本
+
+- 实现/构建 commit：`608b34867f5bd666438148ce08f6f6fbb9838f2d`。
+- App：`/Users/joo00der/.codex/worktrees/7de9/key-port/dist/KeyPortDesignPreview.app`。
+- 提交后执行 `./script/build_design_preview.sh`，构建 3.44 秒，ad-hoc codesign 严格验证成功；PID 98371 的 argv 指向上述 App。
+- 随后 computer-use 读取真实窗口标题“KeyPort · 隔离设计预览”，AX 包含三栏内容、状态、主页操作及系统窗口按钮。
+- `native-home.png`、`native-form.png` 和变体是实现过程真实运行截图；此前校验/窄窗口截图保留相应中间版本，不宣称全部逐像素对应此 commit。最终源码变化包括独立示例详情及公网标签。
