@@ -338,10 +338,12 @@ struct ContentView: View {
                 workspace: model.graphWorkspace
             ), item.isServerNode {
                 serverGraphDetail
-            } else if let server = model.selectedServer {
-                ServerDetailView(server: server, model: model)
             } else {
-                ContentUnavailableView("未选择服务器账户", systemImage: "person.crop.circle", description: Text("请在服务器列表中选择一个 SSH 账户。"))
+                ContentUnavailableView(
+                    "服务器工作区正在同步",
+                    systemImage: "server.rack",
+                    description: Text("统一拓扑载入后，服务器账户、网络路径和设备授权会在同一工作区显示。")
+                )
             }
         case .keys:
             if let row = model.selectedKeyServerRow {

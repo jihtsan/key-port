@@ -881,19 +881,6 @@ final class AppModel {
         return ServerDraft(newAccountFor: server, aliasesToAvoid: managedAliases)
     }
 
-    func serverEditorDraft(for serverID: UUID) -> ServerDraft? {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
-            return nil
-        }
-        var draft = ServerDraft(server: server)
-        if let profile = topology.connectionProfile(id: serverID),
-           let account = topology.activeAccounts.first(where: { $0.id == profile.accountID }) {
-            draft.targetNodeID = account.nodeID
-            draft.targetEndpointID = profile.routePolicy.fixedEndpointID
-        }
-        return draft
-    }
-
     func newAccountDraft(forNodeID nodeID: UUID, endpointID: UUID? = nil) -> ServerDraft? {
         guard let node = topology.node(id: nodeID) else { return nil }
         let endpoints = topology.endpoints(for: nodeID, endpointProtocol: .ssh)
@@ -3473,12 +3460,38 @@ final class AppModel {
                 identityPath: identity,
                 transport: transport
             )
-            if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
+            let revokedAt = Date.now
+            let relatedProfileIDs: Set<UUID> = if let accountID = accountID(forProfileID: server.id) {
+                Set(topology.sshConnectionProfiles
+                    .filter { $0.accountID == accountID }
+                    .map(\.id))
+            } else {
+                [server.id]
+            }
+            for index in snapshot.authorizations.indices where relatedProfileIDs.contains(snapshot.authorizations[index].serverID) {
+                guard snapshot.authorizations[index].fingerprint == authorization.fingerprint else { continue }
                 snapshot.authorizations[index].status = .needsAuthorization
                 snapshot.authorizations[index].isDeleted = true
-                snapshot.authorizations[index].updatedAt = .now
-                snapshot.authorizations[index].lastVerifiedAt = .now
+                snapshot.authorizations[index].updatedAt = revokedAt
+                snapshot.authorizations[index].lastVerifiedAt = revokedAt
                 snapshot.authorizations[index].version += 1
+            }
+            if let accountID = accountID(forProfileID: server.id) {
+                for index in topology.authorizations.indices where topology.authorizations[index].accountID == accountID {
+                    let candidate = topology.authorizations[index]
+                    guard candidate.fingerprint == authorization.fingerprint else { continue }
+                    topology.authorizations[index].remoteState = .revoked
+                    topology.authorizations[index].relationState = .detached
+                    topology.authorizations[index].isDeleted = true
+                    topology.authorizations[index].updatedAt = revokedAt
+                }
+                for index in snapshot.servers.indices where relatedProfileIDs.contains(snapshot.servers[index].id) {
+                    if authorization.keyID == credentialKey.id {
+                        snapshot.servers[index].status = .needsAuthorization
+                        snapshot.servers[index].statusDetail = "此 SSH 账户的设备授权已撤销。"
+                        snapshot.servers[index].lastCheckedAt = revokedAt
+                    }
+                }
             }
             if authorization.keyID == credentialKey.id {
                 updateServer(id: server.id, status: .needsAuthorization, detail: "此 Mac 的授权已撤销。")

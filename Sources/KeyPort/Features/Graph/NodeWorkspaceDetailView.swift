@@ -31,6 +31,7 @@ struct NodeWorkspaceDetailView: View {
             } else if let item {
                 let selectedAccount = selectedAccount(in: item)
                 NodeWorkspaceContentView(
+                    model: model,
                     item: item,
                     tags: tags(for: item),
                     sshAccounts: item.node.id.topologyUUID.map {
@@ -73,9 +74,6 @@ struct NodeWorkspaceDetailView: View {
                     },
                     onVerifyEndpoint: { endpoint in
                         verifyEndpoint(endpoint, in: item)
-                    },
-                    onShowAccountDetail: { accountID in
-                        model.showServer(accountID)
                     },
                     hasStoredPasswordForAccount: { accountID in
                         model.hasStoredPassword(accountID: accountID)
@@ -291,6 +289,7 @@ struct NodeWorkspaceDetailView: View {
 }
 
 private struct NodeWorkspaceContentView: View {
+    let model: AppModel
     let item: NodeWorkspaceItem
     let tags: [String]
     let sshAccounts: [SSHAccount]
@@ -314,7 +313,6 @@ private struct NodeWorkspaceContentView: View {
     let onEditEndpoint: (Endpoint) -> Void
     let onDeleteEndpoint: (Endpoint) -> Void
     let onVerifyEndpoint: (Endpoint) -> Void
-    let onShowAccountDetail: (UUID) -> Void
     let hasStoredPasswordForAccount: (UUID) -> Bool
     let connectionProfileCount: (UUID) -> Int
     let onEditSSHAccount: (UUID) -> Void
@@ -347,6 +345,17 @@ private struct NodeWorkspaceContentView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 32) {
+                    if let selectedAccount {
+                        SSHFirstAccessProgressView(
+                            state: model.firstAccessState(for: selectedAccount),
+                            onPrimaryAction: {
+                                Task {
+                                    await model.performPasswordlessPrimaryAction(serverID: selectedAccount.id)
+                                }
+                            }
+                        )
+                    }
+
                     NodeWorkspaceSSHAccountsSection(
                         accounts: sshAccounts,
                         isBusy: isBusy,
@@ -375,13 +384,11 @@ private struct NodeWorkspaceContentView: View {
 
                     if let selectedAccount {
                         NodeWorkspaceAuthorizationSection(
+                            model: model,
                             account: selectedAccount,
                             summaries: deviceAuthorizationSummaries,
                             deviceNames: deviceNames,
-                            isBusy: isBusy,
-                            onShowAccountDetail: {
-                                onShowAccountDetail(selectedAccount.id)
-                            }
+                            isBusy: isBusy
                         )
                     }
 
@@ -418,11 +425,14 @@ private struct NodeWorkspaceContentView: View {
 }
 
 struct NodeWorkspaceAuthorizationSection: View {
+    let model: AppModel
     let account: ServerConnection
     let summaries: [SSHDeviceAuthorizationSummary]
     let deviceNames: [String: String]
     let isBusy: Bool
-    let onShowAccountDetail: () -> Void
+
+    @State private var detailsExpanded = false
+    @State private var pendingRevocationID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -436,8 +446,8 @@ struct NodeWorkspaceAuthorizationSection: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button("查看与撤销") {
-                    onShowAccountDetail()
+                Button(detailsExpanded ? "收起详情" : "查看与撤销") {
+                    detailsExpanded.toggle()
                 }
                 .disabled(isBusy)
             }
@@ -474,13 +484,117 @@ struct NodeWorkspaceAuthorizationSection: View {
                 .padding(.horizontal, 11)
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
+
+            if detailsExpanded {
+                authorizationDetails
+            }
         }
+        .confirmationDialog(
+            "要从服务器撤销此设备密钥吗？",
+            isPresented: Binding(
+                get: { pendingRevocationID != nil },
+                set: { if !$0 { pendingRevocationID = nil } }
+            )
+        ) {
+            Button("撤销授权", role: .destructive) {
+                guard let id = pendingRevocationID else { return }
+                pendingRevocationID = nil
+                Task { await model.revokeAuthorization(id) }
+            }
+            Button("取消", role: .cancel) { pendingRevocationID = nil }
+        } message: {
+            Text("KeyPort 只会移除公钥指纹完全匹配的记录，其他未知密钥将保留。")
+        }
+    }
+
+    private var authorizationDetails: some View {
+        GroupBox("账户级远端授权") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("这些公钥属于当前 SSH 账户，而不是某一条网络路径。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        Task { await model.refreshRemoteAuthorizations(serverID: account.id) }
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isBusy)
+                }
+
+                if authorizations.isEmpty {
+                    Label("当前没有可撤销的 KeyPort 设备授权。", systemImage: "key.slash")
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(Array(authorizations.enumerated()), id: \.element.id) { index, authorization in
+                            if index > 0 { Divider() }
+                            authorizationRow(authorization)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var authorizations: [Authorization] {
+        model.snapshot.authorizations
+            .filter { $0.serverID == account.id && !$0.isDeleted }
+            .sorted {
+                if $0.status != $1.status { return $0.status.rawValue < $1.status.rawValue }
+                return $0.fingerprint < $1.fingerprint
+            }
+    }
+
+    private func authorizationRow(_ authorization: Authorization) -> some View {
+        let key = model.key(for: authorization)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: authorization.status == .authorized ? "checkmark.shield.fill" : "questionmark.shield")
+                .foregroundStyle(authorization.status == .authorized ? .green : .orange)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(authorizationDeviceTitle(for: key))
+                    .font(.callout.weight(.medium))
+                if let key {
+                    Text(model.keyDisplayName(key))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(authorization.fingerprint)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                Text(authorization.status.title)
+                    .font(.caption)
+                    .foregroundStyle(authorization.status == .authorized ? .green : .orange)
+            }
+            Spacer(minLength: 8)
+            Button(role: .destructive) {
+                pendingRevocationID = authorization.id
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("撤销与此公钥指纹完全匹配的授权")
+            .disabled(isBusy || authorization.status != .authorized)
+        }
+        .padding(.vertical, 8)
     }
 
     private func deviceTitle(for summary: SSHDeviceAuthorizationSummary) -> String {
         deviceNames[summary.deviceID].flatMap {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
         } ?? summary.deviceID
+    }
+
+    private func authorizationDeviceTitle(for key: SSHKeyRecord?) -> String {
+        guard let deviceID = key?.deviceID else { return "未知设备" }
+        return deviceNames[deviceID].flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+        } ?? deviceID
     }
 
     private func color(for status: SSHDeviceAuthorizationStatus) -> Color {

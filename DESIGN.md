@@ -41,7 +41,7 @@
 - Imagery/iconography: SF Symbols with text labels or help text for unfamiliar actions
 
 ## Components
-- Existing components to reuse: `NavigationSplitView`, `List`, `Section`, `ContentUnavailableView`, `StatusLabel`, and `ServerDetailView`
+- Existing components to reuse: `NavigationSplitView`, `List`, `Section`, `ContentUnavailableView`, `StatusLabel`, and `NodeWorkspaceDetailView`
 - New/changed components: `ServerConnectionGroup`, `ServerGroupHeader`, and the compact `ServerAccountRow`
 - Variants and states: single-account row, multi-account section, search-filtered list, empty list, and empty search result
 - Token/component ownership: server list layout lives in `ServerListView.swift`; grouping and identity rules live in `KeyPortCore`
