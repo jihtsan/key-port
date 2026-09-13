@@ -713,7 +713,8 @@ public enum SSHAuthorizationProjection {
         currentDeviceID: String?,
         topology: TopologySnapshot,
         now: Date = .now,
-        verificationLifetime: TimeInterval = defaultVerificationLifetime
+        verificationLifetime: TimeInterval = defaultVerificationLifetime,
+        currentNetworkEpoch: UInt64? = nil
     ) -> [SSHDeviceAuthorizationSummary] {
         topology.profiles
             .sorted { $0.id < $1.id }
@@ -724,7 +725,8 @@ public enum SSHAuthorizationProjection {
                     currentDeviceID: currentDeviceID,
                     topology: topology,
                     now: now,
-                    verificationLifetime: verificationLifetime
+                    verificationLifetime: verificationLifetime,
+                    currentNetworkEpoch: currentNetworkEpoch
                 )
             }
     }
@@ -735,26 +737,40 @@ public enum SSHAuthorizationProjection {
         currentDeviceID: String?,
         topology: TopologySnapshot,
         now: Date = .now,
-        verificationLifetime: TimeInterval = defaultVerificationLifetime
+        verificationLifetime: TimeInterval = defaultVerificationLifetime,
+        currentNetworkEpoch: UInt64? = nil
     ) -> SSHDeviceAuthorizationSummary {
         let profile = topology.profiles.first(where: { $0.id == deviceID })
         let keys = topology.sshKeys.filter { $0.deviceID == deviceID }
         let keyIDs = Set(keys.map(\.id))
-        let accountAuthorizations = topology.authorizations.filter {
-            $0.accountID == accountID && !$0.isDeleted && $0.relationState == .active
-        }
+        let keyFingerprints = Set(keys.map(\.fingerprint).filter { !$0.isEmpty })
+        let accountAuthorizations = topology.activeAuthorizations(for: accountID)
         let remoteAuthorized = accountAuthorizations.contains {
-            $0.remoteState == .authorized && keyIDs.contains($0.keyID)
+            $0.remoteState == .authorized
+                && (keyFingerprints.contains($0.fingerprint)
+                    || ($0.fingerprint.isEmpty && keyIDs.contains($0.keyID)))
         }
         let localKeyAvailable = keys.contains { $0.isLocallyAvailable && $0.privateKeyPath != nil }
-        let latestVerification = topology.accessVerifications
-            .filter { $0.accountID == accountID && $0.deviceID == deviceID }
-            .max {
-                ($0.lastCheckedAt ?? .distantPast) < ($1.lastCheckedAt ?? .distantPast)
-            }
+        let latestVerification = topology.latestAccessVerification(
+            for: accountID,
+            deviceID: deviceID
+        )
         let lastVerifiedAt = latestVerification?.keyCheck?.state == .succeeded
             ? latestVerification?.keyCheck?.checkedAt ?? latestVerification?.lastCheckedAt
             : nil
+        let verificationIsCurrent: Bool = {
+            guard let latestVerification else { return false }
+            if currentNetworkEpoch != nil {
+                return latestVerification.freshness(
+                    at: now,
+                    networkEpoch: currentNetworkEpoch,
+                    validFor: verificationLifetime
+                ) == .fresh
+            }
+            guard let detectedAt = latestVerification.detectedAt,
+                  detectedAt <= now else { return false }
+            return now.timeIntervalSince(detectedAt) <= verificationLifetime
+        }()
 
         let status: SSHDeviceAuthorizationStatus
         if profile?.isRevoked == true {
@@ -764,12 +780,7 @@ public enum SSHAuthorizationProjection {
         } else if latestVerification?.status == .checking || latestVerification?.status == .syncing {
             status = .checking
         } else if latestVerification?.status == .authorized && remoteAuthorized {
-            if let lastVerifiedAt,
-               now.timeIntervalSince(lastVerifiedAt) > verificationLifetime {
-                status = .staleVerification
-            } else {
-                status = .authorized
-            }
+            status = verificationIsCurrent ? .authorized : .staleVerification
         } else if latestVerification?.status == .authorizationWrittenAwaitingVerification
                     || latestVerification?.status == .authorizationConflict
                     || latestVerification?.status == .keyAuthenticationFailed

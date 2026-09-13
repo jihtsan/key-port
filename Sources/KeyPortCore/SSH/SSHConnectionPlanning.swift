@@ -385,7 +385,8 @@ public struct SSHConnectionPlanner: Sendable {
         for intent: SSHConnectionIntent,
         in topology: TopologySnapshot,
         currentDeviceID: String,
-        networkEpoch: UInt64
+        networkEpoch: UInt64,
+        now: Date = .now
     ) throws -> [SSHConnectionPlan] {
         let profiles = topology.activeConnectionProfiles
         let explicitProfile = try resolveProfile(intent: intent, profiles: profiles)
@@ -407,7 +408,8 @@ public struct SSHConnectionPlanner: Sendable {
             nodeID: nodeID,
             topology: topology,
             currentDeviceID: currentDeviceID,
-            networkEpoch: networkEpoch
+            networkEpoch: networkEpoch,
+            now: now
         )
         return candidates.map { endpoint, reason in
             SSHConnectionPlan(
@@ -434,13 +436,15 @@ public struct SSHConnectionPlanner: Sendable {
         for intent: SSHConnectionIntent,
         in topology: TopologySnapshot,
         currentDeviceID: String,
-        networkEpoch: UInt64
+        networkEpoch: UInt64,
+        now: Date = .now
     ) throws -> SSHConnectionPlan {
         guard let first = try plans(
             for: intent,
             in: topology,
             currentDeviceID: currentDeviceID,
-            networkEpoch: networkEpoch
+            networkEpoch: networkEpoch,
+            now: now
         ).first else {
             throw SSHConnectionPlanningError.endpointNotFound
         }
@@ -518,7 +522,8 @@ public struct SSHConnectionPlanner: Sendable {
         nodeID: UUID,
         topology: TopologySnapshot,
         currentDeviceID: String,
-        networkEpoch: UInt64
+        networkEpoch: UInt64,
+        now: Date
     ) throws -> [(Endpoint, SSHConnectionPlanReason)] {
         var endpoints = topology.endpoints(for: nodeID, endpointProtocol: .ssh)
         if let target = intent.target,
@@ -560,8 +565,8 @@ public struct SSHConnectionPlanner: Sendable {
             topology.reachabilityObservations
                 .filter {
                     $0.observerDeviceID == currentDeviceID
-                        && $0.networkEpoch == networkEpoch
                         && $0.wasReachable
+                        && $0.freshness(at: now, networkEpoch: networkEpoch) == .fresh
                 }
                 .map { ($0.endpointID, $0) },
             uniquingKeysWith: { first, _ in first }

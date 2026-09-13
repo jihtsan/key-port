@@ -467,6 +467,8 @@ final class AppModel {
     private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
     private var discoveryGeneration = 0
     private var authorizationBatchTask: Task<Void, Never>?
+    private var networkEpochObserver: NSObjectProtocol?
+    private(set) var networkEpoch: UInt64
 
     init(
         hostV6Runtime: HostV6Runtime? = nil,
@@ -514,7 +516,26 @@ final class AppModel {
         self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
         self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
         self.discoveryCoordinator = discoveryCoordinator
+        self.networkEpoch = defaults.object(forKey: "KeyPort.networkEpoch") as? UInt64 ?? 0
+        self.networkEpochObserver = nil
         restoreLocalAuthorizationWorkflowState()
+        self.networkEpochObserver = NotificationCenter.default.addObserver(
+            forName: .keyPortNetworkEpochChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.networkEpoch &+= 1
+                self.defaults.set(self.networkEpoch, forKey: "KeyPort.networkEpoch")
+            }
+        }
+    }
+
+    isolated deinit {
+        if let networkEpochObserver {
+            NotificationCenter.default.removeObserver(networkEpochObserver)
+        }
     }
 
     var activeServers: [ServerConnection] {
@@ -568,7 +589,8 @@ final class AppModel {
         return SSHAuthorizationProjection.summaries(
             for: accountID,
             currentDeviceID: currentDeviceID,
-            topology: topology
+            topology: topology,
+            currentNetworkEpoch: networkEpoch
         )
     }
     var deviceListItems: [DevicePresence] {
@@ -2448,38 +2470,82 @@ final class AppModel {
                 return
             }
 
-            guard await storedCredentialOwnerID(forProfileID: serverID) != nil else {
-                let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
-                updateServer(id: serverID, status: .needsAuthorization, detail: detail)
-                updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
-                blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
-                passwordSaveError = nil
-                requestPassword(for: serverID, endpoint: endpoint)
-                appendSSHCheckLog(detail, serverID: serverID)
-                appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "missing-password", level: .warning)
-                recordSSHConnectionEvidence(
-                    serverID: serverID,
-                    routedServer: routeServer,
-                    endpointOverride: endpoint,
-                    transport: transport,
-                    wasReachable: true
+            if topology.authorizationDecision(
+                forProfileID: serverID,
+                keyID: key.id,
+                fingerprint: key.fingerprint
+            ) == .verifyExistingAccountAuthorization {
+                updateAuthenticationCheck(
+                    id: serverID,
+                    kind: .key,
+                    state: .checking,
+                    detail: "正在验证此地址上的既有账户授权，不会重新安装公钥。",
+                    checkedAt: nil
                 )
-                await persist()
-                return
-            }
+                appendSSHCheckLog("检测到同一 SSH 账户已有远端授权，正在只验证当前地址...", serverID: serverID)
+                guard try await sshService.testPublicKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                ) else {
+                    throw SSHServiceError.operationFailed("此地址未通过既有账户授权验证；为避免误写入，KeyPort 不会重新安装公钥。")
+                }
+                updateAuthenticationCheck(id: serverID, kind: .key, state: .succeeded, detail: "既有账户授权在此地址验证成功。")
+                upsertAuthorization(serverID: serverID, key: key, authorizedAt: nil)
+                setFirstAccessStage(serverID, .authorized)
+                await synchronizeMachineConfigurationWithKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                )
+                try await configService.write(
+                    servers: activeServers,
+                    keys: snapshot.keys,
+                    authorizations: snapshot.authorizations,
+                    transports: sshConfigTransports,
+                    topology: topology
+                )
+                appendSSHCheckLog("既有授权验证成功，未重复安装公钥。", serverID: serverID)
+                appendAudit(
+                    category: "authorization",
+                    action: "sync",
+                    targetID: serverID.uuidString,
+                    result: "verified-existing-account-authorization"
+                )
+            } else {
+                guard await storedCredentialOwnerID(forProfileID: serverID) != nil else {
+                    let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
+                    updateServer(id: serverID, status: .needsAuthorization, detail: detail)
+                    updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                    blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
+                    passwordSaveError = nil
+                    requestPassword(for: serverID, endpoint: endpoint)
+                    appendSSHCheckLog(detail, serverID: serverID)
+                    appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "missing-password", level: .warning)
+                    recordSSHConnectionEvidence(
+                        serverID: serverID,
+                        routedServer: routeServer,
+                        endpointOverride: endpoint,
+                        transport: transport,
+                        wasReachable: true
+                    )
+                    await persist()
+                    return
+                }
 
-            updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
-            appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
-            try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-            try await authorize(server: routeServer, key: key, transport: transport)
-            setFirstAccessStage(serverID, .authorized)
-            await synchronizeMachineConfigurationWithKey(
-                server: routeServer,
-                key: key,
-                transport: transport
-            )
-            appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
-            appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
+                updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
+                appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
+                try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
+                try await authorize(server: routeServer, key: key, transport: transport)
+                setFirstAccessStage(serverID, .authorized)
+                await synchronizeMachineConfigurationWithKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                )
+                appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
+                appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
+            }
         } catch {
             let message = UserFacingText.localizedError(error)
             let status: AuthorizationStatus
@@ -2621,7 +2687,8 @@ final class AppModel {
                 appendAudit(category: "key", action: "generate", targetID: key.id, result: "account-authorization")
                 await persist()
             }
-            guard hasStoredPassword(serverID: serverID) else {
+            guard hasStoredPassword(serverID: serverID)
+                || canReuseAccountAuthorization(forProfileID: serverID) else {
                 blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 requestPassword(for: serverID, endpoint: endpoint)
                 return
@@ -2797,32 +2864,12 @@ final class AppModel {
             return
         }
 
-        // A target can become authorized while a persisted plan is waiting
-        // for user intervention. Treat that remote/local fact as complete so
-        // resuming the plan never repeats an already successful side effect.
-        guard server.status != .authorized else {
-            finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
-            return
-        }
-
         guard let key = privateKey(for: server), key.isLocallyAvailable, key.privateKeyPath != nil else {
             let detail = "此 Mac 没有可用于 SSH 授权的本地私钥。"
             updateServer(id: targetID, status: .missingLocalKey, detail: detail)
             updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
             blockFirstAccess(targetID, code: .missingLocalKey, at: .localKeyRequired)
             finishAuthorizationBatchItem(targetID: targetID, code: .missingLocalKey, detail: detail)
-            await persist()
-            return
-        }
-
-        guard await storedCredentialOwnerID(forProfileID: targetID) != nil else {
-            let detail = "启用 SSH 授权前，请输入并验证此账户的密码。"
-            updateServer(id: targetID, status: .needsAuthorization, detail: detail)
-            updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
-            blockFirstAccess(targetID, code: .missingPassword, at: .credentialRequired)
-            passwordSaveError = nil
-            requestPassword(for: targetID)
-            finishAuthorizationBatchItem(targetID: targetID, code: .missingPassword, detail: detail)
             await persist()
             return
         }
@@ -2889,6 +2936,58 @@ final class AppModel {
                 return
             case .confirmed:
                 break
+            }
+
+            if topology.authorizationDecision(
+                forProfileID: targetID,
+                keyID: key.id,
+                fingerprint: key.fingerprint
+            ) == .verifyExistingAccountAuthorization {
+                updateAuthenticationCheck(
+                    id: targetID,
+                    kind: .key,
+                    state: .checking,
+                    detail: "正在验证此地址上的既有账户授权，不会重新安装公钥。",
+                    checkedAt: nil
+                )
+                guard try await sshService.testPublicKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                ) else {
+                    throw SSHServiceError.operationFailed("此地址未通过既有账户授权验证；为避免误写入，KeyPort 不会重新安装公钥。")
+                }
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .succeeded, detail: "既有账户授权在此地址验证成功。")
+                upsertAuthorization(serverID: targetID, key: key, authorizedAt: nil)
+                setFirstAccessStage(targetID, .authorized)
+                recordSSHConnectionEvidence(
+                    serverID: targetID,
+                    routedServer: routeServer,
+                    endpointOverride: nil,
+                    transport: transport,
+                    wasReachable: didReachEndpoint
+                )
+                finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
+                appendAudit(
+                    category: "authorization",
+                    action: "batch-item",
+                    targetID: targetID.uuidString,
+                    result: "verified-existing-account-authorization"
+                )
+                await persist()
+                return
+            }
+
+            guard await storedCredentialOwnerID(forProfileID: targetID) != nil else {
+                let detail = "启用 SSH 授权前，请输入并验证此账户的密码。"
+                updateServer(id: targetID, status: .needsAuthorization, detail: detail)
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(targetID, code: .missingPassword, at: .credentialRequired)
+                passwordSaveError = nil
+                requestPassword(for: targetID)
+                finishAuthorizationBatchItem(targetID: targetID, code: .missingPassword, detail: detail)
+                await persist()
+                return
             }
 
             try await authorize(server: routeServer, key: key, transport: transport)
@@ -3486,6 +3585,18 @@ final class AppModel {
 
     private func accountID(forProfileID profileID: UUID) -> UUID? {
         topology.connectionProfile(id: profileID)?.accountID
+    }
+
+    private func canReuseAccountAuthorization(forProfileID profileID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == profileID && !$0.isDeleted }),
+              let key = privateKey(for: server) else {
+            return false
+        }
+        return topology.authorizationDecision(
+            forProfileID: profileID,
+            keyID: key.id,
+            fingerprint: key.fingerprint
+        ) == .verifyExistingAccountAuthorization
     }
 
     private func profileIDs(forAccountID accountID: UUID) -> [UUID] {
@@ -4086,7 +4197,7 @@ final class AppModel {
         let observation = ReachabilityObservation(
             endpointID: endpoint.id,
             observerDeviceID: deviceID,
-            networkEpoch: 0,
+            networkEpoch: networkEpoch,
             observedAt: .now,
             wasReachable: wasReachable
         )
@@ -4100,7 +4211,7 @@ final class AppModel {
             profileID: profile.id,
             endpointID: endpoint.id,
             transport: transport,
-            networkEpoch: 0,
+            networkEpoch: networkEpoch,
             status: server.status,
             statusDetail: server.statusDetail,
             lastCheckedAt: server.lastCheckedAt,

@@ -16,13 +16,42 @@ actor SnapshotStore {
 
     func load() throws -> AppSnapshot {
         try paths.prepareDirectories()
-        guard FileManager.default.fileExists(atPath: paths.snapshot.path) else { return AppSnapshot() }
-        return try decoder.decode(AppSnapshot.self, from: Data(contentsOf: paths.snapshot))
+        guard FileManager.default.fileExists(atPath: paths.snapshot.path) else {
+            guard FileManager.default.fileExists(atPath: paths.snapshotBackup.path) else {
+                return AppSnapshot()
+            }
+            return try decoder.decode(
+                AppSnapshot.self,
+                from: Data(contentsOf: paths.snapshotBackup)
+            )
+        }
+        do {
+            return try decoder.decode(
+                AppSnapshot.self,
+                from: Data(contentsOf: paths.snapshot)
+            )
+        } catch {
+            guard FileManager.default.fileExists(atPath: paths.snapshotBackup.path) else {
+                throw error
+            }
+            return try decoder.decode(
+                AppSnapshot.self,
+                from: Data(contentsOf: paths.snapshotBackup)
+            )
+        }
     }
 
     func save(_ snapshot: AppSnapshot) throws {
         try paths.prepareDirectories()
         let data = try encoder.encode(snapshot)
+        if FileManager.default.fileExists(atPath: paths.snapshot.path) {
+            let previous = try Data(contentsOf: paths.snapshot)
+            try previous.write(to: paths.snapshotBackup, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: paths.snapshotBackup.path
+            )
+        }
         try data.write(to: paths.snapshot, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.snapshot.path)
     }
