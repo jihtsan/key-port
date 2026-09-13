@@ -4,14 +4,25 @@
 
 用户在 #92 明确授权开展依赖 #91 的第二阶段隔离预览，这不是主页原尺度像素一致的证明。完整状态转移、模拟入口和后续迁移边界见 [state-transitions.md](state-transitions.md)。
 
-## 构建与复现
+## 复核修复：6250f76（当前版本）
+
+当前构建源码为 `6250f76`，仍待视觉验收，不合并 PR #93。下文 `6db2877` 的 37 组证据保留为上一版完整流程基线，不能当作当前二进制截图。当前补充证据见 [evidence/6250f76](evidence/6250f76)，覆盖本轮受影响路径。
+
+- 修复：中文、emoji、符号名称不能生成空 SSH 目标。可读英文名称保持原有规则；转换结果为空时，使用标准化名称 SHA-256 前 12 位十六进制生成 `server-…`。这是稳定默认值，不宣称生产别名全局唯一；后续真实配置写入仍需处理冲突。
+- 提交时固定最终别名；显式别名优先。成功页和终端/复制适配接口共用相同目标；重试或修改地址不改变已确定别名。
+- 实际 App 回归：名称“我的服务器”、高级别名留空，提示自动值 `server-3f0f164b30c3`；使用示例密码完成模拟流程，成功页显示 `ssh server-3f0f164b30c3`。截图及完整 AX 已保存。
+- 取消页去掉正文中重复的授权状态句；真实授权中按 Escape 后，状态只在副标题出现一次，仍明确取消不代表撤销。
+- `swift test --filter KeyPortInterfaceTests`：19/19，通过新增非 ASCII 默认值、显式覆盖及两个交接适配接口目标一致性回归；构建、严格签名验证和真实 App 启动通过。未执行真实 SSH、剪贴板、钥匙串或云操作。
+- 主机确认承载方式、新增错误页和整体视觉依然待用户确认，本轮没有将这些项标记通过。
+
+## 上一版完整流程基线：构建与复现
 
 - 分支：`codex/issue-92-first-access-flow`。fetch 后从 PR #91 最新 head `cece27fab25ae3c0103e19f661f13e2b8de96f1c` 建立；交付前重查 #91 head 未改变。
-- **唯一最终源码 commit：`6db2877ba99949b454c1bd1295fd03eaf9fdca6b`**。后续仅补证据和文档。
+- **上一版基线源码 commit：`6db2877ba99949b454c1bd1295fd03eaf9fdca6b`**。后续仅补证据和文档。
 - **App：`/Users/joo00der/.codex/worktrees/e053/key-port/dist/KeyPortDesignPreview.app`**。
 - 构建：在该 worktree 执行 `./script/build_design_preview.sh`。SwiftPM 独立预览 executable；本次构建 2.71 秒，ad-hoc codesign 验证通过，实际 App 已启动并操作。
 - [构建日志](evidence/6db2877/build.log)、[测试日志](evidence/6db2877/tests.log)、[图像/AX/二进制哈希清单](evidence/6db2877/manifest.json)。
-- **仅 [evidence/6db2877](evidence/6db2877) 中的截图/AX 是本阶段最终证据。** 中间构建的截图已从本阶段目录删除。原 #90 证据只证明其历史版本。
+- **[evidence/6db2877](evidence/6db2877) 是上一版完整流程证据。** 中间构建的截图已从本阶段目录删除。原 #90 证据只证明其历史版本。
 
 打开此 App → Cmd+N（或主页“+”）→ 使用固定示例数据提交 → 按需确认占位主机指纹 → 通过页脚“模拟完成”或 Cmd+J 逐次回传结果。右下“模拟场景”可选择各错误状态；同一面板中切换为“首次连接成功”再重试可验证恢复。重新打开面板重置 fixture。不要输入真实密码。
 
