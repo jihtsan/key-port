@@ -21,13 +21,42 @@ actor TopologyStore {
 
     func load() throws -> TopologySnapshot? {
         try paths.prepareDirectories()
-        guard FileManager.default.fileExists(atPath: paths.topologySnapshot.path) else { return nil }
-        return try decoder.decode(TopologySnapshot.self, from: Data(contentsOf: paths.topologySnapshot))
+        guard FileManager.default.fileExists(atPath: paths.topologySnapshot.path) else {
+            guard FileManager.default.fileExists(atPath: paths.topologySnapshotBackup.path) else {
+                return nil
+            }
+            return try decoder.decode(
+                TopologySnapshot.self,
+                from: Data(contentsOf: paths.topologySnapshotBackup)
+            )
+        }
+        do {
+            return try decoder.decode(
+                TopologySnapshot.self,
+                from: Data(contentsOf: paths.topologySnapshot)
+            )
+        } catch {
+            guard FileManager.default.fileExists(atPath: paths.topologySnapshotBackup.path) else {
+                throw error
+            }
+            return try decoder.decode(
+                TopologySnapshot.self,
+                from: Data(contentsOf: paths.topologySnapshotBackup)
+            )
+        }
     }
 
     func save(_ snapshot: TopologySnapshot) throws {
         try paths.prepareDirectories()
         let data = try encoder.encode(snapshot)
+        if FileManager.default.fileExists(atPath: paths.topologySnapshot.path) {
+            let previous = try Data(contentsOf: paths.topologySnapshot)
+            try previous.write(to: paths.topologySnapshotBackup, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: paths.topologySnapshotBackup.path
+            )
+        }
         try data.write(to: paths.topologySnapshot, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: paths.topologySnapshot.path)
     }

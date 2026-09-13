@@ -31,21 +31,21 @@
 
 - 场景：用户从安全详情继续向下查找连接配置、关联和运维能力。
 - 预期：安全详情后先出现 SSH 账户与连接配置，再出现关联信息，最后出现机器配置与远端授权；失败/操作日志收进安全详情。
-- 实际：`Sources/KeyPort/Features/Servers/ServerDetailView.swift:29` 的顺序是操作日志、安全详情、设备关联、Test Case、机器配置、连接资料、远端授权；`sshOperationLog` 在 `:168` 作为独立 `GroupBox`，不在安全详情内。
+- 历史实际：旧版 `ServerDetailView` 的顺序是操作日志、安全详情、设备关联、Test Case、机器配置、连接资料、远端授权；`sshOperationLog` 作为独立 `GroupBox`，不在安全详情内。该旧详情页已在 #83 移除。
 - 影响：连接配置被埋到关联和运维动作之后，机器配置与远端授权被连接资料拆开；验收标准 1、4 未满足。
 
 ### 2. Host Key 风险和指纹仍可被折叠隐藏
 
 - 场景：Host Key 待确认或发生变化，用户查看旧指纹和本次观察到的新指纹。
 - 预期：风险状态自动展开，且风险和指纹在问题解决前持续可见，不能被折叠状态掩盖。
-- 实际：安全区直接绑定可写的 `securityDetailsExpanded`（`ServerDetailView.swift:193`）；`:700` 只在出现/状态变化时把它设为 `true`，用户随后仍可折叠。切换到另一个相同风险状态账户也没有以 `server.id` 触发展开。
+- 历史实际：旧版安全区直接绑定可写的 `securityDetailsExpanded`；只在出现/状态变化时设为 `true`，用户随后仍可折叠。切换到另一个相同风险状态账户也没有以 `server.id` 触发展开。该旧详情页已在 #83 移除。
 - 影响：新旧指纹和确认入口可能再次隐藏，验收标准 4 及安全可见性要求未满足。
 
 ### 3. 内容列复制缺少成功反馈和 VoiceOver announcement
 
 - 场景：用户在约 300pt 内容列点击账户行末尾的常驻复制按钮。
 - 预期：只复制纯别名；按钮原位短暂显示 `checkmark`，约 1.5-2 秒恢复，并宣布复制成功。
-- 实际：`Sources/KeyPort/Features/Servers/ServerListView.swift:161` 直接调用复制闭包，按钮始终是 `doc.on.doc`，仅有 tooltip 和静态 accessibility label，没有成功 value 或 announcement。详情区在 `ServerDetailView.swift:674` 已实现所需反馈，内容列未复用。
+- 历史实际：`ServerListView` 直接调用复制闭包，按钮始终是 `doc.on.doc`，仅有 tooltip 和静态 accessibility label，没有成功 value 或 announcement。旧详情区曾实现所需反馈，内容列未复用；旧详情页已在 #83 移除。
 - 影响：鼠标和辅助技术用户都无法确认内容列复制是否成功，验收标准 12 及 Issue 明确的复制反馈要求未满足。
 
 ## 已验证范围

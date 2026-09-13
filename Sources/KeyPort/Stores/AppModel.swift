@@ -123,10 +123,25 @@ struct ServerDraft: Sendable {
 }
 
 struct NodeEndpointDraft: Sendable {
-    var address = ""
-    var label = ""
-    var port = 22
-    var networkScope: NetworkScope = .publicNetwork
+    var endpointID: UUID?
+    var address: String
+    var label: String
+    var port: Int
+    var networkScope: NetworkScope
+
+    init(
+        endpointID: UUID? = nil,
+        address: String = "",
+        label: String = "",
+        port: Int = 22,
+        networkScope: NetworkScope = .publicNetwork
+    ) {
+        self.endpointID = endpointID
+        self.address = address
+        self.label = label
+        self.port = port
+        self.networkScope = networkScope
+    }
 }
 
 /// Account-only editor state. Network coordinates and SSH aliases belong to
@@ -230,9 +245,31 @@ struct ServerEditorSubmission: Sendable {
     let draft: ServerDraft
     let password: String
     let synchronizable: Bool
+    /// A first-access password is ephemeral by default. Existing callers that
+    /// construct this legacy value retain the old storage behavior explicitly
+    /// through the default for compatibility.
+    let savePassword: Bool
     let confirmedHostKeys: [HostKeyRecord]
     let passwordCheck: AuthenticationCheck?
     let machineConfiguration: RemoteMachineConfiguration?
+
+    init(
+        draft: ServerDraft,
+        password: String,
+        synchronizable: Bool,
+        savePassword: Bool = true,
+        confirmedHostKeys: [HostKeyRecord],
+        passwordCheck: AuthenticationCheck?,
+        machineConfiguration: RemoteMachineConfiguration?
+    ) {
+        self.draft = draft
+        self.password = password
+        self.synchronizable = synchronizable
+        self.savePassword = savePassword
+        self.confirmedHostKeys = confirmedHostKeys
+        self.passwordCheck = passwordCheck
+        self.machineConfiguration = machineConfiguration
+    }
 }
 
 struct SSHCheckLog: Sendable {
@@ -467,6 +504,8 @@ final class AppModel {
     private var activeDiscoveryOperationsByHost: [UUID: UUID] = [:]
     private var discoveryGeneration = 0
     private var authorizationBatchTask: Task<Void, Never>?
+    private var networkEpochObserver: NSObjectProtocol?
+    private(set) var networkEpoch: UInt64
 
     init(
         hostV6Runtime: HostV6Runtime? = nil,
@@ -514,7 +553,26 @@ final class AppModel {
         self.discoveryExecutor = discoveryExecutor ?? ProcessExecutor()
         self.discoveryAdapter = discoveryAdapter ?? SSHListenerDiscoveryAdapter()
         self.discoveryCoordinator = discoveryCoordinator
+        self.networkEpoch = defaults.object(forKey: "KeyPort.networkEpoch") as? UInt64 ?? 0
+        self.networkEpochObserver = nil
         restoreLocalAuthorizationWorkflowState()
+        self.networkEpochObserver = NotificationCenter.default.addObserver(
+            forName: .keyPortNetworkEpochChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.networkEpoch &+= 1
+                self.defaults.set(self.networkEpoch, forKey: "KeyPort.networkEpoch")
+            }
+        }
+    }
+
+    isolated deinit {
+        if let networkEpochObserver {
+            NotificationCenter.default.removeObserver(networkEpochObserver)
+        }
     }
 
     var activeServers: [ServerConnection] {
@@ -568,7 +626,8 @@ final class AppModel {
         return SSHAuthorizationProjection.summaries(
             for: accountID,
             currentDeviceID: currentDeviceID,
-            topology: topology
+            topology: topology,
+            currentNetworkEpoch: networkEpoch
         )
     }
     var deviceListItems: [DevicePresence] {
@@ -822,19 +881,6 @@ final class AppModel {
         return ServerDraft(newAccountFor: server, aliasesToAvoid: managedAliases)
     }
 
-    func serverEditorDraft(for serverID: UUID) -> ServerDraft? {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else {
-            return nil
-        }
-        var draft = ServerDraft(server: server)
-        if let profile = topology.connectionProfile(id: serverID),
-           let account = topology.activeAccounts.first(where: { $0.id == profile.accountID }) {
-            draft.targetNodeID = account.nodeID
-            draft.targetEndpointID = profile.routePolicy.fixedEndpointID
-        }
-        return draft
-    }
-
     func newAccountDraft(forNodeID nodeID: UUID, endpointID: UUID? = nil) -> ServerDraft? {
         guard let node = topology.node(id: nodeID) else { return nil }
         let endpoints = topology.endpoints(for: nodeID, endpointProtocol: .ssh)
@@ -859,6 +905,23 @@ final class AppModel {
     func newEndpointDraft(forNodeID nodeID: UUID) -> NodeEndpointDraft? {
         guard topology.node(id: nodeID) != nil else { return nil }
         return NodeEndpointDraft()
+    }
+
+    func nodeEndpointDraft(
+        forNodeID nodeID: UUID,
+        endpointID: UUID
+    ) -> NodeEndpointDraft? {
+        guard let endpoint = topology.endpoint(id: endpointID),
+              endpoint.nodeID == nodeID,
+              endpoint.serviceID == nil,
+              endpoint.protocol == .ssh else { return nil }
+        return NodeEndpointDraft(
+            endpointID: endpoint.id,
+            address: endpoint.address,
+            label: endpoint.label,
+            port: Int(endpoint.port),
+            networkScope: endpoint.networkScope
+        )
     }
 
     func sshAccountDraft(
@@ -1364,47 +1427,162 @@ final class AppModel {
 
         let port = UInt16(draft.port)
         let normalizedAddress = TopologyStableID.normalize(address)
-        let existingEndpointIndex = topology.endpoints.firstIndex { endpoint in
+        let matchingEndpointIndex = topology.endpoints.firstIndex { endpoint in
             endpoint.nodeID == nodeID
                 && endpoint.serviceID == nil
                 && endpoint.protocol == .ssh
                 && endpoint.port == port
                 && TopologyStableID.normalize(endpoint.address) == normalizedAddress
         }
-        if let existingEndpointIndex {
-            guard topology.endpoints[existingEndpointIndex].source != .tailscale else {
+
+        if let endpointID = draft.endpointID {
+            guard let endpointIndex = topology.endpoints.firstIndex(where: {
+                $0.id == endpointID
+                    && $0.nodeID == nodeID
+                    && $0.serviceID == nil
+                    && $0.protocol == .ssh
+                    && !$0.isDeleted
+            }) else {
+                throw SSHServiceError.operationFailed("要编辑的网络路径已不存在。")
+            }
+            guard topology.endpoints[endpointIndex].source != .tailscale else {
                 throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请直接使用自动发现的网络要求。")
             }
-            topology.endpoints[existingEndpointIndex].isDeleted = false
-            topology.endpoints[existingEndpointIndex].label = label.isEmpty ? address : label
-            topology.endpoints[existingEndpointIndex].networkScope = draft.networkScope
-            topology.endpoints[existingEndpointIndex].source = .manual
+            guard matchingEndpointIndex == nil || matchingEndpointIndex == endpointIndex else {
+                throw SSHServiceError.operationFailed("这个节点已经存在相同地址和端口的网络路径。")
+            }
+
+            let previous = topology.endpoints[endpointIndex]
+            let identityChanged = TopologyStableID.normalize(previous.address) != normalizedAddress
+                || previous.port != port
+            var updated = previous
+            updated.address = address
+            updated.label = label.isEmpty ? address : label
+            updated.port = port
+            updated.networkScope = draft.networkScope
+            updated.source = .manual
+            updated.isDeleted = false
+            topology.endpoints[endpointIndex] = updated
+
+            if identityChanged || previous.networkScope != draft.networkScope {
+                topology.reachabilityObservations.removeAll { $0.endpointID == endpointID }
+            }
+            if identityChanged {
+                for trustIndex in topology.hostKeyTrusts.indices where topology.hostKeyTrusts[trustIndex].endpointID == endpointID {
+                    topology.hostKeyTrusts[trustIndex].state = .replaced
+                    topology.hostKeyTrusts[trustIndex].replacedAt = .now
+                    topology.hostKeyTrusts[trustIndex].lastSeenAt = .now
+                    topology.hostKeyTrusts[trustIndex].isDeleted = true
+                }
+            }
+            invalidateAccessVerifications(
+                forEndpointID: endpointID,
+                detail: identityChanged
+                    ? "访问地址已修改，主机身份需要重新核验。"
+                    : "网络路径已修改，需要重新检查连接。"
+            )
         } else {
-            let nextPriority = (topology.endpoints(for: nodeID).map(\.priority).max() ?? -1) + 1
-            topology.endpoints.append(Endpoint(
-                id: TopologyStableID.nodeEndpoint(
+            if let matchingEndpointIndex {
+                guard topology.endpoints[matchingEndpointIndex].source != .tailscale else {
+                    throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请直接使用自动发现的网络要求。")
+                }
+                let previous = topology.endpoints[matchingEndpointIndex]
+                topology.endpoints[matchingEndpointIndex].isDeleted = false
+                topology.endpoints[matchingEndpointIndex].label = label.isEmpty ? address : label
+                topology.endpoints[matchingEndpointIndex].networkScope = draft.networkScope
+                topology.endpoints[matchingEndpointIndex].source = .manual
+                if previous.isDeleted || previous.networkScope != draft.networkScope {
+                    topology.reachabilityObservations.removeAll { $0.endpointID == previous.id }
+                    invalidateAccessVerifications(
+                        forEndpointID: previous.id,
+                        detail: previous.isDeleted
+                            ? "访问路径已恢复，需要重新检查连接。"
+                            : "网络路径已修改，需要重新检查连接。"
+                    )
+                }
+            } else {
+                let nextPriority = (topology.endpoints(for: nodeID).map(\.priority).max() ?? -1) + 1
+                topology.endpoints.append(Endpoint(
+                    id: TopologyStableID.nodeEndpoint(
+                        nodeID: nodeID,
+                        address: address,
+                        port: port,
+                        protocol: .ssh
+                    ),
                     nodeID: nodeID,
                     address: address,
+                    label: label.isEmpty ? address : label,
                     port: port,
-                    protocol: .ssh
-                ),
-                nodeID: nodeID,
-                address: address,
-                label: label.isEmpty ? address : label,
-                port: port,
-                protocol: .ssh,
-                networkScope: draft.networkScope,
-                source: .manual,
-                priority: nextPriority
-            ))
+                    protocol: .ssh,
+                    networkScope: draft.networkScope,
+                    source: .manual,
+                    priority: nextPriority
+                ))
+            }
         }
 
         var node = topology.nodes[nodeIndex]
         node.roles = Array(Set(node.roles + [.sshHost])).sorted { $0.rawValue < $1.rawValue }
         node.updatedAt = .now
         topology.nodes[nodeIndex] = node
-        appendAudit(category: "endpoint", action: "create", targetID: nodeID.uuidString, result: draft.networkScope.rawValue)
+        let action = draft.endpointID == nil ? "create" : "update"
+        snapshot = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDevice?.id
+                ?? defaults.string(forKey: "KeyPort.deviceID")
+                ?? "local"
+        )
+        appendAudit(category: "endpoint", action: action, targetID: nodeID.uuidString, result: draft.networkScope.rawValue)
         await persist()
+        await writeConfig()
+    }
+
+    func deleteNodeEndpoint(_ endpointID: UUID, forNodeID nodeID: UUID) async throws {
+        try await requireLegacyMutation()
+        guard let endpointIndex = topology.endpoints.firstIndex(where: {
+            $0.id == endpointID
+                && $0.nodeID == nodeID
+                && $0.serviceID == nil
+                && $0.protocol == .ssh
+                && !$0.isDeleted
+        }) else {
+            throw SSHServiceError.operationFailed("要删除的网络路径已不存在。")
+        }
+        guard topology.endpoints[endpointIndex].source != .tailscale else {
+            throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请从自动发现中管理。")
+        }
+
+        let referencingProfiles = topology.activeConnectionProfiles.filter { profile in
+            profile.routePolicy.fixedEndpointID == endpointID
+                || profile.candidateEndpointIDs.contains(endpointID)
+        }
+        guard referencingProfiles.isEmpty else {
+            throw SSHServiceError.operationFailed(
+                "还有 \(referencingProfiles.count) 个 SSH 连接配置使用这条路径，请先编辑它们的路径策略。"
+            )
+        }
+
+        topology.endpoints[endpointIndex].isDeleted = true
+        for trustIndex in topology.hostKeyTrusts.indices where topology.hostKeyTrusts[trustIndex].endpointID == endpointID {
+            topology.hostKeyTrusts[trustIndex].state = .replaced
+            topology.hostKeyTrusts[trustIndex].replacedAt = .now
+            topology.hostKeyTrusts[trustIndex].lastSeenAt = .now
+            topology.hostKeyTrusts[trustIndex].isDeleted = true
+        }
+        topology.reachabilityObservations.removeAll { $0.endpointID == endpointID }
+        invalidateAccessVerifications(
+            forEndpointID: endpointID,
+            detail: "访问路径已删除，需要选择其他路径并重新检查连接。"
+        )
+        snapshot = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDevice?.id
+                ?? defaults.string(forKey: "KeyPort.deviceID")
+                ?? "local"
+        )
+        appendAudit(category: "endpoint", action: "delete", targetID: endpointID.uuidString, result: "tombstoned")
+        await persist()
+        await writeConfig()
     }
 
     func tailscaleServerDraft(
@@ -2026,43 +2204,44 @@ final class AppModel {
         let trimmedGroup = submission.draft.group.trimmingCharacters(in: .whitespacesAndNewlines)
         let serverID = existingServerID ?? UUID()
 
-        var passwordData: Data
         let hasNewPassword = !submission.password.isEmpty
-        if hasNewPassword {
-            passwordData = Data(submission.password.utf8)
-        } else if let existingServerID {
-            var credential = try await serverCredential(forProfileID: existingServerID)
-            passwordData = credential.passwordData
-            credential.passwordData.resetBytes(in: credential.passwordData.indices)
-        } else {
+        if existingServerID == nil && !hasNewPassword {
             throw SSHServiceError.missingPassword
         }
-        defer { passwordData.resetBytes(in: passwordData.indices) }
-        let credentialOwnerID = credentialOwnerID(
-            forProfileID: serverID,
-            targetNodeID: submission.draft.targetNodeID,
-            username: trimmedUsername
-        )
-        let passwordStorageChanged = hasStoredPassword(serverID: serverID)
-            && isPasswordSynchronizable(serverID: serverID) != submission.synchronizable
-        try await keychain.saveServerCredential(
-            username: trimmedUsername,
-            passwordData: passwordData,
-            serverID: credentialOwnerID,
-            synchronizable: submission.synchronizable
-        )
-        cacheCredentialAvailability(
-            ownerID: credentialOwnerID,
-            profileID: serverID,
-            synchronizable: submission.synchronizable
-        )
-        if passwordStorageChanged {
-            appendAudit(
-                category: "keychain",
-                action: "change-password-storage",
-                targetID: serverID.uuidString,
-                result: submission.synchronizable ? "synchronizable" : "local"
+
+        // The first-access form deliberately keeps a password in memory only
+        // unless the user opts into storage. An empty password on an existing
+        // profile means "keep the existing credential"; it never deletes or
+        // rewrites that credential as a side effect of editing metadata.
+        if submission.savePassword && hasNewPassword {
+            var passwordData = Data(submission.password.utf8)
+            defer { passwordData.resetBytes(in: passwordData.indices) }
+            let credentialOwnerID = credentialOwnerID(
+                forProfileID: serverID,
+                targetNodeID: submission.draft.targetNodeID,
+                username: trimmedUsername
             )
+            let passwordStorageChanged = hasStoredPassword(serverID: serverID)
+                && isPasswordSynchronizable(serverID: serverID) != submission.synchronizable
+            try await keychain.saveServerCredential(
+                username: trimmedUsername,
+                passwordData: passwordData,
+                serverID: credentialOwnerID,
+                synchronizable: submission.synchronizable
+            )
+            cacheCredentialAvailability(
+                ownerID: credentialOwnerID,
+                profileID: serverID,
+                synchronizable: submission.synchronizable
+            )
+            if passwordStorageChanged {
+                appendAudit(
+                    category: "keychain",
+                    action: "change-password-storage",
+                    targetID: serverID.uuidString,
+                    result: submission.synchronizable ? "synchronizable" : "local"
+                )
+            }
         }
 
         let peerServerIDs = existingServerID.map(serverIDsSharingEndpoint(with:)) ?? []
@@ -2201,6 +2380,36 @@ final class AppModel {
         let siblingProfiles = accountID(forProfileID: id).map { accountID in
             profileIDs(forAccountID: accountID).filter { $0 != id }
         } ?? []
+
+        if hostV6Runtime == nil,
+           let profileIndex = topology.sshConnectionProfiles.firstIndex(where: {
+               $0.id == id && !$0.isDeleted
+           }) {
+            topology.sshConnectionProfiles[profileIndex].isDeleted = true
+            topology.sshConnectionProfiles[profileIndex].updatedAt = .now
+            topology.sshConnectionProfiles[profileIndex].version += 1
+            if siblingProfiles.isEmpty {
+                for credentialID in credentialIDs {
+                    try? await keychain.deleteServerCredential(serverID: credentialID)
+                    serverIDsWithStoredPassword.remove(credentialID)
+                    serverIDsWithSynchronizablePassword.remove(credentialID)
+                }
+            }
+            serverIDsWithStoredPassword.remove(id)
+            serverIDsWithSynchronizablePassword.remove(id)
+            snapshot = TopologySnapshotMigration.legacyProjection(
+                from: topology,
+                currentDeviceID: currentDevice?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? "local"
+            )
+            appendAudit(category: "server", action: "delete", targetID: id.uuidString, result: "tombstoned")
+            if selectedServerID == id { selectedServerID = activeServers.first?.id }
+            await persist()
+            await writeConfig()
+            return
+        }
+
         snapshot.servers[index].isDeleted = true
         snapshot.servers[index].updatedAt = .now
         snapshot.servers[index].version += 1
@@ -2353,7 +2562,11 @@ final class AppModel {
         await synchronizeSSHAuthorization(serverID: serverID, endpoint: nil)
     }
 
-    func synchronizeSSHAuthorization(serverID: UUID, endpoint: Endpoint?) async {
+    func synchronizeSSHAuthorization(
+        serverID: UUID,
+        endpoint: Endpoint?,
+        password: String? = nil
+    ) async {
         guard await authorizeLegacyMutation() else { return }
         guard !isBusy,
               let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
@@ -2448,38 +2661,89 @@ final class AppModel {
                 return
             }
 
-            guard await storedCredentialOwnerID(forProfileID: serverID) != nil else {
-                let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
-                updateServer(id: serverID, status: .needsAuthorization, detail: detail)
-                updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
-                blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
-                passwordSaveError = nil
-                requestPassword(for: serverID, endpoint: endpoint)
-                appendSSHCheckLog(detail, serverID: serverID)
-                appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "missing-password", level: .warning)
-                recordSSHConnectionEvidence(
-                    serverID: serverID,
-                    routedServer: routeServer,
-                    endpointOverride: endpoint,
-                    transport: transport,
-                    wasReachable: true
+            if topology.authorizationDecision(
+                forProfileID: serverID,
+                keyID: key.id,
+                fingerprint: key.fingerprint
+            ) == .verifyExistingAccountAuthorization {
+                updateAuthenticationCheck(
+                    id: serverID,
+                    kind: .key,
+                    state: .checking,
+                    detail: "正在验证此地址上的既有账户授权，不会重新安装公钥。",
+                    checkedAt: nil
                 )
-                await persist()
-                return
-            }
+                appendSSHCheckLog("检测到同一 SSH 账户已有远端授权，正在只验证当前地址...", serverID: serverID)
+                guard try await sshService.testPublicKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                ) else {
+                    throw SSHServiceError.operationFailed("此地址未通过既有账户授权验证；为避免误写入，KeyPort 不会重新安装公钥。")
+                }
+                updateAuthenticationCheck(id: serverID, kind: .key, state: .succeeded, detail: "既有账户授权在此地址验证成功。")
+                updateServer(id: serverID, status: .authorized, detail: "既有账户授权已在此地址验证成功。")
+                upsertAuthorization(serverID: serverID, key: key, authorizedAt: nil)
+                setFirstAccessStage(serverID, .authorized)
+                await synchronizeMachineConfigurationWithKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                )
+                try await configService.write(
+                    servers: activeServers,
+                    keys: snapshot.keys,
+                    authorizations: snapshot.authorizations,
+                    transports: sshConfigTransports,
+                    topology: topology
+                )
+                appendSSHCheckLog("既有授权验证成功，未重复安装公钥。", serverID: serverID)
+                appendAudit(
+                    category: "authorization",
+                    action: "sync",
+                    targetID: serverID.uuidString,
+                    result: "verified-existing-account-authorization"
+                )
+            } else {
+                guard await storedCredentialOwnerID(forProfileID: serverID) != nil
+                    || !(password?.isEmpty ?? true) else {
+                    let detail = "同步 SSH 授权前，请添加并验证当前 SSH 账户的密码。"
+                    updateServer(id: serverID, status: .needsAuthorization, detail: detail)
+                    updateAuthenticationCheck(id: serverID, kind: .key, state: .blocked, detail: detail)
+                    blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
+                    passwordSaveError = nil
+                    requestPassword(for: serverID, endpoint: endpoint)
+                    appendSSHCheckLog(detail, serverID: serverID)
+                    appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "missing-password", level: .warning)
+                    recordSSHConnectionEvidence(
+                        serverID: serverID,
+                        routedServer: routeServer,
+                        endpointOverride: endpoint,
+                        transport: transport,
+                        wasReachable: true
+                    )
+                    await persist()
+                    return
+                }
 
-            updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
-            appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
-            try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
-            try await authorize(server: routeServer, key: key, transport: transport)
-            setFirstAccessStage(serverID, .authorized)
-            await synchronizeMachineConfigurationWithKey(
-                server: routeServer,
-                key: key,
-                transport: transport
-            )
-            appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
-            appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
+                updateAuthenticationCheck(id: serverID, kind: .key, state: .checking, detail: "正在使用 Keychain 密码安装公钥并进行复检。", checkedAt: nil)
+                appendSSHCheckLog("正在安装当前 Mac 公钥并执行强制公钥复检...", serverID: serverID)
+                try await localAuthentication.authorize(reason: "在 \(server.name) 上同步此 Mac 的 SSH 授权")
+                try await authorize(
+                    server: routeServer,
+                    key: key,
+                    transport: transport,
+                    password: password
+                )
+                setFirstAccessStage(serverID, .authorized)
+                await synchronizeMachineConfigurationWithKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                )
+                appendSSHCheckLog("公钥复检成功，免密 SSH 已可用。", serverID: serverID)
+                appendAudit(category: "authorization", action: "sync", targetID: serverID.uuidString, result: "verified")
+            }
         } catch {
             let message = UserFacingText.localizedError(error)
             let status: AuthorizationStatus
@@ -2608,27 +2872,44 @@ final class AppModel {
         pendingHostKeyResumesAuthorization = false
     }
 
-    func authorizeCurrentDevice(serverID: UUID) async {
-        await authorizeCurrentDevice(serverID: serverID, endpoint: nil)
+    @discardableResult
+    func authorizeCurrentDevice(serverID: UUID) async -> Bool {
+        await authorizeCurrentDevice(serverID: serverID, endpoint: nil, password: nil)
     }
 
-    func authorizeCurrentDevice(serverID: UUID, endpoint: Endpoint?) async {
-        guard await authorizeLegacyMutation() else { return }
-        guard !isBusy else { return }
+    @discardableResult
+    func authorizeCurrentDevice(
+        serverID: UUID,
+        endpoint: Endpoint?,
+        password: String? = nil
+    ) async -> Bool {
+        guard await authorizeLegacyMutation() else { return false }
+        guard !isBusy else { return false }
         do {
             if preferredKey == nil {
                 let key = try await generateCurrentDeviceKey()
                 appendAudit(category: "key", action: "generate", targetID: key.id, result: "account-authorization")
                 await persist()
             }
-            guard hasStoredPassword(serverID: serverID) else {
+            guard hasStoredPassword(serverID: serverID)
+                || canReuseAccountAuthorization(forProfileID: serverID)
+                || !(password?.isEmpty ?? true) else {
                 blockFirstAccess(serverID, code: .missingPassword, at: .credentialRequired)
                 requestPassword(for: serverID, endpoint: endpoint)
-                return
+                return false
             }
             setFirstAccessStage(serverID, .readyToAuthorize)
-            await synchronizeSSHAuthorization(serverID: serverID, endpoint: endpoint)
-        } catch { present(error) }
+            await synchronizeSSHAuthorization(
+                serverID: serverID,
+                endpoint: endpoint,
+                password: password
+            )
+            return snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted })?.status == .authorized
+                && snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted })?.keyCheck?.state == .succeeded
+        } catch {
+            present(error)
+            return false
+        }
     }
 
     /// Starts an ordered, resumable batch. The plan is local-only and is
@@ -2797,32 +3078,12 @@ final class AppModel {
             return
         }
 
-        // A target can become authorized while a persisted plan is waiting
-        // for user intervention. Treat that remote/local fact as complete so
-        // resuming the plan never repeats an already successful side effect.
-        guard server.status != .authorized else {
-            finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
-            return
-        }
-
         guard let key = privateKey(for: server), key.isLocallyAvailable, key.privateKeyPath != nil else {
             let detail = "此 Mac 没有可用于 SSH 授权的本地私钥。"
             updateServer(id: targetID, status: .missingLocalKey, detail: detail)
             updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
             blockFirstAccess(targetID, code: .missingLocalKey, at: .localKeyRequired)
             finishAuthorizationBatchItem(targetID: targetID, code: .missingLocalKey, detail: detail)
-            await persist()
-            return
-        }
-
-        guard await storedCredentialOwnerID(forProfileID: targetID) != nil else {
-            let detail = "启用 SSH 授权前，请输入并验证此账户的密码。"
-            updateServer(id: targetID, status: .needsAuthorization, detail: detail)
-            updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
-            blockFirstAccess(targetID, code: .missingPassword, at: .credentialRequired)
-            passwordSaveError = nil
-            requestPassword(for: targetID)
-            finishAuthorizationBatchItem(targetID: targetID, code: .missingPassword, detail: detail)
             await persist()
             return
         }
@@ -2889,6 +3150,58 @@ final class AppModel {
                 return
             case .confirmed:
                 break
+            }
+
+            if topology.authorizationDecision(
+                forProfileID: targetID,
+                keyID: key.id,
+                fingerprint: key.fingerprint
+            ) == .verifyExistingAccountAuthorization {
+                updateAuthenticationCheck(
+                    id: targetID,
+                    kind: .key,
+                    state: .checking,
+                    detail: "正在验证此地址上的既有账户授权，不会重新安装公钥。",
+                    checkedAt: nil
+                )
+                guard try await sshService.testPublicKey(
+                    server: routeServer,
+                    key: key,
+                    transport: transport
+                ) else {
+                    throw SSHServiceError.operationFailed("此地址未通过既有账户授权验证；为避免误写入，KeyPort 不会重新安装公钥。")
+                }
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .succeeded, detail: "既有账户授权在此地址验证成功。")
+                upsertAuthorization(serverID: targetID, key: key, authorizedAt: nil)
+                setFirstAccessStage(targetID, .authorized)
+                recordSSHConnectionEvidence(
+                    serverID: targetID,
+                    routedServer: routeServer,
+                    endpointOverride: nil,
+                    transport: transport,
+                    wasReachable: didReachEndpoint
+                )
+                finishAuthorizationBatchItem(targetID: targetID, succeeded: true)
+                appendAudit(
+                    category: "authorization",
+                    action: "batch-item",
+                    targetID: targetID.uuidString,
+                    result: "verified-existing-account-authorization"
+                )
+                await persist()
+                return
+            }
+
+            guard await storedCredentialOwnerID(forProfileID: targetID) != nil else {
+                let detail = "启用 SSH 授权前，请输入并验证此账户的密码。"
+                updateServer(id: targetID, status: .needsAuthorization, detail: detail)
+                updateAuthenticationCheck(id: targetID, kind: .key, state: .blocked, detail: detail)
+                blockFirstAccess(targetID, code: .missingPassword, at: .credentialRequired)
+                passwordSaveError = nil
+                requestPassword(for: targetID)
+                finishAuthorizationBatchItem(targetID: targetID, code: .missingPassword, detail: detail)
+                await persist()
+                return
             }
 
             try await authorize(server: routeServer, key: key, transport: transport)
@@ -3118,6 +3431,14 @@ final class AppModel {
               let parsed = PublicKeyParser.parse(targetKey.publicKey) else { return }
         guard let routeServer = sshOperationServer(for: server) else {
             markSSHRouteUnavailable(serverID: server.id, kind: .key)
+            appendAudit(
+                category: "authorization",
+                action: "revoke",
+                targetID: server.id.uuidString,
+                result: "route-unavailable",
+                level: .warning
+            )
+            await persist()
             return
         }
         let transport = sshTransport(forProfileID: server.id)
@@ -3139,12 +3460,38 @@ final class AppModel {
                 identityPath: identity,
                 transport: transport
             )
-            if let index = snapshot.authorizations.firstIndex(where: { $0.id == authorizationID }) {
+            let revokedAt = Date.now
+            let relatedProfileIDs: Set<UUID> = if let accountID = accountID(forProfileID: server.id) {
+                Set(topology.sshConnectionProfiles
+                    .filter { $0.accountID == accountID }
+                    .map(\.id))
+            } else {
+                [server.id]
+            }
+            for index in snapshot.authorizations.indices where relatedProfileIDs.contains(snapshot.authorizations[index].serverID) {
+                guard snapshot.authorizations[index].fingerprint == authorization.fingerprint else { continue }
                 snapshot.authorizations[index].status = .needsAuthorization
                 snapshot.authorizations[index].isDeleted = true
-                snapshot.authorizations[index].updatedAt = .now
-                snapshot.authorizations[index].lastVerifiedAt = .now
+                snapshot.authorizations[index].updatedAt = revokedAt
+                snapshot.authorizations[index].lastVerifiedAt = revokedAt
                 snapshot.authorizations[index].version += 1
+            }
+            if let accountID = accountID(forProfileID: server.id) {
+                for index in topology.authorizations.indices where topology.authorizations[index].accountID == accountID {
+                    let candidate = topology.authorizations[index]
+                    guard candidate.fingerprint == authorization.fingerprint else { continue }
+                    topology.authorizations[index].remoteState = .revoked
+                    topology.authorizations[index].relationState = .detached
+                    topology.authorizations[index].isDeleted = true
+                    topology.authorizations[index].updatedAt = revokedAt
+                }
+                for index in snapshot.servers.indices where relatedProfileIDs.contains(snapshot.servers[index].id) {
+                    if authorization.keyID == credentialKey.id {
+                        snapshot.servers[index].status = .needsAuthorization
+                        snapshot.servers[index].statusDetail = "此 SSH 账户的设备授权已撤销。"
+                        snapshot.servers[index].lastCheckedAt = revokedAt
+                    }
+                }
             }
             if authorization.keyID == credentialKey.id {
                 updateServer(id: server.id, status: .needsAuthorization, detail: "此 Mac 的授权已撤销。")
@@ -3152,7 +3499,21 @@ final class AppModel {
             appendAudit(category: "authorization", action: "revoke", targetID: server.id.uuidString, result: "fingerprint-verified")
             await writeConfig()
             await persist()
-        } catch { present(error) }
+        } catch {
+            // Keep the authorization relation unchanged: a failed remote
+            // delete is not evidence that the key was revoked. Persist a
+            // stable audit result so the failure remains visible after the
+            // transient error alert is dismissed.
+            appendAudit(
+                category: "authorization",
+                action: "revoke",
+                targetID: server.id.uuidString,
+                result: "remote-failed-state-preserved",
+                level: .warning
+            )
+            await persist()
+            present(error)
+        }
     }
 
     func synchronizeCloud(userInitiated: Bool = true) async {
@@ -3300,37 +3661,67 @@ final class AppModel {
         copyAlias(serverID: serverID)
     }
 
-    func copyAlias(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(server.alias)
-        appendAudit(category: "server", action: "copy-alias", targetID: serverID.uuidString, result: "success")
+    @discardableResult
+    func copyAlias(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(server.alias)
+        appendAudit(
+            category: "server",
+            action: "copy-alias",
+            targetID: serverID.uuidString,
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
     }
 
-    func copyHost(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(server.host)
-        appendAudit(category: "server", action: "copy-host", targetID: serverID.uuidString, result: "success")
+    @discardableResult
+    func copyHost(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(server.host)
+        appendAudit(
+            category: "server",
+            action: "copy-host",
+            targetID: serverID.uuidString,
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
     }
 
-    func copySSHCommand(serverID: UUID) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(SSHCommandPresentation.command(server: server))
-        appendAudit(category: "server", action: "copy-ssh-command", targetID: serverID.uuidString, result: "success")
-    }
-
-    func copySSHCommand(serverID: UUID, endpoint: Endpoint?) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
-        clipboard.copy(SSHCommandPresentation.command(server: server, endpoint: endpoint))
+    @discardableResult
+    func copySSHCommand(serverID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(SSHCommandPresentation.command(server: server))
         appendAudit(
             category: "server",
             action: "copy-ssh-command",
             targetID: serverID.uuidString,
-            result: endpoint == nil ? "alias" : "selected-route"
+            result: copied ? "success" : "failed",
+            level: copied ? .info : .warning
         )
+        return copied
     }
 
-    func openTerminal(serverID: UUID, endpoint: Endpoint?) {
-        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return }
+    @discardableResult
+    func copySSHCommand(serverID: UUID, endpoint: Endpoint?) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
+        let copied = clipboard.copy(SSHCommandPresentation.command(server: server, endpoint: endpoint))
+        appendAudit(
+            category: "server",
+            action: "copy-ssh-command",
+            targetID: serverID.uuidString,
+            result: copied
+                ? (endpoint == nil ? "alias" : "selected-route")
+                : "failed",
+            level: copied ? .info : .warning
+        )
+        return copied
+    }
+
+    @discardableResult
+    func openTerminal(serverID: UUID, endpoint: Endpoint?) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == serverID && !$0.isDeleted }) else { return false }
         guard terminal.open(server: server, endpoint: endpoint) else {
             errorMessage = "无法打开系统默认的 SSH 终端。请先确认 macOS 已为 ssh:// 链接配置可用的终端应用。"
             appendAudit(
@@ -3340,7 +3731,7 @@ final class AppModel {
                 result: "unavailable",
                 level: .warning
             )
-            return
+            return false
         }
         appendAudit(
             category: "server",
@@ -3348,6 +3739,7 @@ final class AppModel {
             targetID: serverID.uuidString,
             result: endpoint == nil ? "alias" : "selected-route"
         )
+        return true
     }
 
     func clearAuditLog() async {
@@ -3486,6 +3878,18 @@ final class AppModel {
 
     private func accountID(forProfileID profileID: UUID) -> UUID? {
         topology.connectionProfile(id: profileID)?.accountID
+    }
+
+    private func canReuseAccountAuthorization(forProfileID profileID: UUID) -> Bool {
+        guard let server = snapshot.servers.first(where: { $0.id == profileID && !$0.isDeleted }),
+              let key = privateKey(for: server) else {
+            return false
+        }
+        return topology.authorizationDecision(
+            forProfileID: profileID,
+            keyID: key.id,
+            fingerprint: key.fingerprint
+        ) == .verifyExistingAccountAuthorization
     }
 
     private func profileIDs(forAccountID accountID: UUID) -> [UUID] {
@@ -4086,7 +4490,7 @@ final class AppModel {
         let observation = ReachabilityObservation(
             endpointID: endpoint.id,
             observerDeviceID: deviceID,
-            networkEpoch: 0,
+            networkEpoch: networkEpoch,
             observedAt: .now,
             wasReachable: wasReachable
         )
@@ -4100,7 +4504,7 @@ final class AppModel {
             profileID: profile.id,
             endpointID: endpoint.id,
             transport: transport,
-            networkEpoch: 0,
+            networkEpoch: networkEpoch,
             status: server.status,
             statusDetail: server.statusDetail,
             lastCheckedAt: server.lastCheckedAt,
@@ -4227,16 +4631,26 @@ final class AppModel {
     private func authorize(
         server: ServerConnection,
         key: SSHKeyRecord,
-        transport requestedTransport: SSHConnectionTransport? = nil
+        transport requestedTransport: SSHConnectionTransport? = nil,
+        password: String? = nil
     ) async throws {
         let transport = requestedTransport
             ?? sshTransport(forProfileID: server.id)
-        guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
-            throw SSHServiceError.missingPassword
+        var passwordData: Data
+        let authenticatedServer: ServerConnection
+        if let password, !password.isEmpty {
+            passwordData = Data(password.utf8)
+            authenticatedServer = server
+        } else {
+            guard await storedCredentialOwnerID(forProfileID: server.id) != nil else {
+                throw SSHServiceError.missingPassword
+            }
+            var credential = try await serverCredential(forProfileID: server.id)
+            passwordData = credential.passwordData
+            credential.passwordData.resetBytes(in: credential.passwordData.indices)
+            authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
         }
-        var credential = try await serverCredential(forProfileID: server.id)
-        defer { credential.passwordData.resetBytes(in: credential.passwordData.indices) }
-        let authenticatedServer = serverUsingCredentialUsername(server, credential: credential)
+        defer { passwordData.resetBytes(in: passwordData.indices) }
         let observed = try await hostKeyService.scan(
             server: server,
             transport: transport
@@ -4250,7 +4664,7 @@ final class AppModel {
             try await sshService.installPublicKey(
                 server: authenticatedServer,
                 key: key,
-                passwordData: credential.passwordData,
+                passwordData: passwordData,
                 transport: transport
             )
             updateAuthenticationCheck(id: server.id, kind: .password, state: .succeeded, detail: "授权期间服务器密码身份验证成功。")
@@ -4866,6 +5280,17 @@ final class AppModel {
             snapshot.servers[index].passwordCheck = check
         case .key:
             snapshot.servers[index].keyCheck = check
+        }
+    }
+
+    private func invalidateAccessVerifications(forEndpointID endpointID: UUID, detail: String) {
+        for index in topology.accessVerifications.indices where topology.accessVerifications[index].endpointID == endpointID {
+            topology.accessVerifications[index].status = .needsAuthorization
+            topology.accessVerifications[index].statusDetail = detail
+            topology.accessVerifications[index].lastCheckedAt = nil
+            topology.accessVerifications[index].passwordCheck = nil
+            topology.accessVerifications[index].keyCheck = nil
+            topology.accessVerifications[index].machineConfigurationRefreshAttemptedAt = nil
         }
     }
 

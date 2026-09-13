@@ -6,15 +6,47 @@ struct GraphInspectorView: View {
     let model: AppModel
     let onAddAccount: (UUID) -> Void
     let onAddEndpoint: (UUID) -> Void
+    let onEditEndpoint: (UUID, UUID) -> Void
+    let onDeleteEndpoint: (UUID, UUID) -> Void
     let onEditAccount: (UUID) -> Void
     let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
 
+    @State private var pendingEndpointDeletion: Endpoint?
+
     var body: some View {
+        content
+            .confirmationDialog(
+                "要删除这个网络路径吗？",
+                isPresented: Binding(
+                    get: { pendingEndpointDeletion != nil },
+                    set: { if !$0 { pendingEndpointDeletion = nil } }
+                )
+            ) {
+                Button("删除网络路径", role: .destructive) {
+                    guard let endpoint = pendingEndpointDeletion else { return }
+                    pendingEndpointDeletion = nil
+                    onDeleteEndpoint(endpoint.nodeID, endpoint.id)
+                }
+                Button("取消", role: .cancel) { pendingEndpointDeletion = nil }
+            } message: {
+                Text("删除只会移除这条地址及其本机检测证据，不会撤销 SSH 账户上的远端设备授权。")
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         if !workspace.isAvailable {
             ContentUnavailableView(
                 "服务器属性",
                 systemImage: "sidebar.right",
                 description: Text(workspace.unavailableMessage)
+            )
+        } else if let edge = workspace.selectedEdge {
+            GraphPathInspectorView(
+                edge: edge,
+                workspace: workspace,
+                model: model,
+                onConfigureAccess: onConfigureAccess
             )
         } else if let item = NodeWorkspacePresentation.item(
             for: workspace.selectedNodeID,
@@ -29,6 +61,7 @@ struct GraphInspectorView: View {
                     connectionProfilesSection(item)
                     statusSection(item.node.status)
                     endpointsSection(item)
+                    deviceAuthorizationSection(item)
                     machineConfigurationSection(item)
                     tailscaleSection(item.node)
                     relationSection
@@ -302,7 +335,15 @@ struct GraphInspectorView: View {
                                         onAddAccount(nodeID)
                                     }
                                 }
-                                : nil
+                                : nil,
+                            identity: identityState(for: endpoint),
+                            canVerify: endpoint.protocol == .ssh && !item.accounts.isEmpty,
+                            onVerify: endpoint.protocol == .ssh
+                                ? { verifyEndpoint(endpoint, in: item) }
+                                : nil,
+                            onEdit: { onEditEndpoint(endpoint.nodeID, endpoint.id) },
+                            onDelete: { pendingEndpointDeletion = endpoint },
+                            isReadOnly: model.isBusy || model.isMetadataReadOnly || endpoint.source == .tailscale
                         )
                     }
                 } else if !item.node.endpointSummaries.isEmpty {
@@ -319,6 +360,46 @@ struct GraphInspectorView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 4)
         }
+    }
+
+    @ViewBuilder
+    private func deviceAuthorizationSection(_ item: NodeWorkspaceItem) -> some View {
+        if let account = item.accounts.first(where: { $0.id == model.selectedServerID })
+            ?? item.accounts.first {
+            NodeWorkspaceAuthorizationSection(
+                model: model,
+                account: account,
+                summaries: model.deviceAuthorizationSummaries(for: account),
+                deviceNames: Dictionary(
+                    uniqueKeysWithValues: model.snapshot.devices.map { ($0.id, $0.name) }
+                ),
+                isBusy: model.isBusy
+            )
+        }
+    }
+
+    private func verifyEndpoint(_ endpoint: Endpoint, in item: NodeWorkspaceItem) {
+        guard let account = item.accounts.first else {
+            model.errorMessage = "请先添加 SSH 连接配置，再核验主机身份。"
+            return
+        }
+        Task {
+            await model.checkKey(serverID: account.id, endpoint: endpoint)
+        }
+    }
+
+    private func identityState(for endpoint: Endpoint) -> NodeEndpointIdentityState {
+        let trusts = model.topology.hostKeyTrusts.filter { $0.endpointID == endpoint.id }
+        if trusts.contains(where: { $0.state == .replaced }) {
+            return .mismatch
+        }
+        if trusts.contains(where: { $0.state == .pendingReview }) {
+            return .pending
+        }
+        if trusts.contains(where: { $0.state == .confirmed && !$0.isDeleted }) {
+            return .confirmed
+        }
+        return .unknown
     }
 
     @ViewBuilder
@@ -394,24 +475,33 @@ struct GraphInspectorView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(workspace.selectedEdges) { edge in
-                        let other = edge.from == workspace.selectedNodeID ? edge.to : edge.from
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Image(systemName: edge.isCandidate ? "arrow.triangle.branch" : "arrow.right")
-                                .foregroundStyle(edge.status.level.tint)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(edge.label.isEmpty ? edge.kind.displayTitle : edge.label)
-                                    .fontWeight(.medium)
-                                Text(workspace.sourceSnapshot.nodes.first { $0.id == other }?.title ?? other.rawValue)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        Button {
+                            workspace.selectEdge(edge.id)
+                        } label: {
+                            let other = edge.from == workspace.selectedNodeID ? edge.to : edge.from
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: edge.isCandidate ? "arrow.triangle.branch" : "arrow.right")
+                                    .foregroundStyle(edge.status.level.tint)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(edge.label.isEmpty ? edge.kind.displayTitle : edge.label)
+                                        .fontWeight(.medium)
+                                    Text(workspace.sourceSnapshot.nodes.first { $0.id == other }?.title ?? other.rawValue)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                                if edge.isCandidate {
+                                    Text("候选")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             }
-                            Spacer(minLength: 0)
-                            if edge.isCandidate {
-                                Text("候选")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -484,6 +574,186 @@ struct GraphInspectorView: View {
     }
 }
 
+private struct GraphPathInspectorView: View {
+    let edge: TopologyGraphEdge
+    let workspace: GraphWorkspaceModel
+    let model: AppModel
+    let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                status
+                route
+                evidence
+            }
+            .padding(18)
+            .frame(maxWidth: 520, alignment: .leading)
+        }
+        .navigationTitle("访问路径")
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: edge.isCandidate ? "arrow.triangle.branch" : "arrow.right")
+                .font(.title2)
+                .foregroundStyle(edge.status.level.tint)
+                .frame(width: 38, height: 38)
+                .background(edge.status.level.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(edge.label.isEmpty ? edge.kind.displayTitle : edge.label)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                Text(directionTitle)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(edge.kind.displayTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            GraphStatusBadge(status: edge.status)
+        }
+    }
+
+    private var status: some View {
+        GroupBox("路径状态") {
+            LazyVGrid(
+                columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                NodeStatusFact(title: "方向", value: "\(fromTitle) → \(toTitle)")
+                NodeStatusFact(title: "远端授权", value: edge.status.remoteAuthorization.displayTitle)
+                NodeStatusFact(title: "本机复验", value: edge.status.verification.displayTitle)
+                NodeStatusFact(title: "路由", value: edge.status.route.displayTitle)
+                NodeStatusFact(title: "主机身份", value: edge.status.hostTrust.displayTitle)
+                NodeStatusFact(title: "最近检测", value: detectedAtTitle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+
+            if !edge.status.reasons.isEmpty {
+                Divider()
+                Text(edge.status.reasons.map(\.displayTitle).joined(separator: "、"))
+                    .font(.caption)
+                    .foregroundStyle(edge.status.level.tint)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var route: some View {
+        GroupBox("配置路径") {
+            VStack(alignment: .leading, spacing: 9) {
+                if let profile {
+                    LabeledContent("SSH 别名", value: profile.sshAlias)
+                    if let account {
+                        LabeledContent("SSH 用户", value: account.label.isEmpty ? account.username : "\(account.label) · \(account.username)")
+                    }
+                    LabeledContent("路径策略", value: routePolicyTitle(profile))
+                    if let endpoint {
+                        LabeledContent("实际端点", value: endpoint.displayAddress)
+                        LabeledContent("网络要求", value: endpoint.networkScope.requirementTitle)
+                    } else {
+                        Label("没有可解析的端点；请重新配置网络路径。", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+
+                    Button {
+                        guard let account else { return }
+                        onConfigureAccess(account.nodeID, profile.id, edge.endpointID)
+                    } label: {
+                        Label("编辑访问路径", systemImage: "pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(account == nil || model.isBusy || model.isMetadataReadOnly)
+                } else if edge.isCandidate {
+                    Label("这是当前设备的待授权候选路径，完成授权后才会成为可用访问关系。", systemImage: "key.horizontal")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("旧版拓扑只提供关系事实；没有可编辑的连接配置 ID。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var evidence: some View {
+        GroupBox("事实链") {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(edge.supportingReferences, id: \.self) { reference in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(reference.entityType.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(reference.stableID)
+                            .font(.caption2.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+                if edge.supportingReferences.isEmpty {
+                    Text("没有可展开的支持实体")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var fromTitle: String {
+        workspace.sourceSnapshot.nodes.first { $0.id == edge.from }?.title ?? edge.from.rawValue
+    }
+
+    private var toTitle: String {
+        workspace.sourceSnapshot.nodes.first { $0.id == edge.to }?.title ?? edge.to.rawValue
+    }
+
+    private var directionTitle: String { "\(fromTitle) → \(toTitle)" }
+
+    private var profile: SSHConnectionProfile? {
+        edge.connectionProfileID.flatMap(model.topology.connectionProfile(id:))
+    }
+
+    private var account: SSHAccount? {
+        profile.flatMap { selectedProfile in
+            model.topology.activeAccounts.first { account in
+                account.id == selectedProfile.accountID
+            }
+        }
+    }
+
+    private var endpoint: Endpoint? {
+        edge.endpointID.flatMap(model.topology.endpoint(id:))
+    }
+
+    private var detectedAtTitle: String {
+        edge.detectedAt?.formatted(date: .abbreviated, time: .shortened) ?? "未检测"
+    }
+
+    private func routePolicyTitle(_ profile: SSHConnectionProfile) -> String {
+        switch profile.routePolicy {
+        case .fixed:
+            return "固定路径"
+        case .automatic(let scope):
+            let candidates = profile.candidateEndpointIDs.isEmpty
+                ? "所有符合条件路径"
+                : "候选 \(profile.candidateEndpointIDs.count) 条"
+            return scope.map { "自动 · \($0.displayTitle) · \(candidates)" } ?? "自动 · \(candidates)"
+        }
+    }
+}
+
 private struct NodeSummaryMetric: View {
     let value: String
     let title: String
@@ -525,6 +795,12 @@ private struct NodeStatusFact: View {
 private struct NodeEndpointRow: View {
     let endpoint: Endpoint
     let onAddAccount: (() -> Void)?
+    let identity: NodeEndpointIdentityState
+    let canVerify: Bool
+    let onVerify: (() -> Void)?
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    let isReadOnly: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
@@ -553,6 +829,10 @@ private struct NodeEndpointRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                Label(identity.title, systemImage: identity.systemImage)
+                    .font(.caption)
+                    .foregroundStyle(identity.tint)
+
                 if endpoint.label != endpoint.address {
                     Text(endpoint.label)
                         .font(.caption)
@@ -568,8 +848,35 @@ private struct NodeEndpointRow: View {
                 .buttonStyle(.borderless)
                 .help("为此节点添加 SSH 用户；网络路径稍后单独配置")
             }
+            endpointActions
         }
         .padding(.vertical, 3)
+    }
+
+    private var endpointActions: some View {
+        Menu {
+            if let onVerify {
+                Button(action: onVerify) {
+                    Label("核验主机身份", systemImage: "checkmark.shield")
+                }
+                .disabled(!canVerify || isReadOnly)
+            }
+            Button(action: onEdit) {
+                Label("编辑网络路径", systemImage: "pencil")
+            }
+            .disabled(isReadOnly)
+            Divider()
+            Button(role: .destructive, action: onDelete) {
+                Label("删除网络路径", systemImage: "trash")
+            }
+            .disabled(isReadOnly)
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 18, height: 18)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("网络路径操作")
     }
 }
 

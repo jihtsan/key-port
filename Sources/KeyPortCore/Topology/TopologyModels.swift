@@ -781,6 +781,16 @@ public enum TopologyStableID {
         uuidV5(namespace: namespace, name: "node/host/\(normalize(host))")
     }
 
+    /// Stable ID for a legacy host identity that cannot be safely grouped by
+    /// address alone. The discriminator is only used when migration has
+    /// observed a conflicting display identity or confirmed host key.
+    public static func node(forHost host: String, discriminator: String) -> UUID {
+        uuidV5(
+            namespace: namespace,
+            name: "node/host/\(normalize(host))/discriminator/\(normalize(discriminator))"
+        )
+    }
+
     public static func node(forDeviceID deviceID: String) -> UUID {
         uuidV5(namespace: namespace, name: "node/device/\(deviceID.trimmingCharacters(in: .whitespacesAndNewlines))")
     }
@@ -852,6 +862,24 @@ public enum TopologyStableID {
 
 /// One deterministic import path from the pre-refactor snapshot to the unified model.
 public enum TopologySnapshotMigration {
+    private struct LegacyEndpointGroupKey: Hashable {
+        let port: Int
+        let name: String
+    }
+
+    private struct LegacyServerGroup {
+        let hostKey: String
+        let discriminator: String?
+        let records: [ServerConnection]
+        let nameKey: String
+        let primaryPort: Int
+        let confirmedIdentity: String?
+
+        var sortKey: String {
+            "\(hostKey)/\(discriminator ?? "")"
+        }
+    }
+
     public static func fromLegacy(
         _ legacy: AppSnapshot,
         currentDeviceID: String,
@@ -898,14 +926,20 @@ public enum TopologySnapshotMigration {
             ))
         }
 
-        let groups = Dictionary(grouping: legacy.servers) { TopologyStableID.normalize($0.host) }
-        for (hostKey, serverRecords) in groups.sorted(by: { $0.key < $1.key }) {
+        for group in legacyServerGroups(legacy.servers).sorted(by: { $0.sortKey < $1.sortKey }) {
+            let hostKey = group.hostKey
+            let serverRecords = group.records
             let orderedRecords = serverRecords.sorted { lhs, rhs in
                 if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
                 return lhs.id.uuidString < rhs.id.uuidString
             }
             guard let first = orderedRecords.first else { continue }
-            let nodeID = TopologyStableID.node(forHost: hostKey)
+            let nodeID: UUID
+            if let discriminator = group.discriminator {
+                nodeID = TopologyStableID.node(forHost: hostKey, discriminator: discriminator)
+            } else {
+                nodeID = TopologyStableID.node(forHost: hostKey)
+            }
             let node = Node(
                 id: nodeID,
                 name: orderedRecords.first(where: { !$0.name.isEmpty })?.name ?? hostKey,
@@ -1069,6 +1103,132 @@ public enum TopologySnapshotMigration {
         )
     }
 
+    /// Legacy records do not carry a server/container identity separate from
+    /// their display address. Records on the same host and port can retain a
+    /// shared node when their display identity agrees. Records on different
+    /// ports only share a node when both sides carry the same confirmed host
+    /// key. This is deliberately conservative: migration never merges
+    /// records merely because a name or IP happens to match.
+    private static func legacyServerGroups(_ records: [ServerConnection]) -> [LegacyServerGroup] {
+        let recordsByHost = Dictionary(grouping: records) { TopologyStableID.normalize($0.host) }
+        return recordsByHost.keys.sorted().flatMap { hostKey in
+            let hostRecords = recordsByHost[hostKey] ?? []
+            let endpointGroups = Dictionary(grouping: hostRecords) { record in
+                LegacyEndpointGroupKey(
+                    port: max(1, min(65_535, record.port)),
+                    name: TopologyStableID.normalize(record.name)
+                )
+            }
+            var groups: [LegacyServerGroup] = []
+
+            for key in endpointGroups.keys.sorted(by: {
+                ($0.port, $0.name) < ($1.port, $1.name)
+            }) {
+                let endpointRecords = endpointGroups[key] ?? []
+                let hostKeyGroups = Dictionary(grouping: endpointRecords) {
+                    legacyHostKeyDiscriminator(for: $0) ?? "unknown"
+                }
+                let confirmedIdentities = hostKeyGroups.keys
+                    .filter { $0 != "unknown" }
+                    .sorted()
+                if confirmedIdentities.count > 1 {
+                    for identity in confirmedIdentities {
+                        groups.append(LegacyServerGroup(
+                            hostKey: hostKey,
+                            discriminator: nil,
+                            records: hostKeyGroups[identity] ?? [],
+                            nameKey: key.name,
+                            primaryPort: key.port,
+                            confirmedIdentity: identity
+                        ))
+                    }
+                    if let unknownRecords = hostKeyGroups["unknown"], !unknownRecords.isEmpty {
+                        groups.append(LegacyServerGroup(
+                            hostKey: hostKey,
+                            discriminator: nil,
+                            records: unknownRecords,
+                            nameKey: key.name,
+                            primaryPort: key.port,
+                            confirmedIdentity: nil
+                        ))
+                    }
+                } else {
+                    groups.append(LegacyServerGroup(
+                        hostKey: hostKey,
+                        discriminator: nil,
+                        records: endpointRecords,
+                        nameKey: key.name,
+                        primaryPort: key.port,
+                        confirmedIdentity: confirmedIdentities.first
+                    ))
+                }
+            }
+
+            // A confirmed host key is the only migration evidence strong
+            // enough to join different SSH ports. An unknown-key bucket is
+            // intentionally never joined to a confirmed bucket.
+            var merged: [LegacyServerGroup] = []
+            for group in groups {
+                guard let identity = group.confirmedIdentity,
+                      let index = merged.firstIndex(where: {
+                          $0.nameKey == group.nameKey
+                              && $0.confirmedIdentity == identity
+                      }) else {
+                    merged.append(group)
+                    continue
+                }
+                let previous = merged[index]
+                merged[index] = LegacyServerGroup(
+                    hostKey: hostKey,
+                    discriminator: nil,
+                    records: previous.records + group.records,
+                    nameKey: previous.nameKey,
+                    primaryPort: min(previous.primaryPort, group.primaryPort),
+                    confirmedIdentity: identity
+                )
+            }
+
+            guard merged.count > 1 else {
+                return merged.map { group in
+                    LegacyServerGroup(
+                        hostKey: group.hostKey,
+                        discriminator: nil,
+                        records: group.records,
+                        nameKey: group.nameKey,
+                        primaryPort: group.primaryPort,
+                        confirmedIdentity: group.confirmedIdentity
+                    )
+                }
+            }
+
+            return merged.map { group in
+                let discriminator: String
+                if let identity = group.confirmedIdentity {
+                    discriminator = "host-key/\(identity)"
+                } else {
+                    let name = group.nameKey.isEmpty ? "unnamed" : group.nameKey
+                    discriminator = "endpoint/ssh/\(group.primaryPort)/name/\(name)"
+                }
+                return LegacyServerGroup(
+                    hostKey: group.hostKey,
+                    discriminator: discriminator,
+                    records: group.records,
+                    nameKey: group.nameKey,
+                    primaryPort: group.primaryPort,
+                    confirmedIdentity: group.confirmedIdentity
+                )
+            }
+        }
+    }
+
+    private static func legacyHostKeyDiscriminator(for server: ServerConnection) -> String? {
+        let fingerprints = Set(server.confirmedHostKeys.map {
+            "\($0.algorithm):\($0.fingerprint)"
+        }).sorted()
+        guard !fingerprints.isEmpty else { return nil }
+        return fingerprints.joined(separator: "|")
+    }
+
     /// Rebuilds the SSH projection from legacy mutations without discarding
     /// topology-only facts such as services, manually added endpoints, or
     /// future protocol roles that the compatibility snapshot cannot represent.
@@ -1153,7 +1313,22 @@ public enum TopologySnapshotMigration {
             var value = current
             let currentUsername = migrated.sshAccounts.first(where: { $0.id == current.accountID })?.username
             let previousUsername = existing.sshAccounts.first(where: { $0.id == previous.accountID })?.username
-            if currentUsername == previousUsername {
+            let currentNodeID = migrated.sshAccounts.first(where: { $0.id == current.accountID })?.nodeID
+            let previousNodeID = existing.sshAccounts.first(where: { $0.id == previous.accountID })?.nodeID
+            let currentEndpoint = current.routePolicy.fixedEndpointID.flatMap { endpointID in
+                migrated.endpoints.first { $0.id == endpointID }
+            }
+            let previousEndpoint = previous.routePolicy.fixedEndpointID.flatMap { endpointID in
+                existing.endpoints.first { $0.id == endpointID }
+            }
+            let preservesExplicitBinding = currentEndpoint.map { endpoint in
+                previousEndpoint.map { previousEndpoint in
+                    sameEndpointCoordinate(endpoint, previousEndpoint)
+                        && previousEndpoint.source != .migrated
+                } ?? false
+            } ?? false
+            if currentUsername == previousUsername,
+               currentNodeID == previousNodeID || preservesExplicitBinding {
                 value.accountID = previous.accountID
             }
             value.transportPreference = previous.transportPreference
@@ -1165,8 +1340,8 @@ public enum TopologySnapshotMigration {
             }()
             if let previousEndpointID = previous.routePolicy.fixedEndpointID,
                let currentEndpointID = current.routePolicy.fixedEndpointID,
-               let previousEndpoint = existing.endpoint(id: previousEndpointID),
-               let currentEndpoint = migrated.endpoint(id: currentEndpointID),
+               let previousEndpoint = existing.endpoints.first(where: { $0.id == previousEndpointID }),
+               let currentEndpoint = migrated.endpoints.first(where: { $0.id == currentEndpointID }),
                sameEndpointCoordinate(previousEndpoint, currentEndpoint) {
                 value.routePolicy = previous.routePolicy
             } else if case .automatic = previous.routePolicy {
@@ -1201,7 +1376,24 @@ public enum TopologySnapshotMigration {
         reattachLegacyAccountsToTailscaleNodes(in: &result, preserving: existing)
         applyExplicitProfileBindings(profileBindings, in: &result)
         normalizeAccountIdentities(in: &result)
-        removeOrphanedMigratedRecords(from: migrated, in: &result)
+        let supersededAccountIDs: Set<UUID> = Set(existing.sshConnectionProfiles.compactMap { previousProfile in
+            guard let currentProfile = result.sshConnectionProfiles.first(where: {
+                $0.id == previousProfile.id
+            }), currentProfile.accountID != previousProfile.accountID else {
+                return nil
+            }
+            return previousProfile.accountID
+        })
+        retireSupersededLegacyAccounts(
+            supersededAccountIDs,
+            in: &result,
+            now: now
+        )
+        removeOrphanedMigratedRecords(
+            from: migrated,
+            in: &result,
+            preserving: existing
+        )
         return result
     }
 
@@ -1417,14 +1609,17 @@ public enum TopologySnapshotMigration {
     /// survive until the user creates their first connection profile.
     private static func removeOrphanedMigratedRecords(
         from migrated: TopologySnapshot,
-        in topology: inout TopologySnapshot
+        in topology: inout TopologySnapshot,
+        preserving existing: TopologySnapshot
     ) {
         let referencedAccountIDs = Set(topology.activeConnectionProfiles.map(\.accountID))
         let migratedNodeIDs = Set(migrated.activeAccounts.map(\.nodeID))
         let migratedAccountIDs = Set(migrated.sshAccounts.map(\.id))
+        let existingAccountIDs = Set(existing.activeAccounts.map(\.id))
 
         for accountIndex in topology.sshAccounts.indices
             where migratedAccountIDs.contains(topology.sshAccounts[accountIndex].id)
+                && !existingAccountIDs.contains(topology.sshAccounts[accountIndex].id)
                 && !referencedAccountIDs.contains(topology.sshAccounts[accountIndex].id) {
             topology.sshAccounts[accountIndex].isDeleted = true
         }
@@ -1466,6 +1661,42 @@ public enum TopologySnapshotMigration {
                     return profile.candidateEndpointIDs.contains(endpoint.id)
                 }
                 return scope == nil || scope == endpoint.networkScope
+            }
+        }
+    }
+
+    /// When a newer migration deliberately splits an old ambiguous host into
+    /// multiple nodes, do not leave the previous address-owned account and
+    /// endpoint shells visible as a second active identity. Their records
+    /// remain as tombstones for recovery/audit; only generated, now-unreferenced
+    /// artifacts are retired.
+    private static func retireSupersededLegacyAccounts(
+        _ accountIDs: Set<UUID>,
+        in topology: inout TopologySnapshot,
+        now: Date
+    ) {
+        guard !accountIDs.isEmpty else { return }
+        let activeProfileAccountIDs = Set(topology.activeConnectionProfiles.map(\.accountID))
+        var supersededNodeIDs: Set<UUID> = []
+        for index in topology.sshAccounts.indices where accountIDs.contains(topology.sshAccounts[index].id) {
+            guard !activeProfileAccountIDs.contains(topology.sshAccounts[index].id) else { continue }
+            topology.sshAccounts[index].isDeleted = true
+            topology.sshAccounts[index].updatedAt = max(topology.sshAccounts[index].updatedAt, now)
+            supersededNodeIDs.insert(topology.sshAccounts[index].nodeID)
+        }
+
+        for index in topology.endpoints.indices where supersededNodeIDs.contains(topology.endpoints[index].nodeID) {
+            guard topology.endpoints[index].source == .migrated,
+                  !profileUsesEndpoint(topology.endpoints[index], in: topology) else { continue }
+            topology.endpoints[index].isDeleted = true
+        }
+
+        let activeNodeIDs = Set(topology.activeAccounts.map(\.nodeID))
+            .union(topology.activeEndpoints.map(\.nodeID))
+            .union(topology.services.filter { !$0.isDeleted }.map(\.nodeID))
+        for index in topology.nodes.indices where supersededNodeIDs.contains(topology.nodes[index].id) {
+            if !activeNodeIDs.contains(topology.nodes[index].id) {
+                topology.nodes[index].isDeleted = true
             }
         }
     }

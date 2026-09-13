@@ -1,14 +1,53 @@
 import KeyPortCore
 import SwiftUI
 
+enum NodeEndpointIdentityState: String, Hashable, Sendable {
+    case confirmed
+    case pending
+    case mismatch
+    case unknown
+
+    var title: String {
+        switch self {
+        case .confirmed: "主机身份已确认"
+        case .pending: "主机身份待确认"
+        case .mismatch: "主机身份不匹配"
+        case .unknown: "主机身份未核验"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .confirmed: "checkmark.shield.fill"
+        case .pending: "questionmark.diamond"
+        case .mismatch: "exclamationmark.shield.fill"
+        case .unknown: "shield"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .confirmed: .green
+        case .pending: .orange
+        case .mismatch: .red
+        case .unknown: .secondary
+        }
+    }
+}
+
 struct NodeWorkspaceRoutesSection: View {
     let endpoints: [Endpoint]
     let selectedEndpointID: UUID?
     let nodeStatus: TopologyGraphStatus
     let tailscaleIdentities: [TopologyGraphTailscaleIdentity]
+    let hostKeyTrusts: [SSHHostKeyTrust]
     let isReadOnly: Bool
+    let canVerify: Bool
     let onSelect: (UUID) -> Void
     let onAdd: () -> Void
+    let onVerify: (Endpoint) -> Void
+    let onEdit: (Endpoint) -> Void
+    let onDelete: (Endpoint) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -55,8 +94,14 @@ struct NodeWorkspaceRoutesSection: View {
                 NodeRouteTableRow(
                     endpoint: endpoint,
                     status: status(for: endpoint),
+                    identity: identityState(for: endpoint),
                     isSelected: endpoint.id == selectedEndpointID,
-                    onSelect: { onSelect(endpoint.id) }
+                    canVerify: canVerify,
+                    isReadOnly: isReadOnly,
+                    onSelect: { onSelect(endpoint.id) },
+                    onVerify: { onVerify(endpoint) },
+                    onEdit: { onEdit(endpoint) },
+                    onDelete: { onDelete(endpoint) }
                 )
             }
         }
@@ -70,8 +115,14 @@ struct NodeWorkspaceRoutesSection: View {
                 NodeCompactRouteRow(
                     endpoint: endpoint,
                     status: status(for: endpoint),
+                    identity: identityState(for: endpoint),
                     isSelected: endpoint.id == selectedEndpointID,
-                    onSelect: { onSelect(endpoint.id) }
+                    canVerify: canVerify,
+                    isReadOnly: isReadOnly,
+                    onSelect: { onSelect(endpoint.id) },
+                    onVerify: { onVerify(endpoint) },
+                    onEdit: { onEdit(endpoint) },
+                    onDelete: { onDelete(endpoint) }
                 )
             }
         }
@@ -100,6 +151,20 @@ struct NodeWorkspaceRoutesSection: View {
         case .tailnet: return .requires("需要 Tailscale")
         }
     }
+
+    private func identityState(for endpoint: Endpoint) -> NodeEndpointIdentityState {
+        let trusts = hostKeyTrusts.filter { $0.endpointID == endpoint.id }
+        if trusts.contains(where: { $0.state == .replaced }) {
+            return .mismatch
+        }
+        if trusts.contains(where: { $0.state == .pendingReview }) {
+            return .pending
+        }
+        if trusts.contains(where: { $0.state == .confirmed && !$0.isDeleted }) {
+            return .confirmed
+        }
+        return .unknown
+    }
 }
 
 private struct NodeRouteTableHeader: View {
@@ -109,6 +174,7 @@ private struct NodeRouteTableHeader: View {
             Text("状态").frame(width: 118, alignment: .leading)
             Text("来源").frame(width: 92, alignment: .leading)
             Text("优先级").frame(width: 52, alignment: .trailing)
+            Text("操作").frame(width: 28, alignment: .trailing)
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -120,11 +186,18 @@ private struct NodeRouteTableHeader: View {
 private struct NodeRouteTableRow: View {
     let endpoint: Endpoint
     let status: NodeRouteDisplayStatus
+    let identity: NodeEndpointIdentityState
     let isSelected: Bool
+    let canVerify: Bool
+    let isReadOnly: Bool
     let onSelect: () -> Void
+    let onVerify: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
+        HStack(spacing: 12) {
+            Button(action: onSelect) {
             HStack(spacing: 12) {
                 HStack(spacing: 10) {
                     Image(systemName: endpoint.networkScope.systemImage)
@@ -137,6 +210,10 @@ private struct NodeRouteTableRow: View {
                         Text(endpoint.displayAddress)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Label(identity.title, systemImage: identity.systemImage)
+                            .font(.caption2)
+                            .foregroundStyle(identity.tint)
                             .lineLimit(1)
                     }
                 }
@@ -159,22 +236,56 @@ private struct NodeRouteTableRow: View {
                     .frame(width: 52, alignment: .trailing)
             }
             .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            endpointMenu
         }
-        .buttonStyle(.plain)
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
         .background(isSelected ? Color.primary.opacity(0.025) : Color.clear)
+    }
+
+    private var endpointMenu: some View {
+        Menu {
+            Button(action: onVerify) {
+                Label("核验主机身份", systemImage: "checkmark.shield")
+            }
+            .disabled(!canVerify || isReadOnly)
+            Button(action: onEdit) {
+                Label("编辑网络路径", systemImage: "pencil")
+            }
+            .disabled(isReadOnly || endpoint.source == .tailscale)
+            Divider()
+            Button(role: .destructive, action: onDelete) {
+                Label("删除网络路径", systemImage: "trash")
+            }
+            .disabled(isReadOnly || endpoint.source == .tailscale)
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 22, height: 22)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("网络路径操作")
     }
 }
 
 private struct NodeCompactRouteRow: View {
     let endpoint: Endpoint
     let status: NodeRouteDisplayStatus
+    let identity: NodeEndpointIdentityState
     let isSelected: Bool
+    let canVerify: Bool
+    let isReadOnly: Bool
     let onSelect: () -> Void
+    let onVerify: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
+        HStack(spacing: 10) {
+            Button(action: onSelect) {
             HStack(spacing: 11) {
                 Image(systemName: endpoint.networkScope.systemImage)
                     .font(.body)
@@ -188,6 +299,10 @@ private struct NodeCompactRouteRow: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    Label(identity.title, systemImage: identity.systemImage)
+                        .font(.caption2)
+                        .foregroundStyle(identity.tint)
+                        .lineLimit(1)
                 }
                 .layoutPriority(1)
 
@@ -200,11 +315,38 @@ private struct NodeCompactRouteRow: View {
                     .fixedSize()
             }
             .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            endpointMenu
         }
-        .buttonStyle(.plain)
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
         .background(isSelected ? Color.primary.opacity(0.025) : Color.clear)
+    }
+
+    private var endpointMenu: some View {
+        Menu {
+            Button(action: onVerify) {
+                Label("核验主机身份", systemImage: "checkmark.shield")
+            }
+            .disabled(!canVerify || isReadOnly)
+            Button(action: onEdit) {
+                Label("编辑网络路径", systemImage: "pencil")
+            }
+            .disabled(isReadOnly || endpoint.source == .tailscale)
+            Divider()
+            Button(role: .destructive, action: onDelete) {
+                Label("删除网络路径", systemImage: "trash")
+            }
+            .disabled(isReadOnly || endpoint.source == .tailscale)
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(width: 22, height: 22)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("网络路径操作")
     }
 }
 

@@ -125,6 +125,162 @@ final class TopologyGraphProjectorTests: XCTestCase {
         XCTAssertFalse(encoded.contains("ssh-ed25519 AAAA"))
     }
 
+    func testUnifiedProjectionUsesConnectionProfilesAsDirectedPathEdges() {
+        let currentDeviceID = "device-unified-current"
+        let currentNodeID = UUID(uuidString: "a0000000-0000-4000-8000-000000000001")!
+        let targetNodeID = UUID(uuidString: "a0000000-0000-4000-8000-000000000002")!
+        let orphanNodeID = UUID(uuidString: "a0000000-0000-4000-8000-000000000003")!
+        let endpointID = UUID(uuidString: "a1000000-0000-4000-8000-000000000001")!
+        let firstAccountID = UUID(uuidString: "a2000000-0000-4000-8000-000000000001")!
+        let secondAccountID = UUID(uuidString: "a2000000-0000-4000-8000-000000000002")!
+        let firstProfileID = UUID(uuidString: "a3000000-0000-4000-8000-000000000001")!
+        let secondProfileID = UUID(uuidString: "a3000000-0000-4000-8000-000000000002")!
+
+        var topology = TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "当前 Mac", roles: [.clientDevice]),
+                Node(id: targetNodeID, name: "生产服务器", roles: [.sshHost]),
+                Node(id: orphanNodeID, name: "未配置服务器", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "当前 Mac",
+                isCurrent: true
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: targetNodeID,
+                address: "server.example.com",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork
+            )],
+            sshAccounts: [
+                SSHAccount(id: firstAccountID, nodeID: targetNodeID, username: "root"),
+                SSHAccount(id: secondAccountID, nodeID: targetNodeID, username: "deploy"),
+            ],
+            sshConnectionProfiles: [
+                SSHConnectionProfile(
+                    id: firstProfileID,
+                    accountID: firstAccountID,
+                    sshAlias: "prod-root",
+                    routePolicy: .fixed(endpointID: endpointID)
+                ),
+                SSHConnectionProfile(
+                    id: secondProfileID,
+                    accountID: secondAccountID,
+                    sshAlias: "prod-deploy",
+                    routePolicy: .fixed(endpointID: endpointID)
+                ),
+            ]
+        )
+
+        let projector = TopologyGraphProjector()
+        let currentGraph = projector.project(
+            topology: topology,
+            currentDeviceID: currentDeviceID,
+            query: TopologyGraphQuery(viewMode: .currentDevice)
+        )
+
+        XCTAssertEqual(currentGraph.edges.filter { $0.kind == .candidateAccess }.count, 2)
+        XCTAssertTrue(currentGraph.edges.filter { $0.kind == .candidateAccess }.allSatisfy {
+            $0.from == .node(currentNodeID)
+                && $0.to == .node(targetNodeID)
+                && $0.endpointID == endpointID
+                && $0.detectedAt == nil
+                && $0.status.reasons.contains(.candidateAccess)
+        })
+        XCTAssertTrue(currentGraph.edges.filter { $0.kind == .candidateAccess }.allSatisfy {
+            $0.supportingReferences.contains(.device(currentDeviceID))
+                && (
+                    $0.supportingReferences.contains(.sshIdentity(firstAccountID))
+                        || $0.supportingReferences.contains(.sshIdentity(secondAccountID))
+                )
+        })
+        XCTAssertEqual(
+            Set(currentGraph.edges.compactMap(\.connectionProfileID)),
+            Set([firstProfileID, secondProfileID])
+        )
+        XCTAssertEqual(
+            Set(currentGraph.edges.filter { $0.kind == .candidateAccess }.map(\.label)),
+            Set(["prod-root", "prod-deploy"])
+        )
+        XCTAssertFalse(currentGraph.edges.contains {
+            $0.from == .node(currentNodeID) && $0.to == .node(orphanNodeID)
+        })
+
+        let allDevicesGraph = projector.project(
+            topology: topology,
+            currentDeviceID: currentDeviceID,
+            query: TopologyGraphQuery(
+                viewMode: .allDevices,
+                includesSupportingNodes: true
+            )
+        )
+
+        XCTAssertEqual(allDevicesGraph.nodes.filter { $0.kind == .sshAccount }.count, 2)
+        XCTAssertFalse(allDevicesGraph.nodes.contains { $0.kind == .host })
+        XCTAssertEqual(allDevicesGraph.edges.filter { $0.kind == .candidateAccess }.count, 2)
+
+        topology.hostKeyTrusts = [SSHHostKeyTrust(
+            id: UUID(uuidString: "a5000000-0000-4000-8000-000000000001")!,
+            endpointID: endpointID,
+            algorithm: "ssh-ed25519",
+            fingerprint: "SHA256:replaced",
+            knownHostsLine: "server.example.com ssh-ed25519 replaced",
+            state: .replaced,
+            replacedAt: Date(timeIntervalSince1970: 1_787_616_100),
+            isDeleted: true
+        )]
+        let replacedGraph = projector.project(
+            topology: topology,
+            currentDeviceID: currentDeviceID,
+            query: TopologyGraphQuery(viewMode: .currentDevice)
+        )
+        XCTAssertTrue(replacedGraph.nodes.contains {
+            $0.id == .node(targetNodeID)
+                && $0.status.hostTrust == .mismatch
+                && $0.status.reasons.contains(.hostKeyMismatch)
+        })
+        XCTAssertTrue(replacedGraph.edges.filter { $0.kind == .candidateAccess }.allSatisfy {
+            $0.status.hostTrust == .mismatch
+                && $0.status.reasons.contains(.hostKeyMismatch)
+        })
+    }
+
+    func testGraphEdgeDecodesBeforePathMetadataWasAdded() throws {
+        let edge = TopologyGraphEdge(
+            id: "access:current:profile",
+            from: .node(hostAID),
+            to: .node(hostBID),
+            kind: .nodeAccess,
+            label: "prod-root",
+            status: TopologyGraphStatus(sync: .clean),
+            connectionProfileID: UUID(uuidString: "a4000000-0000-4000-8000-000000000001")!,
+            endpointID: addressBID,
+            detectedAt: Date(timeIntervalSince1970: 1_787_616_000)
+        )
+        let encoded = try JSONEncoder().encode(edge)
+        var legacyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        legacyObject.removeValue(forKey: "connectionProfileID")
+        legacyObject.removeValue(forKey: "endpointID")
+        legacyObject.removeValue(forKey: "detectedAt")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+
+        let decodedLegacy = try JSONDecoder().decode(TopologyGraphEdge.self, from: legacyData)
+        XCTAssertNil(decodedLegacy.connectionProfileID)
+        XCTAssertNil(decodedLegacy.endpointID)
+        XCTAssertNil(decodedLegacy.detectedAt)
+
+        let decodedCurrent = try JSONDecoder().decode(TopologyGraphEdge.self, from: encoded)
+        XCTAssertEqual(decodedCurrent.connectionProfileID, edge.connectionProfileID)
+        XCTAssertEqual(decodedCurrent.endpointID, edge.endpointID)
+        XCTAssertEqual(decodedCurrent.detectedAt, edge.detectedAt)
+    }
+
     private func makeEnvelope() -> HostV6.MetadataEnvelope {
         let now = Date(timeIntervalSince1970: 1_787_616_000)
         let hostA = HostV6.Host(

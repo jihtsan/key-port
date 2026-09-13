@@ -6,7 +6,7 @@ struct ContentView: View {
     @State private var showsAddServer = false
     @State private var serverEditorDraft: ServerDraft?
     @State private var sshAccountEditorRequest: SSHAccountEditorRequest?
-    @State private var endpointNodeID: UUID?
+    @State private var endpointEditorRequest: EndpointEditorRequest?
     @State private var sshAccessSetupRequest: SSHAccessSetupRequest?
     @State private var showsAuthorizationBatch = false
     @State private var selectedActivityEventID: UUID?
@@ -23,7 +23,7 @@ struct ContentView: View {
         }
         .toolbar { toolbar }
         .sheet(isPresented: $showsAddServer, onDismiss: { serverEditorDraft = nil }) {
-            ServerEditorView(
+            ServerAccessFormView(
                 title: "添加服务器和首个 SSH 账户",
                 initialDraft: serverEditorDraft ?? model.newServerDraft(),
                 canSynchronize: model.canSynchronizePasswords,
@@ -35,12 +35,14 @@ struct ContentView: View {
                         trustedHostKeys: hostKeys
                     )
                 },
-                onSave: { submission, enablesPasswordless in
-                    try await saveServer(
-                        submission,
-                        existingServerID: nil,
-                        enablesPasswordless: enablesPasswordless
-                    )
+                onSave: { submission in
+                    try await saveServer(submission, existingServerID: nil)
+                },
+                onOpenTerminal: { serverID in
+                    model.openTerminal(serverID: serverID, endpoint: nil)
+                },
+                onCopyCommand: { serverID in
+                    model.copySSHCommand(serverID: serverID)
                 }
             )
         }
@@ -94,20 +96,25 @@ struct ContentView: View {
         .sheet(isPresented: $showsAuthorizationBatch) {
             SSHAuthorizationBatchView(model: model)
         }
-        .sheet(isPresented: Binding(
-            get: { endpointNodeID != nil },
-            set: { if !$0 { endpointNodeID = nil } }
-        )) {
-            if let nodeID = endpointNodeID,
-               let node = model.topology.node(id: nodeID),
-               let draft = model.newEndpointDraft(forNodeID: nodeID) {
+        .sheet(item: $endpointEditorRequest) { request in
+            if let node = model.topology.node(id: request.nodeID),
+               let draft = request.endpointID.flatMap({
+                   model.nodeEndpointDraft(forNodeID: request.nodeID, endpointID: $0)
+               }) ?? (request.endpointID == nil ? model.newEndpointDraft(forNodeID: request.nodeID) : nil) {
                 NodeEndpointEditorView(
                     nodeName: node.name,
                     initialDraft: draft,
                     onSave: { draft in
-                        try await model.saveNodeEndpoint(draft, forNodeID: nodeID)
+                        try await model.saveNodeEndpoint(draft, forNodeID: request.nodeID)
                     }
                 )
+            } else {
+                ContentUnavailableView(
+                    "无法编辑网络路径",
+                    systemImage: "point.3.connected.trianglepath.dotted",
+                    description: Text("目标节点或地址已经不存在。")
+                )
+                .frame(minWidth: 480, minHeight: 280)
             }
         }
         .sheet(isPresented: Binding(
@@ -187,10 +194,6 @@ struct ContentView: View {
                 onAddAccountForNode: { nodeID in
                     addAccount(nodeID: nodeID)
                 },
-                onSelectNode: { nodeID in
-                    model.selectedServerID = nil
-                    model.graphWorkspace.selectedNodeID = .node(nodeID)
-                },
                 onEdit: { serverID in
                     model.selectedServerID = serverID
                     configureAccess(connectionProfileID: serverID)
@@ -207,11 +210,12 @@ struct ContentView: View {
 
     @ViewBuilder
     private var serverGraphDetail: some View {
-        if NodeWorkspacePresentation.item(
-            for: model.graphWorkspace.selectedNodeID,
-            model: model,
-            workspace: model.graphWorkspace
-        ) != nil {
+        if model.graphWorkspace.selectedEdge == nil,
+           NodeWorkspacePresentation.item(
+               for: model.graphWorkspace.selectedNodeID,
+               model: model,
+               workspace: model.graphWorkspace
+           ) != nil {
             NodeWorkspaceDetailView(
                 model: model,
                 onAddAccount: { nodeID in
@@ -219,6 +223,12 @@ struct ContentView: View {
                 },
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
+                },
+                onEditEndpoint: { nodeID, endpointID in
+                    editEndpoint(nodeID: nodeID, endpointID: endpointID)
+                },
+                onDeleteEndpoint: { nodeID, endpointID in
+                    deleteEndpoint(nodeID: nodeID, endpointID: endpointID)
                 },
                 onEditAccount: { accountID in
                     editAccount(accountID: accountID)
@@ -240,6 +250,12 @@ struct ContentView: View {
                 },
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
+                },
+                onEditEndpoint: { nodeID, endpointID in
+                    editEndpoint(nodeID: nodeID, endpointID: endpointID)
+                },
+                onDeleteEndpoint: { nodeID, endpointID in
+                    deleteEndpoint(nodeID: nodeID, endpointID: endpointID)
                 },
                 onEditAccount: { accountID in
                     editAccount(accountID: accountID)
@@ -268,6 +284,12 @@ struct ContentView: View {
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
                 },
+                onEditEndpoint: { nodeID, endpointID in
+                    editEndpoint(nodeID: nodeID, endpointID: endpointID)
+                },
+                onDeleteEndpoint: { nodeID, endpointID in
+                    deleteEndpoint(nodeID: nodeID, endpointID: endpointID)
+                },
                 onEditAccount: { accountID in
                     editAccount(accountID: accountID)
                 },
@@ -287,6 +309,12 @@ struct ContentView: View {
                 },
                 onAddEndpoint: { nodeID in
                     addEndpoint(nodeID: nodeID)
+                },
+                onEditEndpoint: { nodeID, endpointID in
+                    editEndpoint(nodeID: nodeID, endpointID: endpointID)
+                },
+                onDeleteEndpoint: { nodeID, endpointID in
+                    deleteEndpoint(nodeID: nodeID, endpointID: endpointID)
                 },
                 onEditAccount: { accountID in
                     editAccount(accountID: accountID)
@@ -310,10 +338,12 @@ struct ContentView: View {
                 workspace: model.graphWorkspace
             ), item.isServerNode {
                 serverGraphDetail
-            } else if let server = model.selectedServer {
-                ServerDetailView(server: server, model: model)
             } else {
-                ContentUnavailableView("未选择服务器账户", systemImage: "person.crop.circle", description: Text("请在服务器列表中选择一个 SSH 账户。"))
+                ContentUnavailableView(
+                    "服务器工作区正在同步",
+                    systemImage: "server.rack",
+                    description: Text("统一拓扑载入后，服务器账户、网络路径和设备授权会在同一工作区显示。")
+                )
             }
         case .keys:
             if let row = model.selectedKeyServerRow {
@@ -454,7 +484,27 @@ struct ContentView: View {
             model.errorMessage = "目标节点不存在或已被删除。"
             return
         }
-        endpointNodeID = nodeID
+        endpointEditorRequest = EndpointEditorRequest(nodeID: nodeID)
+    }
+
+    private func editEndpoint(nodeID: UUID, endpointID: UUID) {
+        guard !model.isBusy, !model.isMetadataReadOnly else { return }
+        guard model.nodeEndpointDraft(forNodeID: nodeID, endpointID: endpointID) != nil else {
+            model.errorMessage = "目标网络路径不存在或已被删除。"
+            return
+        }
+        endpointEditorRequest = EndpointEditorRequest(nodeID: nodeID, endpointID: endpointID)
+    }
+
+    private func deleteEndpoint(nodeID: UUID, endpointID: UUID) {
+        guard !model.isBusy, !model.isMetadataReadOnly else { return }
+        Task {
+            do {
+                try await model.deleteNodeEndpoint(endpointID, forNodeID: nodeID)
+            } catch {
+                model.errorMessage = UserFacingText.localizedError(error)
+            }
+        }
     }
 
     private func editAccount(accountID: UUID) {
@@ -506,13 +556,20 @@ struct ContentView: View {
 
     private func saveServer(
         _ submission: ServerEditorSubmission,
-        existingServerID: UUID?,
-        enablesPasswordless: Bool
-    ) async throws {
+        existingServerID: UUID?
+    ) async throws -> UUID {
         let serverID = try await model.saveServerEditor(submission, existingServerID: existingServerID)
-        if enablesPasswordless {
-            await model.authorizeCurrentDevice(serverID: serverID)
+        let authorized = await model.authorizeCurrentDevice(
+            serverID: serverID,
+            endpoint: nil,
+            password: submission.savePassword ? nil : submission.password
+        )
+        guard authorized else {
+            let detail = model.snapshot.servers.first(where: { $0.id == serverID })?.statusDetail
+                ?? "服务器已保存，但当前 Mac 的免密授权未完成。"
+            throw SSHServiceError.operationFailed(detail)
         }
+        return serverID
     }
 }
 
@@ -527,6 +584,20 @@ private struct SSHAccountEditorRequest: Identifiable {
 
     var id: String {
         "\(nodeID.uuidString.lowercased()):\(accountID?.uuidString.lowercased() ?? "new")"
+    }
+}
+
+private struct EndpointEditorRequest: Identifiable {
+    let nodeID: UUID
+    let endpointID: UUID?
+
+    init(nodeID: UUID, endpointID: UUID? = nil) {
+        self.nodeID = nodeID
+        self.endpointID = endpointID
+    }
+
+    var id: String {
+        "\(nodeID.uuidString.lowercased()):\(endpointID?.uuidString.lowercased() ?? "new")"
     }
 }
 
