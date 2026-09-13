@@ -143,7 +143,7 @@ public enum FirstAccessState: Equatable {
         invalidate()
         switch oldState {
         case .checkingHost, .confirmHost, .running(.login):
-            state = .form; formNotice = "已取消；非敏感输入已保留，请重新输入密码。"
+            state = .form; formNotice = "已取消；非敏感输入已保留，密码已清空。"
         default: state = .cancelled
         }
     }
