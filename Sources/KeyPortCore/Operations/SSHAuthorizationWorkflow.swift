@@ -686,7 +686,7 @@ public struct SSHDeviceAuthorizationSummary: Identifiable, Codable, Hashable, Se
     public let localKeyAvailable: Bool
     public let lastVerifiedAt: Date?
 
-    public var id: String { "(deviceID):(accountID.uuidString.lowercased())" }
+    public var id: String { "\(deviceID):\(accountID.uuidString.lowercased())" }
 
     public init(
         accountID: UUID,

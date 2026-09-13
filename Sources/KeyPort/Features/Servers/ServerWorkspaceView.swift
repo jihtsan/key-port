@@ -98,7 +98,8 @@ struct ServerWorkspaceView: View {
             ServerDiscoveryView(
                 model: model,
                 onAddDiscoveredServer: onAddDiscoveredServer,
-                onAddDiscoveredConnection: onAddDiscoveredConnection
+                onAddDiscoveredConnection: onAddDiscoveredConnection,
+                onAddAccount: onAddAccount
             )
         }
         .onAppear { synchronizeWorkspace() }
@@ -110,6 +111,7 @@ struct ServerWorkspaceView: View {
                 synchronizeGraphSelection()
             } else {
                 model.searchText = model.graphWorkspace.searchText
+                model.graphWorkspace.selectedEdgeID = nil
                 synchronizeListSelection()
             }
         }

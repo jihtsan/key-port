@@ -1315,8 +1315,12 @@ public enum TopologySnapshotMigration {
             let previousUsername = existing.sshAccounts.first(where: { $0.id == previous.accountID })?.username
             let currentNodeID = migrated.sshAccounts.first(where: { $0.id == current.accountID })?.nodeID
             let previousNodeID = existing.sshAccounts.first(where: { $0.id == previous.accountID })?.nodeID
-            let currentEndpoint = current.routePolicy.fixedEndpointID.flatMap(migrated.endpoint(id:))
-            let previousEndpoint = previous.routePolicy.fixedEndpointID.flatMap(existing.endpoint(id:))
+            let currentEndpoint = current.routePolicy.fixedEndpointID.flatMap { endpointID in
+                migrated.endpoints.first { $0.id == endpointID }
+            }
+            let previousEndpoint = previous.routePolicy.fixedEndpointID.flatMap { endpointID in
+                existing.endpoints.first { $0.id == endpointID }
+            }
             let preservesExplicitBinding = currentEndpoint.map { endpoint in
                 previousEndpoint.map { previousEndpoint in
                     sameEndpointCoordinate(endpoint, previousEndpoint)
@@ -1336,8 +1340,8 @@ public enum TopologySnapshotMigration {
             }()
             if let previousEndpointID = previous.routePolicy.fixedEndpointID,
                let currentEndpointID = current.routePolicy.fixedEndpointID,
-               let previousEndpoint = existing.endpoint(id: previousEndpointID),
-               let currentEndpoint = migrated.endpoint(id: currentEndpointID),
+               let previousEndpoint = existing.endpoints.first(where: { $0.id == previousEndpointID }),
+               let currentEndpoint = migrated.endpoints.first(where: { $0.id == currentEndpointID }),
                sameEndpointCoordinate(previousEndpoint, currentEndpoint) {
                 value.routePolicy = previous.routePolicy
             } else if case .automatic = previous.routePolicy {
@@ -1385,7 +1389,11 @@ public enum TopologySnapshotMigration {
             in: &result,
             now: now
         )
-        removeOrphanedMigratedRecords(from: migrated, in: &result)
+        removeOrphanedMigratedRecords(
+            from: migrated,
+            in: &result,
+            preserving: existing
+        )
         return result
     }
 
@@ -1601,14 +1609,17 @@ public enum TopologySnapshotMigration {
     /// survive until the user creates their first connection profile.
     private static func removeOrphanedMigratedRecords(
         from migrated: TopologySnapshot,
-        in topology: inout TopologySnapshot
+        in topology: inout TopologySnapshot,
+        preserving existing: TopologySnapshot
     ) {
         let referencedAccountIDs = Set(topology.activeConnectionProfiles.map(\.accountID))
         let migratedNodeIDs = Set(migrated.activeAccounts.map(\.nodeID))
         let migratedAccountIDs = Set(migrated.sshAccounts.map(\.id))
+        let existingAccountIDs = Set(existing.activeAccounts.map(\.id))
 
         for accountIndex in topology.sshAccounts.indices
             where migratedAccountIDs.contains(topology.sshAccounts[accountIndex].id)
+                && !existingAccountIDs.contains(topology.sshAccounts[accountIndex].id)
                 && !referencedAccountIDs.contains(topology.sshAccounts[accountIndex].id) {
             topology.sshAccounts[accountIndex].isDeleted = true
         }

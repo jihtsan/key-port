@@ -5,11 +5,14 @@ struct NodeWorkspaceDetailView: View {
     let model: AppModel
     let onAddAccount: (UUID) -> Void
     let onAddEndpoint: (UUID) -> Void
+    let onEditEndpoint: (UUID, UUID) -> Void
+    let onDeleteEndpoint: (UUID, UUID) -> Void
     let onEditAccount: (UUID) -> Void
     let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
 
     @State private var selectedEndpointID: UUID?
     @State private var pendingDeletion: ServerConnection?
+    @State private var pendingEndpointDeletion: Endpoint?
 
     var body: some View {
         let item = NodeWorkspacePresentation.item(
@@ -26,6 +29,7 @@ struct NodeWorkspaceDetailView: View {
                     description: Text(model.graphWorkspace.unavailableMessage)
                 )
             } else if let item {
+                let selectedAccount = selectedAccount(in: item)
                 NodeWorkspaceContentView(
                     item: item,
                     tags: tags(for: item),
@@ -36,6 +40,14 @@ struct NodeWorkspaceDetailView: View {
                         model.topology.connectionProfiles(forNodeID: $0)
                     } ?? [],
                     accountRows: accountRows(for: item),
+                    selectedAccount: selectedAccount,
+                    deviceAuthorizationSummaries: selectedAccount.map {
+                        model.deviceAuthorizationSummaries(for: $0)
+                    } ?? [],
+                    deviceNames: Dictionary(
+                        uniqueKeysWithValues: model.snapshot.devices.map { ($0.id, $0.name) }
+                    ),
+                    hostKeyTrusts: hostKeyTrusts(for: item),
                     selectedAccountID: model.selectedServerID,
                     selectedEndpointID: selectedEndpointID,
                     isBusy: model.isBusy,
@@ -52,6 +64,18 @@ struct NodeWorkspaceDetailView: View {
                     onAddEndpoint: {
                         guard let nodeID = item.node.id.topologyUUID else { return }
                         onAddEndpoint(nodeID)
+                    },
+                    onEditEndpoint: { endpoint in
+                        onEditEndpoint(endpoint.nodeID, endpoint.id)
+                    },
+                    onDeleteEndpoint: { endpoint in
+                        pendingEndpointDeletion = endpoint
+                    },
+                    onVerifyEndpoint: { endpoint in
+                        verifyEndpoint(endpoint, in: item)
+                    },
+                    onShowAccountDetail: { accountID in
+                        model.showServer(accountID)
                     },
                     hasStoredPasswordForAccount: { accountID in
                         model.hasStoredPassword(accountID: accountID)
@@ -104,6 +128,28 @@ struct NodeWorkspaceDetailView: View {
             Button("取消", role: .cancel) { pendingDeletion = nil }
         } message: {
             Text("这个别名和网络路径会从 KeyPort 及生成的 SSH 配置中移除；共享的 SSH 账户与其他连接配置不会受影响。")
+        }
+        .confirmationDialog(
+            "要删除这个网络路径吗？",
+            isPresented: Binding(
+                get: { pendingEndpointDeletion != nil },
+                set: { if !$0 { pendingEndpointDeletion = nil } }
+            )
+        ) {
+            Button("删除网络路径", role: .destructive) {
+                guard let endpoint = pendingEndpointDeletion else { return }
+                pendingEndpointDeletion = nil
+                Task {
+                    do {
+                        try await model.deleteNodeEndpoint(endpoint.id, forNodeID: endpoint.nodeID)
+                    } catch {
+                        model.errorMessage = UserFacingText.localizedError(error)
+                    }
+                }
+            }
+            Button("取消", role: .cancel) { pendingEndpointDeletion = nil }
+        } message: {
+            Text("删除只会移除这条地址及其本机检测证据，不会撤销 SSH 账户上的远端设备授权；仍被连接配置使用的地址需先调整路径。")
         }
     }
 
@@ -226,6 +272,22 @@ struct NodeWorkspaceDetailView: View {
             .routePolicy.fixedEndpointID
         onConfigureAccess(nodeID, profileID, endpointID)
     }
+
+    private func hostKeyTrusts(for item: NodeWorkspaceItem) -> [SSHHostKeyTrust] {
+        guard let nodeID = item.topologyNodeID else { return [] }
+        let endpointIDs = Set(item.endpoints.filter { $0.nodeID == nodeID }.map(\.id))
+        return model.topology.hostKeyTrusts.filter { endpointIDs.contains($0.endpointID) }
+    }
+
+    private func verifyEndpoint(_ endpoint: Endpoint, in item: NodeWorkspaceItem) {
+        guard let account = selectedAccount(in: item) else {
+            model.errorMessage = "请先添加 SSH 连接配置，再核验主机身份。"
+            return
+        }
+        Task {
+            await model.checkKey(serverID: account.id, endpoint: endpoint)
+        }
+    }
 }
 
 private struct NodeWorkspaceContentView: View {
@@ -234,6 +296,10 @@ private struct NodeWorkspaceContentView: View {
     let sshAccounts: [SSHAccount]
     let connectionProfiles: [SSHConnectionProfile]
     let accountRows: [NodeWorkspaceAccountDisplay]
+    let selectedAccount: ServerConnection?
+    let deviceAuthorizationSummaries: [SSHDeviceAuthorizationSummary]
+    let deviceNames: [String: String]
+    let hostKeyTrusts: [SSHHostKeyTrust]
     let selectedAccountID: UUID?
     let selectedEndpointID: UUID?
     let isBusy: Bool
@@ -245,6 +311,10 @@ private struct NodeWorkspaceContentView: View {
     let onConfigureAccess: () -> Void
     let onAddAccount: () -> Void
     let onAddEndpoint: () -> Void
+    let onEditEndpoint: (Endpoint) -> Void
+    let onDeleteEndpoint: (Endpoint) -> Void
+    let onVerifyEndpoint: (Endpoint) -> Void
+    let onShowAccountDetail: (UUID) -> Void
     let hasStoredPasswordForAccount: (UUID) -> Bool
     let connectionProfileCount: (UUID) -> Int
     let onEditSSHAccount: (UUID) -> Void
@@ -303,14 +373,31 @@ private struct NodeWorkspaceContentView: View {
                         onDelete: onDeleteConnectionProfile
                     )
 
+                    if let selectedAccount {
+                        NodeWorkspaceAuthorizationSection(
+                            account: selectedAccount,
+                            summaries: deviceAuthorizationSummaries,
+                            deviceNames: deviceNames,
+                            isBusy: isBusy,
+                            onShowAccountDetail: {
+                                onShowAccountDetail(selectedAccount.id)
+                            }
+                        )
+                    }
+
                     NodeWorkspaceRoutesSection(
                         endpoints: endpoints,
                         selectedEndpointID: selectedEndpointID,
                         nodeStatus: item.node.status,
                         tailscaleIdentities: item.node.tailscaleIdentities,
+                        hostKeyTrusts: hostKeyTrusts,
                         isReadOnly: isReadOnly,
+                        canVerify: selectedAccount != nil,
                         onSelect: onSelectEndpoint,
-                        onAdd: onAddEndpoint
+                        onAdd: onAddEndpoint,
+                        onVerify: onVerifyEndpoint,
+                        onEdit: onEditEndpoint,
+                        onDelete: onDeleteEndpoint
                     )
                 }
                 .padding(24)
@@ -326,6 +413,83 @@ private struct NodeWorkspaceContentView: View {
                 if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
                 return lhs.label.localizedCaseInsensitiveCompare(rhs.label) == .orderedAscending
             }
+    }
+
+}
+
+struct NodeWorkspaceAuthorizationSection: View {
+    let account: ServerConnection
+    let summaries: [SSHDeviceAuthorizationSummary]
+    let deviceNames: [String: String]
+    let isBusy: Bool
+    let onShowAccountDetail: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("设备授权")
+                        .font(.title3.weight(.semibold))
+                    Text("授权属于 SSH 账户；删除连接配置或网络路径不会撤销远端公钥。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button("查看与撤销") {
+                    onShowAccountDetail()
+                }
+                .disabled(isBusy)
+            }
+
+            if summaries.isEmpty {
+                Label("尚未读取到其他设备的授权状态。", systemImage: "laptopcomputer.and.arrow.down")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(summaries.enumerated()), id: \.element.id) { index, summary in
+                        if index > 0 { Divider().padding(.leading, 34) }
+                        HStack(spacing: 10) {
+                            Image(systemName: summary.status.systemImage)
+                                .foregroundStyle(color(for: summary.status))
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(deviceTitle(for: summary))
+                                    .font(.callout.weight(.medium))
+                                    .lineLimit(1)
+                                if let verifiedAt = summary.lastVerifiedAt {
+                                    Text("最近验证：\(verifiedAt.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Text(summary.status.title)
+                                .font(.caption)
+                                .foregroundStyle(color(for: summary.status))
+                        }
+                        .padding(.vertical, 9)
+                    }
+                }
+                .padding(.horizontal, 11)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+    }
+
+    private func deviceTitle(for summary: SSHDeviceAuthorizationSummary) -> String {
+        deviceNames[summary.deviceID].flatMap {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
+        } ?? summary.deviceID
+    }
+
+    private func color(for status: SSHDeviceAuthorizationStatus) -> Color {
+        switch status {
+        case .authorized, .remotelyAuthorized: .green
+        case .checking: .blue
+        case .needsAuthorization, .missingLocalKey, .remoteUnknown, .staleVerification: .orange
+        case .deviceRevoked, .failed: .red
+        }
     }
 }
 

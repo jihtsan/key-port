@@ -391,6 +391,15 @@ public struct TopologyGraphEdge: Identifiable, Codable, Hashable, Sendable {
     public let label: String
     public let isCandidate: Bool
     public let status: TopologyGraphStatus
+    /// The configured SSH connection profile represented by this edge. It is
+    /// optional because legacy Host v6 edges and non-SSH relationships do not
+    /// have a unified connection-profile identity.
+    public let connectionProfileID: UUID?
+    /// The concrete endpoint used by the latest access evidence, when one was
+    /// resolved. An automatic policy may still have more than one candidate.
+    public let endpointID: UUID?
+    /// The latest time this access path was checked or otherwise observed.
+    public let detectedAt: Date?
     public let supportingReferences: [HostV6.EntityReference]
 
     public init(
@@ -401,6 +410,9 @@ public struct TopologyGraphEdge: Identifiable, Codable, Hashable, Sendable {
         label: String,
         isCandidate: Bool = false,
         status: TopologyGraphStatus = .unknown,
+        connectionProfileID: UUID? = nil,
+        endpointID: UUID? = nil,
+        detectedAt: Date? = nil,
         supportingReferences: [HostV6.EntityReference] = []
     ) {
         self.id = id
@@ -410,9 +422,61 @@ public struct TopologyGraphEdge: Identifiable, Codable, Hashable, Sendable {
         self.label = label
         self.isCandidate = isCandidate
         self.status = status
+        self.connectionProfileID = connectionProfileID
+        self.endpointID = endpointID
+        self.detectedAt = detectedAt
         self.supportingReferences = supportingReferences.sorted {
             "\($0.entityType.rawValue):\($0.stableID)" < "\($1.entityType.rawValue):\($1.stableID)"
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case from
+        case to
+        case kind
+        case label
+        case isCandidate
+        case status
+        case connectionProfileID
+        case endpointID
+        case detectedAt
+        case supportingReferences
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id),
+            from: try container.decode(TopologyGraphNodeID.self, forKey: .from),
+            to: try container.decode(TopologyGraphNodeID.self, forKey: .to),
+            kind: try container.decode(TopologyGraphEdgeKind.self, forKey: .kind),
+            label: try container.decode(String.self, forKey: .label),
+            isCandidate: try container.decodeIfPresent(Bool.self, forKey: .isCandidate) ?? false,
+            status: try container.decodeIfPresent(TopologyGraphStatus.self, forKey: .status) ?? .unknown,
+            connectionProfileID: try container.decodeIfPresent(UUID.self, forKey: .connectionProfileID),
+            endpointID: try container.decodeIfPresent(UUID.self, forKey: .endpointID),
+            detectedAt: try container.decodeIfPresent(Date.self, forKey: .detectedAt),
+            supportingReferences: try container.decodeIfPresent(
+                [HostV6.EntityReference].self,
+                forKey: .supportingReferences
+            ) ?? []
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(from, forKey: .from)
+        try container.encode(to, forKey: .to)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(label, forKey: .label)
+        try container.encode(isCandidate, forKey: .isCandidate)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(connectionProfileID, forKey: .connectionProfileID)
+        try container.encodeIfPresent(endpointID, forKey: .endpointID)
+        try container.encodeIfPresent(detectedAt, forKey: .detectedAt)
+        try container.encode(supportingReferences, forKey: .supportingReferences)
     }
 }
 

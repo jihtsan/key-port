@@ -33,7 +33,8 @@ struct GraphWorkspaceView: View {
                     GraphCanvasView(
                         snapshot: visibleSnapshot,
                         nodeItems: nodeItems,
-                        selection: $workspace.selectedNodeID
+                        selection: $workspace.selectedNodeID,
+                        selectedEdgeID: $workspace.selectedEdgeID
                     )
                 }
             }

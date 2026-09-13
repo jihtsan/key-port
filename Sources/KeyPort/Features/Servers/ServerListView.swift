@@ -81,8 +81,10 @@ struct ServerDiscoveryView: View {
     let model: AppModel
     let onAddDiscoveredServer: (TailscaleSSHServerSuggestion) -> Void
     let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
+    let onAddAccount: (UUID) -> Void
 
     @State private var searchText = ""
+    @State private var pendingImport: DiscoveryImportRequest?
 
     var body: some View {
         NavigationStack {
@@ -98,12 +100,10 @@ struct ServerDiscoveryView: View {
                                     dismiss()
                                 },
                                 onAddAccount: { serverID in
-                                    model.showServer(serverID)
-                                    dismiss()
+                                    pendingImport = .addAccount(serverID)
                                 },
                                 onAddServer: { suggestion in
-                                    onAddDiscoveredServer(suggestion)
-                                    dismiss()
+                                    pendingImport = .importTailscale(suggestion)
                                 }
                             )
                         }
@@ -121,8 +121,7 @@ struct ServerDiscoveryView: View {
                                     dismiss()
                                 },
                                 onAdd: { connection in
-                                    onAddDiscoveredConnection(connection)
-                                    dismiss()
+                                    pendingImport = .importSSH(connection)
                                 }
                             )
                         }
@@ -156,8 +155,60 @@ struct ServerDiscoveryView: View {
                     .disabled(model.isBusy)
                 }
             }
+            .confirmationDialog(
+                "确认发现结果",
+                isPresented: Binding(
+                    get: { pendingImport != nil },
+                    set: { if !$0 { pendingImport = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let pendingImport {
+                    switch pendingImport {
+                    case .addAccount:
+                        Button("添加 SSH 账户") { confirmImport(pendingImport) }
+                    case .importTailscale:
+                        Button("新建服务器") { confirmImport(pendingImport) }
+                    case .importSSH:
+                        Button("导入为新服务器") { confirmImport(pendingImport) }
+                    }
+                }
+                Button("取消", role: .cancel) { pendingImport = nil }
+            } message: {
+                Text(importMessage)
+            }
         }
         .frame(minWidth: 580, minHeight: 480)
+    }
+
+    private func confirmImport(_ request: DiscoveryImportRequest) {
+        pendingImport = nil
+        switch request {
+        case .addAccount(let serverID):
+            onAddAccount(serverID)
+            dismiss()
+        case .importTailscale(let suggestion):
+            onAddDiscoveredServer(suggestion)
+            dismiss()
+        case .importSSH(let connection):
+            onAddDiscoveredConnection(connection)
+            dismiss()
+        }
+    }
+
+    private var importMessage: String {
+        guard let pendingImport else { return "" }
+        switch pendingImport {
+        case .addAccount:
+            return "这个 Tailscale 节点已经有托管服务器。确认后为现有节点添加一个新的 SSH 账户，不会创建重复服务器。"
+        case .importTailscale(let suggestion):
+            return "将以“\(suggestion.name)”创建一个服务器，并把 Tailscale 地址作为自动维护的网络路径。"
+        case .importSSH(let connection):
+            if let proxyJump = connection.proxyJump, !proxyJump.isEmpty {
+                return "将导入“\(connection.alias)”作为新服务器。检测到 ProxyJump=\(proxyJump)；KeyPort 当前只记录发现事实，不会自动启用多跳连接。"
+            }
+            return "将把 SSH Config 中的“\(connection.alias)”导入为新服务器；导入不会复制密码或私钥。"
+        }
     }
 
     private var discoveredServers: [TailscaleSSHServerSuggestion] {
@@ -199,6 +250,12 @@ struct ServerDiscoveryView: View {
         guard !needle.isEmpty else { return true }
         return values.contains { $0.localizedLowercase.contains(needle) }
     }
+}
+
+private enum DiscoveryImportRequest {
+    case addAccount(UUID)
+    case importTailscale(TailscaleSSHServerSuggestion)
+    case importSSH(DiscoveredSSHConnection)
 }
 
 private struct TailscaleDiscoveryRow: View {
@@ -315,6 +372,16 @@ private struct DiscoveredSSHConfigRow: View {
                 Spacer()
             }
             .font(.caption)
+
+            if let proxyJump = connection.proxyJump, !proxyJump.isEmpty {
+                Label(
+                    "检测到跳板机配置：\(proxyJump)；当前仅展示与规划",
+                    systemImage: "arrow.triangle.branch"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, 4)
     }

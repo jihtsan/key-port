@@ -22,7 +22,16 @@ final class GraphWorkspaceModel {
     var showsServices = true {
         didSet { rebuildVisibleSnapshot() }
     }
-    var selectedNodeID: TopologyGraphNodeID?
+    var selectedNodeID: TopologyGraphNodeID? {
+        didSet {
+            if oldValue != selectedNodeID {
+                selectedEdgeID = nil
+            }
+        }
+    }
+    /// A path selection is independent from the node selection so moving
+    /// between the list and graph does not lose the server the user selected.
+    var selectedEdgeID: String?
 
     private(set) var snapshot = TopologyGraphSnapshot.empty
     private(set) var sourceSnapshot = TopologyGraphSnapshot.empty
@@ -60,6 +69,11 @@ final class GraphWorkspaceModel {
             .sorted { $0.id < $1.id }
     }
 
+    var selectedEdge: TopologyGraphEdge? {
+        guard let selectedEdgeID else { return nil }
+        return sourceSnapshot.edges.first { $0.id == selectedEdgeID }
+    }
+
     var connectedNodes: [TopologyGraphNode] {
         let connectedIDs = Set(selectedEdges.map { edge in
             edge.from == selectedNodeID ? edge.to : edge.from
@@ -87,6 +101,7 @@ final class GraphWorkspaceModel {
             sourceSnapshot = .empty
             snapshot = .empty
             selectedNodeID = nil
+            selectedEdgeID = nil
             return
         }
 
@@ -132,6 +147,11 @@ final class GraphWorkspaceModel {
 
     func select(_ nodeID: TopologyGraphNodeID?) {
         selectedNodeID = nodeID
+        selectedEdgeID = nil
+    }
+
+    func selectEdge(_ edgeID: String?) {
+        selectedEdgeID = edgeID
     }
 
     private func rebuildVisibleSnapshot(selectDefault: Bool = false) {
@@ -143,6 +163,10 @@ final class GraphWorkspaceModel {
         if let selectedNodeID,
            !snapshot.nodes.contains(where: { $0.id == selectedNodeID }) {
             self.selectedNodeID = nil
+        }
+        if let selectedEdgeID,
+           !snapshot.edges.contains(where: { $0.id == selectedEdgeID }) {
+            self.selectedEdgeID = nil
         }
         if selectDefault, selectedNodeID == nil {
             selectedNodeID = sourceSnapshot.primaryNodeID

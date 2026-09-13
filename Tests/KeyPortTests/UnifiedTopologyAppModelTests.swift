@@ -408,4 +408,348 @@ final class UnifiedTopologyAppModelTests: XCTestCase {
         XCTAssertEqual(reloaded.activeServers.first?.username, "deploy")
         XCTAssertEqual(reloaded.activeServers.first?.alias, "builder-root")
     }
+
+    func testEditingEndpointPreservesPathIdentityAndInvalidatesEvidence() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-endpoint-edit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-endpoint-edit"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        let currentNodeID = TopologyStableID.node(forDeviceID: currentDeviceID)
+        let targetNodeID = UUID(uuidString: "34000000-0000-4000-8000-000000000001")!
+        let endpointID = UUID(uuidString: "34000000-0000-4000-8000-000000000002")!
+        let accountID = TopologyStableID.sshAccount(nodeID: targetNodeID, username: "deploy")
+        let profileID = UUID(uuidString: "34000000-0000-4000-8000-000000000003")!
+        let now = Date(timeIntervalSince1970: 1_787_616_000)
+        let paths = KeyPortPaths(home: home)
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        try await SnapshotStore(paths: paths).save(legacy)
+        try await TopologyStore(paths: paths).save(TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "测试 Mac", roles: [.clientDevice]),
+                Node(id: targetNodeID, name: "构建服务器", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "测试 Mac",
+                isCurrent: true
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: targetNodeID,
+                address: "builder.example.com",
+                label: "原地址",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .manual
+            )],
+            sshAccounts: [SSHAccount(
+                id: accountID,
+                nodeID: targetNodeID,
+                username: "deploy"
+            )],
+            sshConnectionProfiles: [SSHConnectionProfile(
+                id: profileID,
+                accountID: accountID,
+                sshAlias: "builder-deploy",
+                routePolicy: .fixed(endpointID: endpointID)
+            )],
+            hostKeyTrusts: [SSHHostKeyTrust(
+                id: UUID(uuidString: "34000000-0000-4000-8000-000000000004")!,
+                endpointID: endpointID,
+                algorithm: "ssh-ed25519",
+                fingerprint: "SHA256:builder",
+                knownHostsLine: "builder.example.com ssh-ed25519 builder",
+                state: .confirmed,
+                firstConfirmedAt: now,
+                lastSeenAt: now
+            )],
+            reachabilityObservations: [ReachabilityObservation(
+                endpointID: endpointID,
+                observerDeviceID: currentDeviceID,
+                networkEpoch: 1,
+                observedAt: now,
+                wasReachable: true
+            )],
+            accessVerifications: [AccessVerification(
+                accountID: accountID,
+                deviceID: currentDeviceID,
+                profileID: profileID,
+                endpointID: endpointID,
+                transport: .direct,
+                networkEpoch: 1,
+                status: .authorized,
+                statusDetail: "已验证",
+                lastCheckedAt: now,
+                passwordCheck: AuthenticationCheck(
+                    state: .succeeded,
+                    detail: "密码可用",
+                    checkedAt: now
+                ),
+                keyCheck: AuthenticationCheck(
+                    state: .succeeded,
+                    detail: "密钥可用",
+                    checkedAt: now
+                )
+            )]
+        ))
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+
+        try await model.saveNodeEndpoint(NodeEndpointDraft(
+            endpointID: endpointID,
+            address: "builder.internal.example.com",
+            label: "内网地址",
+            port: 2222,
+            networkScope: .lan
+        ), forNodeID: targetNodeID)
+
+        let activeEndpoints = model.topology.endpoints(for: targetNodeID, endpointProtocol: .ssh)
+        XCTAssertEqual(activeEndpoints.count, 1)
+        XCTAssertEqual(activeEndpoints.first?.id, endpointID)
+        XCTAssertEqual(activeEndpoints.first?.address, "builder.internal.example.com")
+        XCTAssertEqual(activeEndpoints.first?.port, 2222)
+        XCTAssertEqual(
+            model.topology.connectionProfile(id: profileID)?.routePolicy.fixedEndpointID,
+            endpointID
+        )
+        XCTAssertTrue(model.topology.reachabilityObservations.isEmpty)
+
+        let verification = try XCTUnwrap(model.topology.accessVerifications.first)
+        XCTAssertEqual(verification.status, .needsAuthorization)
+        XCTAssertNil(verification.lastCheckedAt)
+        XCTAssertNil(verification.passwordCheck)
+        XCTAssertNil(verification.keyCheck)
+        XCTAssertTrue(model.topology.hostKeyTrusts.contains {
+            $0.endpointID == endpointID && $0.state == .replaced && $0.isDeleted
+        })
+
+        let stored = try await TopologyStore(paths: paths).load()
+        let storedTopology = try XCTUnwrap(stored)
+        XCTAssertEqual(
+            storedTopology.endpoints
+                .filter { !$0.isDeleted && $0.nodeID == targetNodeID }
+                .map(\.id),
+            [endpointID]
+        )
+        XCTAssertEqual(storedTopology.connectionProfile(id: profileID)?.routePolicy.fixedEndpointID, endpointID)
+    }
+
+    func testDeletingUnreferencedEndpointTombstonesPathButKeepsRemoteAuthorization() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-endpoint-delete-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-endpoint-delete"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        let currentNodeID = TopologyStableID.node(forDeviceID: currentDeviceID)
+        let targetNodeID = UUID(uuidString: "35000000-0000-4000-8000-000000000001")!
+        let endpointID = UUID(uuidString: "35000000-0000-4000-8000-000000000002")!
+        let accountID = TopologyStableID.sshAccount(nodeID: targetNodeID, username: "ops")
+        let keyID = "key-endpoint-delete"
+        let now = Date(timeIntervalSince1970: 1_787_616_000)
+        let paths = KeyPortPaths(home: home)
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        try await SnapshotStore(paths: paths).save(legacy)
+        try await TopologyStore(paths: paths).save(TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "测试 Mac", roles: [.clientDevice]),
+                Node(id: targetNodeID, name: "运维服务器", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "测试 Mac",
+                isCurrent: true
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: targetNodeID,
+                address: "ops.example.com",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .manual
+            )],
+            sshAccounts: [SSHAccount(
+                id: accountID,
+                nodeID: targetNodeID,
+                username: "ops"
+            )],
+            sshKeys: [SSHKey(
+                id: keyID,
+                deviceID: currentDeviceID,
+                kind: .ed25519,
+                publicKey: "ssh-ed25519 AAAA endpoint-delete",
+                fingerprint: "SHA256:endpoint-delete",
+                origin: .generated,
+                isLocallyAvailable: true
+            )],
+            hostKeyTrusts: [SSHHostKeyTrust(
+                id: UUID(uuidString: "35000000-0000-4000-8000-000000000003")!,
+                endpointID: endpointID,
+                algorithm: "ssh-ed25519",
+                fingerprint: "SHA256:ops",
+                knownHostsLine: "ops.example.com ssh-ed25519 ops",
+                state: .confirmed,
+                firstConfirmedAt: now,
+                lastSeenAt: now
+            )],
+            authorizations: [SSHAuthorization(
+                accountID: accountID,
+                keyID: keyID,
+                fingerprint: "SHA256:endpoint-delete",
+                remoteComment: "device",
+                remoteState: .authorized,
+                authorizedAt: now,
+                lastVerifiedAt: now,
+                updatedAt: now
+            )],
+            reachabilityObservations: [ReachabilityObservation(
+                endpointID: endpointID,
+                observerDeviceID: currentDeviceID,
+                networkEpoch: 1,
+                observedAt: now,
+                wasReachable: true
+            )],
+            accessVerifications: [AccessVerification(
+                accountID: accountID,
+                deviceID: currentDeviceID,
+                endpointID: endpointID,
+                transport: .direct,
+                status: .authorized,
+                lastCheckedAt: now
+            )]
+        ))
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        try await model.deleteNodeEndpoint(endpointID, forNodeID: targetNodeID)
+
+        XCTAssertTrue(model.topology.endpoints.contains { $0.id == endpointID && $0.isDeleted })
+        XCTAssertTrue(model.topology.endpoints(for: targetNodeID, endpointProtocol: .ssh).isEmpty)
+        XCTAssertTrue(model.topology.hostKeyTrusts.contains {
+            $0.endpointID == endpointID && $0.state == .replaced && $0.isDeleted
+        })
+        XCTAssertTrue(model.topology.reachabilityObservations.isEmpty)
+        XCTAssertEqual(model.topology.authorizations.first?.remoteState, .authorized)
+        XCTAssertEqual(model.topology.accessVerifications.first?.status, .needsAuthorization)
+        XCTAssertTrue(model.topology.auditEvents.contains {
+            $0.category == "endpoint" && $0.action == "delete" && $0.targetID == endpointID.uuidString
+        })
+    }
+
+    func testDeletingConnectionProfileLeavesAccountAuthorization() async throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("keyport-profile-delete-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let currentDeviceID = "device-profile-delete"
+        let defaultsSuite = "KeyPort.UnifiedTopologyAppModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        defaults.set(currentDeviceID, forKey: "KeyPort.deviceID")
+
+        let currentNodeID = TopologyStableID.node(forDeviceID: currentDeviceID)
+        let targetNodeID = UUID(uuidString: "36000000-0000-4000-8000-000000000001")!
+        let endpointID = UUID(uuidString: "36000000-0000-4000-8000-000000000002")!
+        let profileID = UUID(uuidString: "36000000-0000-4000-8000-000000000003")!
+        let accountID = TopologyStableID.sshAccount(nodeID: targetNodeID, username: "deploy")
+        let keyID = "key-profile-delete"
+        let now = Date(timeIntervalSince1970: 1_787_616_000)
+        let paths = KeyPortPaths(home: home)
+
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "测试 Mac", isCurrent: true)]
+        try await SnapshotStore(paths: paths).save(legacy)
+        try await TopologyStore(paths: paths).save(TopologySnapshot(
+            nodes: [
+                Node(id: currentNodeID, name: "测试 Mac", roles: [.clientDevice]),
+                Node(id: targetNodeID, name: "应用服务器", roles: [.sshHost]),
+            ],
+            profiles: [WorkspaceDeviceProfile(
+                id: currentDeviceID,
+                nodeID: currentNodeID,
+                name: "测试 Mac",
+                isCurrent: true
+            )],
+            endpoints: [Endpoint(
+                id: endpointID,
+                nodeID: targetNodeID,
+                address: "app.example.com",
+                port: 22,
+                protocol: .ssh,
+                networkScope: .publicNetwork,
+                source: .manual
+            )],
+            sshAccounts: [SSHAccount(
+                id: accountID,
+                nodeID: targetNodeID,
+                username: "deploy"
+            )],
+            sshConnectionProfiles: [SSHConnectionProfile(
+                id: profileID,
+                accountID: accountID,
+                sshAlias: "app-deploy",
+                routePolicy: .fixed(endpointID: endpointID)
+            )],
+            sshKeys: [SSHKey(
+                id: keyID,
+                deviceID: currentDeviceID,
+                kind: .ed25519,
+                publicKey: "ssh-ed25519 AAAA profile-delete",
+                fingerprint: "SHA256:profile-delete",
+                origin: .generated,
+                isLocallyAvailable: true
+            )],
+            authorizations: [SSHAuthorization(
+                accountID: accountID,
+                keyID: keyID,
+                fingerprint: "SHA256:profile-delete",
+                remoteComment: "device",
+                remoteState: .authorized,
+                authorizedAt: now,
+                lastVerifiedAt: now,
+                updatedAt: now
+            )]
+        ))
+
+        let model = AppModel(paths: paths, defaults: defaults)
+        await model.load()
+        XCTAssertEqual(model.activeServers.map(\.id), [profileID])
+        XCTAssertTrue(model.topology.sshConnectionProfiles.contains {
+            $0.id == profileID && !$0.isDeleted
+        })
+
+        await model.deleteServer(profileID)
+
+        XCTAssertTrue(model.topology.sshConnectionProfiles.contains {
+            $0.id == profileID && $0.isDeleted
+        })
+        XCTAssertTrue(model.topology.activeAccounts.contains { $0.id == accountID })
+        XCTAssertEqual(model.topology.activeAuthorizations(for: accountID).first?.remoteState, .authorized)
+        XCTAssertTrue(model.activeServers.isEmpty)
+
+        let reloaded = AppModel(paths: paths, defaults: defaults)
+        await reloaded.load()
+        XCTAssertTrue(reloaded.topology.activeAccounts.contains { $0.id == accountID })
+        XCTAssertEqual(reloaded.topology.activeAuthorizations(for: accountID).first?.remoteState, .authorized)
+        XCTAssertTrue(reloaded.activeServers.isEmpty)
+    }
 }
