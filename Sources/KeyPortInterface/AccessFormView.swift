@@ -55,7 +55,7 @@ public struct AccessFormView: View {
                 }.buttonStyle(.plain)
                 if advanced {
                     HStack(spacing: 12) {
-                        Text("SSH 别名").frame(width: 44, alignment: .leading)
+                        Text("SSH 别名").fixedSize().frame(width: 44, alignment: .leading)
                         TextField("SSH 别名", text: $draft.alias, prompt: Text(draft.suggestedAlias + "（自动生成，可修改）").foregroundStyle(InterfaceStyle.color(0x677D98)))
                             .accessibilityLabel("SSH 别名").textFieldStyle(.plain).font(.system(size: 11))
                     }.font(.system(size: 11)).foregroundStyle(InterfaceStyle.muted).frame(height: 17)
