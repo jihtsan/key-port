@@ -1,0 +1,18 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 授权结果待核对 授权结果尚不确定；重试前必须先核对，不能直接重复安装。
+		3 image Description: 错误, ID: exclamationmark.circle
+		4 text 授权结果待核对 请求可能已经写入公钥，无法确认结果；先核对现状再决定是否安装。 检查后修改表单或重新验证；已有授权会先核对。 名称、地址与账户保留。密码已清空，不落盘保存。 授权结果尚不确定；重试前必须先核对，不能直接重复安装。
+		5 button 返回修改
+		6 button 重新验证
+		7 text 隔离模拟 · 无真实凭据与网络操作
+		8 menu button 模拟场景：授权结果未知, Description: 模拟场景
+9 menu bar
+	10 KeyPort Design Preview
+	11 Edit
+	12 View
+	13 Window
+	14 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise
