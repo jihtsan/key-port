@@ -5,6 +5,7 @@ struct GraphCanvasView: View {
     let snapshot: TopologyGraphSnapshot
     let nodeItems: [NodeWorkspaceItem]
     @Binding var selection: TopologyGraphNodeID?
+    @Binding var selectedEdgeID: String?
     @State private var zoom: CGFloat = 1
 
     var body: some View {
@@ -21,17 +22,52 @@ struct GraphCanvasView: View {
                                 var path = Path()
                                 path.move(to: from)
                                 path.addLine(to: to)
+                                let isSelected = selectedEdgeID == edge.id
                                 context.stroke(
                                     path,
-                                    with: .color(edge.status.level.tint.opacity(edge.isCandidate ? 0.85 : 0.55)),
+                                    with: .color(edge.status.level.tint.opacity(isSelected ? 1 : edge.isCandidate ? 0.85 : 0.55)),
                                     style: StrokeStyle(
-                                        lineWidth: edge.isCandidate ? 2 : 1.5,
+                                        lineWidth: isSelected ? 3 : edge.isCandidate ? 2 : 1.5,
                                         dash: edge.isCandidate ? [7, 5] : []
                                     )
+                                )
+
+                                var arrow = Path()
+                                let angle = atan2(to.y - from.y, to.x - from.x)
+                                let length: CGFloat = 9
+                                let wing: CGFloat = .pi / 6
+                                let left = CGPoint(
+                                    x: to.x - length * cos(angle - wing),
+                                    y: to.y - length * sin(angle - wing)
+                                )
+                                let right = CGPoint(
+                                    x: to.x - length * cos(angle + wing),
+                                    y: to.y - length * sin(angle + wing)
+                                )
+                                arrow.move(to: left)
+                                arrow.addLine(to: to)
+                                arrow.addLine(to: right)
+                                context.stroke(
+                                    arrow,
+                                    with: .color(edge.status.level.tint.opacity(isSelected ? 1 : 0.7)),
+                                    style: StrokeStyle(lineWidth: isSelected ? 2 : 1.25)
                                 )
                             }
                         }
                         .frame(width: canvasSize.width, height: canvasSize.height)
+
+                        ForEach(snapshot.edges) { edge in
+                            if let from = positions[edge.from], let to = positions[edge.to] {
+                                GraphEdgeHitTarget(
+                                    edge: edge,
+                                    from: from,
+                                    to: to,
+                                    isSelected: selectedEdgeID == edge.id
+                                ) {
+                                    selectedEdgeID = edge.id
+                                }
+                            }
+                        }
 
                         ForEach(snapshot.nodes) { node in
                             let selectionID = owningNodeID(for: node.id)
@@ -40,6 +76,7 @@ struct GraphCanvasView: View {
                                 item: nodeItems.first { $0.id == node.id },
                                 isSelected: selection == selectionID
                             ) {
+                                selectedEdgeID = nil
                                 selection = selectionID
                             }
                             .position(positions[node.id] ?? .zero)
@@ -79,12 +116,27 @@ struct GraphCanvasView: View {
 
                     Button("重置") { zoom = 1 }
                         .font(.caption)
+
+                    Button {
+                        zoom = fitZoom(for: geometry.size, canvasSize: canvasSize)
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help("适应画布")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .padding(14)
             }
         }
+    }
+
+    private func fitZoom(for available: CGSize, canvasSize: CGSize) -> CGFloat {
+        let horizontalInset: CGFloat = 56
+        let verticalInset: CGFloat = 72
+        let widthScale = max(0.65, (available.width - horizontalInset) / max(canvasSize.width, 1))
+        let heightScale = max(0.65, (available.height - verticalInset) / max(canvasSize.height, 1))
+        return min(1.8, max(0.65, min(widthScale, heightScale)))
     }
 
     private func owningNodeID(for nodeID: TopologyGraphNodeID) -> TopologyGraphNodeID {
@@ -95,6 +147,34 @@ struct GraphCanvasView: View {
             item.accountNodes.contains { $0.id == nodeID }
                 || item.services.contains { $0.id == nodeID }
         }?.id ?? nodeID
+    }
+}
+
+private struct GraphEdgeHitTarget: View {
+    let edge: TopologyGraphEdge
+    let from: CGPoint
+    let to: CGPoint
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Color.clear
+                .frame(
+                    width: max(abs(to.x - from.x), 44),
+                    height: max(abs(to.y - from.y), 44)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .position(
+            x: (from.x + to.x) / 2,
+            y: (from.y + to.y) / 2
+        )
+        .accessibilityLabel(
+            "\(edge.label.isEmpty ? edge.kind.rawValue : edge.label)，\(edge.status.level.displayTitle)"
+        )
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

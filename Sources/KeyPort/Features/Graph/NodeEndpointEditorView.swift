@@ -25,7 +25,7 @@ struct NodeEndpointEditorView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("为 \(nodeName) 添加访问地址")
+            Text(draft.endpointID == nil ? "为 \(nodeName) 添加访问地址" : "编辑 \(nodeName) 的访问地址")
                 .font(.title2.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.top, .horizontal])
@@ -53,6 +53,18 @@ struct NodeEndpointEditorView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Section("身份核对") {
+                    Label(
+                        draft.endpointID == nil
+                            ? "保存后可从网络路径菜单核验主机身份。"
+                            : "修改地址或端口后，原有主机身份和连接检测会失效，需要重新核验。",
+                        systemImage: "checkmark.shield"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let saveError {

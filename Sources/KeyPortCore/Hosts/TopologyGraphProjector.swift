@@ -184,6 +184,7 @@ public struct TopologyGraphProjector: Sendable {
                 kind: .deviceAccess,
                 label: identity.alias.isEmpty ? identity.username : identity.alias,
                 status: status,
+                detectedAt: authorization.lastVerifiedAt,
                 supportingReferences: [
                     key.entityReference,
                     authorization.entityReference,
@@ -295,7 +296,6 @@ public struct TopologyGraphProjector: Sendable {
         let activeServices = topology.services.filter { !$0.isDeleted }
         let activeAccounts = topology.sshAccounts.filter { !$0.isDeleted }
         let activeConnectionProfiles = topology.sshConnectionProfiles.filter { !$0.isDeleted }
-        let activeTrusts = topology.hostKeyTrusts.filter { !$0.isDeleted }
         let activeTailscaleIdentities = topology.tailscaleNodes.filter { !$0.isDeleted }
         let activeAuthorizations = topology.authorizations.filter {
             !$0.isDeleted && $0.relationState == .active
@@ -356,7 +356,13 @@ public struct TopologyGraphProjector: Sendable {
             let nodeEndpoints = activeEndpoints.filter { $0.nodeID == node.id && $0.serviceID == nil }
             let sshEndpoints = nodeEndpoints.filter { $0.protocol == .ssh }
             let endpointIDs = Set(sshEndpoints.map(\.id))
-            let nodeTrusts = activeTrusts.filter { endpointIDs.contains($0.endpointID) }
+            // Replaced trust records are tombstones by design. Keep those
+            // blocking facts visible in the graph instead of treating a
+            // changed host identity as an unknown, unconfigured endpoint.
+            let nodeTrusts = topology.hostKeyTrusts.filter {
+                endpointIDs.contains($0.endpointID)
+                    && (!$0.isDeleted || $0.state == .replaced || $0.state == .pendingReview)
+            }
             let trust: TopologyGraphHostTrust
             if nodeTrusts.contains(where: { $0.state == .replaced }) {
                 trust = .mismatch
@@ -392,6 +398,7 @@ public struct TopologyGraphProjector: Sendable {
             if reachability == .unreachable { reasons.append(.unreachable) }
             if node.isSSHHost,
                let currentProfile,
+               !(accountsByNode[node.id] ?? []).isEmpty,
                !(accountsByNode[node.id] ?? []).contains(where: { account in
                    activeAuthorizations.contains { authorization in
                        guard authorization.accountID == account.id,
@@ -411,18 +418,44 @@ public struct TopologyGraphProjector: Sendable {
             )
         }
 
-        func verificationStatus(for accountID: UUID, deviceID: String) -> TopologyGraphVerificationStatus {
-            let latest = topology.accessVerifications
-                .filter { $0.accountID == accountID && $0.deviceID == deviceID }
-                .max {
-                    ($0.lastCheckedAt ?? .distantPast) < ($1.lastCheckedAt ?? .distantPast)
-                }
+        func latestVerification(
+            for accountID: UUID,
+            deviceID: String,
+            connectionProfileID: UUID?
+        ) -> AccessVerification? {
+            topology.latestAccessVerification(
+                for: accountID,
+                deviceID: deviceID,
+                profileID: connectionProfileID
+            )
+        }
+
+        func verificationStatus(
+            for accountID: UUID,
+            deviceID: String,
+            connectionProfileID: UUID?
+        ) -> TopologyGraphVerificationStatus {
+            let latest = latestVerification(
+                for: accountID,
+                deviceID: deviceID,
+                connectionProfileID: connectionProfileID
+            )
             switch latest?.status {
             case .authorized: return .succeeded
             case .checking, .syncing: return .checking
-            case .keyAuthenticationFailed, .passwordAuthenticationFailed: return .failed
+            case .keyAuthenticationFailed, .passwordAuthenticationFailed,
+                 .authorizationConflict, .authorizationWrittenAwaitingVerification,
+                 .unreachable: return .failed
             default: return .unknown
             }
+        }
+
+        func verificationStatus(for accountID: UUID, deviceID: String) -> TopologyGraphVerificationStatus {
+            verificationStatus(
+                for: accountID,
+                deviceID: deviceID,
+                connectionProfileID: nil
+            )
         }
 
         func accessStatus(
@@ -469,6 +502,136 @@ public struct TopologyGraphProjector: Sendable {
                 verification: verification,
                 sync: .clean,
                 reasons: reasons
+            )
+        }
+
+        func routeEvidence(
+            for profile: SSHConnectionProfile,
+            nodeID: UUID
+        ) -> (endpoint: Endpoint?, status: TopologyGraphRouteStatus) {
+            do {
+                let endpoints = try SSHRoutePolicyResolver.endpoints(
+                    for: profile,
+                    nodeID: nodeID,
+                    in: topology
+                )
+                return (
+                    endpoints.first,
+                    endpoints.isEmpty ? .unavailable : .available
+                )
+            } catch {
+                return (nil, .conflict)
+            }
+        }
+
+        func reachability(for endpointID: UUID?) -> TopologyGraphReachability {
+            guard let endpointID, let currentDeviceID else { return .unknown }
+            let observations = topology.reachabilityObservations.filter {
+                $0.observerDeviceID == currentDeviceID && $0.endpointID == endpointID
+            }
+            if observations.contains(where: \.wasReachable) {
+                return .reachable
+            }
+            return observations.isEmpty ? .unknown : .unreachable
+        }
+
+        func endpointHostTrust(
+            for endpointID: UUID?,
+            fallback: TopologyGraphHostTrust
+        ) -> TopologyGraphHostTrust {
+            guard let endpointID else { return fallback }
+            let trusts = topology.hostKeyTrusts.filter {
+                $0.endpointID == endpointID
+                    && (!$0.isDeleted || $0.state == .replaced || $0.state == .pendingReview)
+            }
+            if trusts.contains(where: { $0.state == .replaced }) { return .mismatch }
+            if trusts.contains(where: { $0.state == .pendingReview }) { return .pending }
+            if trusts.contains(where: { $0.state == .confirmed }) { return .trusted }
+            return .unknown
+        }
+
+        func pathAccessStatus(
+            node: Node,
+            account: SSHAccount,
+            sourceProfile: WorkspaceDeviceProfile,
+            connectionProfile: SSHConnectionProfile,
+            endpoint: Endpoint?,
+            routeStatus: TopologyGraphRouteStatus,
+            authorizations: [SSHAuthorization]
+        ) -> (status: TopologyGraphStatus, detectedAt: Date?) {
+            let nodeStatus = nodeStatus(node)
+            var reasons = nodeStatus.reasons.filter { $0 != .remoteAuthorizationPending }
+            if routeStatus == .conflict {
+                reasons.append(.routeConflict)
+            } else if routeStatus == .unavailable {
+                reasons.append(.noRoute)
+            }
+
+            let remoteAuthorization: TopologyGraphRemoteAuthorization
+            if authorizations.contains(where: { $0.remoteState == .authorized }) {
+                remoteAuthorization = .authorized
+            } else if authorizations.contains(where: { $0.remoteState == .revoked }) {
+                remoteAuthorization = .revoked
+                reasons.append(.remoteAuthorizationRevoked)
+            } else {
+                remoteAuthorization = .unknown
+            }
+
+            let sourceIsCurrent = sourceProfile.id == currentDeviceID
+            let localKeys = authorizations.compactMap { keysByID[$0.keyID] }
+                .filter { $0.deviceID == sourceProfile.id }
+            let localKey: TopologyGraphLocalKeyStatus
+            if !sourceIsCurrent {
+                localKey = .unknown
+            } else if localKeys.contains(where: { $0.isLocallyAvailable }) {
+                localKey = .available
+            } else if localKeys.contains(where: { $0.isInAgent }) {
+                localKey = .agentOnly
+            } else if !localKeys.isEmpty {
+                localKey = .missing
+                reasons.append(.missingLocalKey)
+            } else {
+                localKey = .unknown
+            }
+
+            let latest = latestVerification(
+                for: account.id,
+                deviceID: sourceProfile.id,
+                connectionProfileID: connectionProfile.id
+            )
+            let verification: TopologyGraphVerificationStatus
+            switch latest?.status {
+            case .authorized: verification = .succeeded
+            case .checking, .syncing: verification = .checking
+            case .keyAuthenticationFailed, .passwordAuthenticationFailed,
+                 .authorizationConflict, .authorizationWrittenAwaitingVerification,
+                 .unreachable: verification = .failed
+            default: verification = .unknown
+            }
+            if verification == .checking { reasons.append(.verificationPending) }
+            if verification == .failed { reasons.append(.verificationFailed) }
+            if sourceIsCurrent,
+               remoteAuthorization == .authorized,
+               verification == .unknown {
+                reasons.append(.verificationPending)
+            }
+
+            let reachability = sourceIsCurrent ? reachability(for: endpoint?.id) : .unknown
+            let hostTrust = endpointHostTrust(for: endpoint?.id, fallback: nodeStatus.hostTrust)
+            let status = TopologyGraphStatus(
+                reachability: reachability,
+                hostTrust: hostTrust,
+                route: routeStatus,
+                localKey: localKey,
+                remoteAuthorization: remoteAuthorization,
+                verification: verification,
+                sync: nodeStatus.sync,
+                reasons: reasons
+            )
+            let authorizationDate = authorizations.compactMap(\.lastVerifiedAt).max()
+            return (
+                status,
+                latest?.detectedAt ?? authorizationDate
             )
         }
 
@@ -553,64 +716,78 @@ public struct TopologyGraphProjector: Sendable {
         }
 
         var edges: [TopologyGraphEdge] = []
-        for profile in activeProfiles {
-            guard nodesByID[profile.nodeID] != nil else { continue }
-            let targetNodes = activeNodes.filter { node in
-                node.isSSHHost && node.id != profile.nodeID && !(accountsByNode[node.id] ?? []).isEmpty
-            }
-            for target in targetNodes {
-                let accounts = accountsByNode[target.id] ?? []
-                let authorizedAccounts = accounts.filter { account in
-                    activeAuthorizations.contains { authorization in
-                        guard authorization.accountID == account.id,
-                              authorization.remoteState == .authorized,
-                              authorization.relationState == .active else { return false }
-                        return keysByID[authorization.keyID]?.deviceID == profile.id
-                    }
+        for sourceProfile in activeProfiles {
+            guard nodesByID[sourceProfile.nodeID] != nil else { continue }
+            let source = TopologyGraphNodeID.node(sourceProfile.nodeID)
+            let sourceIsCurrent = sourceProfile.id == currentDeviceID
+
+            // A graph edge is one durable SSH connection profile. Addresses
+            // and accounts enrich that edge; they are never promoted to
+            // primary nodes or inferred into a relationship on their own.
+            for connectionProfile in activeConnectionProfiles {
+                guard let account = activeAccounts.first(where: { $0.id == connectionProfile.accountID }),
+                      let target = nodesByID[account.nodeID],
+                      target.isSSHHost,
+                      target.id != sourceProfile.nodeID else { continue }
+
+                let pathAuthorizations = activeAuthorizations.filter { authorization in
+                    authorization.accountID == account.id
+                        && keysByID[authorization.keyID]?.deviceID == sourceProfile.id
                 }
-                let source = TopologyGraphNodeID.node(profile.nodeID)
-                let destination = TopologyGraphNodeID.node(target.id)
-                let label = (authorizedAccounts.isEmpty ? accounts : authorizedAccounts)
-                    .map { $0.label.isEmpty ? $0.username : $0.label }
-                    .sorted()
-                    .joined(separator: ", ")
-                if !authorizedAccounts.isEmpty {
-                    let account = authorizedAccounts[0]
-                    edges.append(TopologyGraphEdge(
-                        id: "access:\(profile.id):\(target.id.uuidString.lowercased())",
-                        from: source,
-                        to: destination,
-                        kind: .nodeAccess,
-                        label: label,
-                        status: accessStatus(
-                            node: target,
-                            account: account,
-                            profile: profile,
-                            authorized: activeAuthorizations.filter { $0.accountID == account.id }
-                        )
-                    ))
-                } else if profile.id == currentDeviceID {
-                    var status = nodeStatus(target)
+                let hasAuthorizedPath = pathAuthorizations.contains {
+                    $0.remoteState == .authorized
+                }
+                let hasRemoteEvidence = !pathAuthorizations.isEmpty
+                guard sourceIsCurrent || hasRemoteEvidence else { continue }
+
+                let route = routeEvidence(for: connectionProfile, nodeID: account.nodeID)
+                let path = pathAccessStatus(
+                    node: target,
+                    account: account,
+                    sourceProfile: sourceProfile,
+                    connectionProfile: connectionProfile,
+                    endpoint: route.endpoint,
+                    routeStatus: route.status,
+                    authorizations: pathAuthorizations
+                )
+                let isCandidate = !hasAuthorizedPath
+                    && pathAuthorizations.allSatisfy { $0.remoteState != .revoked }
+                var status = path.status
+                if isCandidate {
                     status = TopologyGraphStatus(
                         reachability: status.reachability,
                         hostTrust: status.hostTrust,
                         route: status.route,
-                        localKey: .unknown,
-                        remoteAuthorization: .unknown,
-                        verification: .unknown,
-                        sync: .clean,
+                        localKey: status.localKey,
+                        remoteAuthorization: status.remoteAuthorization,
+                        verification: status.verification,
+                        sync: status.sync,
                         reasons: status.reasons + [.candidateAccess]
                     )
-                    edges.append(TopologyGraphEdge(
-                        id: "candidate:\(profile.id):\(target.id.uuidString.lowercased())",
-                        from: source,
-                        to: destination,
-                        kind: .candidateAccess,
-                        label: accounts.count == 1 ? "待授权 · \(label)" : "待授权账户 \(accounts.count) 个",
-                        isCandidate: true,
-                        status: status
-                    ))
                 }
+                var supportingReferences: [HostV6.EntityReference] = [
+                    .device(sourceProfile.id),
+                    .sshIdentity(account.id),
+                ]
+                if let endpoint = route.endpoint {
+                    supportingReferences.append(.address(endpoint.id))
+                }
+                supportingReferences.append(contentsOf: pathAuthorizations.map {
+                    .authorization($0.id)
+                })
+                edges.append(TopologyGraphEdge(
+                    id: "access:\(sourceProfile.id):\(connectionProfile.id.uuidString.lowercased())",
+                    from: source,
+                    to: .node(target.id),
+                    kind: isCandidate ? .candidateAccess : .nodeAccess,
+                    label: connectionProfile.sshAlias,
+                    isCandidate: isCandidate,
+                    status: status,
+                    connectionProfileID: connectionProfile.id,
+                    endpointID: route.endpoint?.id,
+                    detectedAt: path.detectedAt,
+                    supportingReferences: supportingReferences
+                ))
             }
         }
 

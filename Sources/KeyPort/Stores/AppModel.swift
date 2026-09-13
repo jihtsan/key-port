@@ -123,10 +123,25 @@ struct ServerDraft: Sendable {
 }
 
 struct NodeEndpointDraft: Sendable {
-    var address = ""
-    var label = ""
-    var port = 22
-    var networkScope: NetworkScope = .publicNetwork
+    var endpointID: UUID?
+    var address: String
+    var label: String
+    var port: Int
+    var networkScope: NetworkScope
+
+    init(
+        endpointID: UUID? = nil,
+        address: String = "",
+        label: String = "",
+        port: Int = 22,
+        networkScope: NetworkScope = .publicNetwork
+    ) {
+        self.endpointID = endpointID
+        self.address = address
+        self.label = label
+        self.port = port
+        self.networkScope = networkScope
+    }
 }
 
 /// Account-only editor state. Network coordinates and SSH aliases belong to
@@ -905,6 +920,23 @@ final class AppModel {
         return NodeEndpointDraft()
     }
 
+    func nodeEndpointDraft(
+        forNodeID nodeID: UUID,
+        endpointID: UUID
+    ) -> NodeEndpointDraft? {
+        guard let endpoint = topology.endpoint(id: endpointID),
+              endpoint.nodeID == nodeID,
+              endpoint.serviceID == nil,
+              endpoint.protocol == .ssh else { return nil }
+        return NodeEndpointDraft(
+            endpointID: endpoint.id,
+            address: endpoint.address,
+            label: endpoint.label,
+            port: Int(endpoint.port),
+            networkScope: endpoint.networkScope
+        )
+    }
+
     func sshAccountDraft(
         forNodeID nodeID: UUID,
         accountID: UUID? = nil
@@ -1408,47 +1440,162 @@ final class AppModel {
 
         let port = UInt16(draft.port)
         let normalizedAddress = TopologyStableID.normalize(address)
-        let existingEndpointIndex = topology.endpoints.firstIndex { endpoint in
+        let matchingEndpointIndex = topology.endpoints.firstIndex { endpoint in
             endpoint.nodeID == nodeID
                 && endpoint.serviceID == nil
                 && endpoint.protocol == .ssh
                 && endpoint.port == port
                 && TopologyStableID.normalize(endpoint.address) == normalizedAddress
         }
-        if let existingEndpointIndex {
-            guard topology.endpoints[existingEndpointIndex].source != .tailscale else {
+
+        if let endpointID = draft.endpointID {
+            guard let endpointIndex = topology.endpoints.firstIndex(where: {
+                $0.id == endpointID
+                    && $0.nodeID == nodeID
+                    && $0.serviceID == nil
+                    && $0.protocol == .ssh
+                    && !$0.isDeleted
+            }) else {
+                throw SSHServiceError.operationFailed("要编辑的网络路径已不存在。")
+            }
+            guard topology.endpoints[endpointIndex].source != .tailscale else {
                 throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请直接使用自动发现的网络要求。")
             }
-            topology.endpoints[existingEndpointIndex].isDeleted = false
-            topology.endpoints[existingEndpointIndex].label = label.isEmpty ? address : label
-            topology.endpoints[existingEndpointIndex].networkScope = draft.networkScope
-            topology.endpoints[existingEndpointIndex].source = .manual
+            guard matchingEndpointIndex == nil || matchingEndpointIndex == endpointIndex else {
+                throw SSHServiceError.operationFailed("这个节点已经存在相同地址和端口的网络路径。")
+            }
+
+            let previous = topology.endpoints[endpointIndex]
+            let identityChanged = TopologyStableID.normalize(previous.address) != normalizedAddress
+                || previous.port != port
+            var updated = previous
+            updated.address = address
+            updated.label = label.isEmpty ? address : label
+            updated.port = port
+            updated.networkScope = draft.networkScope
+            updated.source = .manual
+            updated.isDeleted = false
+            topology.endpoints[endpointIndex] = updated
+
+            if identityChanged || previous.networkScope != draft.networkScope {
+                topology.reachabilityObservations.removeAll { $0.endpointID == endpointID }
+            }
+            if identityChanged {
+                for trustIndex in topology.hostKeyTrusts.indices where topology.hostKeyTrusts[trustIndex].endpointID == endpointID {
+                    topology.hostKeyTrusts[trustIndex].state = .replaced
+                    topology.hostKeyTrusts[trustIndex].replacedAt = .now
+                    topology.hostKeyTrusts[trustIndex].lastSeenAt = .now
+                    topology.hostKeyTrusts[trustIndex].isDeleted = true
+                }
+            }
+            invalidateAccessVerifications(
+                forEndpointID: endpointID,
+                detail: identityChanged
+                    ? "访问地址已修改，主机身份需要重新核验。"
+                    : "网络路径已修改，需要重新检查连接。"
+            )
         } else {
-            let nextPriority = (topology.endpoints(for: nodeID).map(\.priority).max() ?? -1) + 1
-            topology.endpoints.append(Endpoint(
-                id: TopologyStableID.nodeEndpoint(
+            if let matchingEndpointIndex {
+                guard topology.endpoints[matchingEndpointIndex].source != .tailscale else {
+                    throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请直接使用自动发现的网络要求。")
+                }
+                let previous = topology.endpoints[matchingEndpointIndex]
+                topology.endpoints[matchingEndpointIndex].isDeleted = false
+                topology.endpoints[matchingEndpointIndex].label = label.isEmpty ? address : label
+                topology.endpoints[matchingEndpointIndex].networkScope = draft.networkScope
+                topology.endpoints[matchingEndpointIndex].source = .manual
+                if previous.isDeleted || previous.networkScope != draft.networkScope {
+                    topology.reachabilityObservations.removeAll { $0.endpointID == previous.id }
+                    invalidateAccessVerifications(
+                        forEndpointID: previous.id,
+                        detail: previous.isDeleted
+                            ? "访问路径已恢复，需要重新检查连接。"
+                            : "网络路径已修改，需要重新检查连接。"
+                    )
+                }
+            } else {
+                let nextPriority = (topology.endpoints(for: nodeID).map(\.priority).max() ?? -1) + 1
+                topology.endpoints.append(Endpoint(
+                    id: TopologyStableID.nodeEndpoint(
+                        nodeID: nodeID,
+                        address: address,
+                        port: port,
+                        protocol: .ssh
+                    ),
                     nodeID: nodeID,
                     address: address,
+                    label: label.isEmpty ? address : label,
                     port: port,
-                    protocol: .ssh
-                ),
-                nodeID: nodeID,
-                address: address,
-                label: label.isEmpty ? address : label,
-                port: port,
-                protocol: .ssh,
-                networkScope: draft.networkScope,
-                source: .manual,
-                priority: nextPriority
-            ))
+                    protocol: .ssh,
+                    networkScope: draft.networkScope,
+                    source: .manual,
+                    priority: nextPriority
+                ))
+            }
         }
 
         var node = topology.nodes[nodeIndex]
         node.roles = Array(Set(node.roles + [.sshHost])).sorted { $0.rawValue < $1.rawValue }
         node.updatedAt = .now
         topology.nodes[nodeIndex] = node
-        appendAudit(category: "endpoint", action: "create", targetID: nodeID.uuidString, result: draft.networkScope.rawValue)
+        let action = draft.endpointID == nil ? "create" : "update"
+        snapshot = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDevice?.id
+                ?? defaults.string(forKey: "KeyPort.deviceID")
+                ?? "local"
+        )
+        appendAudit(category: "endpoint", action: action, targetID: nodeID.uuidString, result: draft.networkScope.rawValue)
         await persist()
+        await writeConfig()
+    }
+
+    func deleteNodeEndpoint(_ endpointID: UUID, forNodeID nodeID: UUID) async throws {
+        try await requireLegacyMutation()
+        guard let endpointIndex = topology.endpoints.firstIndex(where: {
+            $0.id == endpointID
+                && $0.nodeID == nodeID
+                && $0.serviceID == nil
+                && $0.protocol == .ssh
+                && !$0.isDeleted
+        }) else {
+            throw SSHServiceError.operationFailed("要删除的网络路径已不存在。")
+        }
+        guard topology.endpoints[endpointIndex].source != .tailscale else {
+            throw SSHServiceError.operationFailed("这个地址由 Tailscale 自动维护，请从自动发现中管理。")
+        }
+
+        let referencingProfiles = topology.activeConnectionProfiles.filter { profile in
+            profile.routePolicy.fixedEndpointID == endpointID
+                || profile.candidateEndpointIDs.contains(endpointID)
+        }
+        guard referencingProfiles.isEmpty else {
+            throw SSHServiceError.operationFailed(
+                "还有 \(referencingProfiles.count) 个 SSH 连接配置使用这条路径，请先编辑它们的路径策略。"
+            )
+        }
+
+        topology.endpoints[endpointIndex].isDeleted = true
+        for trustIndex in topology.hostKeyTrusts.indices where topology.hostKeyTrusts[trustIndex].endpointID == endpointID {
+            topology.hostKeyTrusts[trustIndex].state = .replaced
+            topology.hostKeyTrusts[trustIndex].replacedAt = .now
+            topology.hostKeyTrusts[trustIndex].lastSeenAt = .now
+            topology.hostKeyTrusts[trustIndex].isDeleted = true
+        }
+        topology.reachabilityObservations.removeAll { $0.endpointID == endpointID }
+        invalidateAccessVerifications(
+            forEndpointID: endpointID,
+            detail: "访问路径已删除，需要选择其他路径并重新检查连接。"
+        )
+        snapshot = TopologySnapshotMigration.legacyProjection(
+            from: topology,
+            currentDeviceID: currentDevice?.id
+                ?? defaults.string(forKey: "KeyPort.deviceID")
+                ?? "local"
+        )
+        appendAudit(category: "endpoint", action: "delete", targetID: endpointID.uuidString, result: "tombstoned")
+        await persist()
+        await writeConfig()
     }
 
     func tailscaleServerDraft(
@@ -2246,6 +2393,36 @@ final class AppModel {
         let siblingProfiles = accountID(forProfileID: id).map { accountID in
             profileIDs(forAccountID: accountID).filter { $0 != id }
         } ?? []
+
+        if hostV6Runtime == nil,
+           let profileIndex = topology.sshConnectionProfiles.firstIndex(where: {
+               $0.id == id && !$0.isDeleted
+           }) {
+            topology.sshConnectionProfiles[profileIndex].isDeleted = true
+            topology.sshConnectionProfiles[profileIndex].updatedAt = .now
+            topology.sshConnectionProfiles[profileIndex].version += 1
+            if siblingProfiles.isEmpty {
+                for credentialID in credentialIDs {
+                    try? await keychain.deleteServerCredential(serverID: credentialID)
+                    serverIDsWithStoredPassword.remove(credentialID)
+                    serverIDsWithSynchronizablePassword.remove(credentialID)
+                }
+            }
+            serverIDsWithStoredPassword.remove(id)
+            serverIDsWithSynchronizablePassword.remove(id)
+            snapshot = TopologySnapshotMigration.legacyProjection(
+                from: topology,
+                currentDeviceID: currentDevice?.id
+                    ?? defaults.string(forKey: "KeyPort.deviceID")
+                    ?? "local"
+            )
+            appendAudit(category: "server", action: "delete", targetID: id.uuidString, result: "tombstoned")
+            if selectedServerID == id { selectedServerID = activeServers.first?.id }
+            await persist()
+            await writeConfig()
+            return
+        }
+
         snapshot.servers[index].isDeleted = true
         snapshot.servers[index].updatedAt = .now
         snapshot.servers[index].version += 1
@@ -3267,6 +3444,14 @@ final class AppModel {
               let parsed = PublicKeyParser.parse(targetKey.publicKey) else { return }
         guard let routeServer = sshOperationServer(for: server) else {
             markSSHRouteUnavailable(serverID: server.id, kind: .key)
+            appendAudit(
+                category: "authorization",
+                action: "revoke",
+                targetID: server.id.uuidString,
+                result: "route-unavailable",
+                level: .warning
+            )
+            await persist()
             return
         }
         let transport = sshTransport(forProfileID: server.id)
@@ -3301,7 +3486,21 @@ final class AppModel {
             appendAudit(category: "authorization", action: "revoke", targetID: server.id.uuidString, result: "fingerprint-verified")
             await writeConfig()
             await persist()
-        } catch { present(error) }
+        } catch {
+            // Keep the authorization relation unchanged: a failed remote
+            // delete is not evidence that the key was revoked. Persist a
+            // stable audit result so the failure remains visible after the
+            // transient error alert is dismissed.
+            appendAudit(
+                category: "authorization",
+                action: "revoke",
+                targetID: server.id.uuidString,
+                result: "remote-failed-state-preserved",
+                level: .warning
+            )
+            await persist()
+            present(error)
+        }
     }
 
     func synchronizeCloud(userInitiated: Bool = true) async {
@@ -5068,6 +5267,17 @@ final class AppModel {
             snapshot.servers[index].passwordCheck = check
         case .key:
             snapshot.servers[index].keyCheck = check
+        }
+    }
+
+    private func invalidateAccessVerifications(forEndpointID endpointID: UUID, detail: String) {
+        for index in topology.accessVerifications.indices where topology.accessVerifications[index].endpointID == endpointID {
+            topology.accessVerifications[index].status = .needsAuthorization
+            topology.accessVerifications[index].statusDetail = detail
+            topology.accessVerifications[index].lastCheckedAt = nil
+            topology.accessVerifications[index].passwordCheck = nil
+            topology.accessVerifications[index].keyCheck = nil
+            topology.accessVerifications[index].machineConfigurationRefreshAttemptedAt = nil
         }
     }
 
