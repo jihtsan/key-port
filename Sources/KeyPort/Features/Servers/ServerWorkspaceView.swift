@@ -29,8 +29,9 @@ struct ServerWorkspaceView: View {
     let onAddDiscoveredConnection: (DiscoveredSSHConnection) -> Void
     let onAddAccount: (UUID) -> Void
     let onAddAccountForNode: (UUID) -> Void
-    let onSelectNode: (UUID) -> Void
     let onEdit: (UUID) -> Void
+
+    @State private var showsDiscovery = false
 
     var body: some View {
         @Bindable var model = model
@@ -49,6 +50,12 @@ struct ServerWorkspaceView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 170)
+                Button {
+                    showsDiscovery = true
+                } label: {
+                    Label("发现与导入", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.bordered)
                 Button(action: onAddServer) {
                     Label("添加服务器", systemImage: "plus")
                 }
@@ -79,10 +86,7 @@ struct ServerWorkspaceView: View {
                         model: model,
                         onAddAccount: onAddAccount,
                         onEdit: onEdit,
-                        onAddDiscoveredServer: onAddDiscoveredServer,
-                        onAddDiscoveredConnection: onAddDiscoveredConnection,
-                        onAddAccountForNode: onAddAccountForNode,
-                        onSelectNode: onSelectNode
+                        onAddAccountForNode: onAddAccountForNode
                     )
                 case .graph:
                     GraphWorkspaceView(model: model, showsIssueFilter: false)
@@ -90,6 +94,13 @@ struct ServerWorkspaceView: View {
             }
         }
         .navigationTitle("服务器")
+        .sheet(isPresented: $showsDiscovery) {
+            ServerDiscoveryView(
+                model: model,
+                onAddDiscoveredServer: onAddDiscoveredServer,
+                onAddDiscoveredConnection: onAddDiscoveredConnection
+            )
+        }
         .onAppear { synchronizeWorkspace() }
         .task { await model.refreshTailscale() }
         .onChange(of: model.serverWorkspaceMode) { _, mode in

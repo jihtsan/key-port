@@ -9,7 +9,6 @@ struct NodeWorkspaceDetailView: View {
     let onConfigureAccess: (UUID, UUID?, UUID?) -> Void
 
     @State private var selectedEndpointID: UUID?
-    @State private var showsAccountInspector = true
     @State private var pendingDeletion: ServerConnection?
 
     var body: some View {
@@ -64,6 +63,9 @@ struct NodeWorkspaceDetailView: View {
                     onEditConnectionProfile: { profileID in
                         configureAccess(profileID: profileID, in: item)
                     },
+                    onDeleteConnectionProfile: { account in
+                        pendingDeletion = account
+                    },
                     onCopyCommand: { account in
                         model.copySSHCommand(
                             serverID: account.id,
@@ -87,55 +89,6 @@ struct NodeWorkspaceDetailView: View {
             }
         }
         .navigationTitle(item?.node.title ?? "服务器")
-        .inspector(isPresented: $showsAccountInspector) {
-            NodeAccountInspectorView(
-                account: item.flatMap(selectedAccount(in:)),
-                endpoint: item.flatMap(selectedEndpoint(in:)),
-                isDefaultAccount: item.flatMap { selectedItem in
-                    guard let account = selectedAccount(in: selectedItem) else { return nil }
-                    return selectedItem.accounts.first?.id == account.id
-                } ?? false,
-                hasStoredPassword: item
-                    .flatMap(selectedAccount(in:))
-                    .map { model.hasStoredPassword(serverID: $0.id) } ?? false,
-                isBusy: model.isBusy,
-                isReadOnly: model.isMetadataReadOnly,
-                onTestConnection: {
-                    guard let item else { return }
-                    testConnection(in: item)
-                },
-                onOpenTerminal: {
-                    guard let item else { return }
-                    openTerminal(in: item)
-                },
-                onCopyCommand: {
-                    guard let item, let account = selectedAccount(in: item) else { return }
-                    model.copySSHCommand(
-                        serverID: account.id,
-                        endpoint: selectedEndpoint(in: item)
-                    )
-                },
-                onEdit: { account in
-                    guard let item else { return }
-                    configureAccess(profileID: account.id, in: item)
-                },
-                onDelete: { account in pendingDeletion = account }
-            )
-            .inspectorColumnWidth(min: 260, ideal: 300, max: 340)
-        }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    showsAccountInspector.toggle()
-                } label: {
-                    Label(
-                        showsAccountInspector ? "隐藏连接配置检查器" : "显示连接配置检查器",
-                        systemImage: "sidebar.right"
-                    )
-                }
-                .help(showsAccountInspector ? "隐藏连接配置检查器" : "显示连接配置检查器")
-            }
-        }
         .confirmationDialog(
             "要删除这个 SSH 连接配置吗？",
             isPresented: Binding(
@@ -296,6 +249,7 @@ private struct NodeWorkspaceContentView: View {
     let connectionProfileCount: (UUID) -> Int
     let onEditSSHAccount: (UUID) -> Void
     let onEditConnectionProfile: (UUID) -> Void
+    let onDeleteConnectionProfile: (ServerConnection) -> Void
     let onCopyCommand: (ServerConnection) -> Void
 
     var body: some View {
@@ -345,7 +299,8 @@ private struct NodeWorkspaceContentView: View {
                             onSelectAccount(account.id)
                             onTestConnection()
                         },
-                        onCopyCommand: onCopyCommand
+                        onCopyCommand: onCopyCommand,
+                        onDelete: onDeleteConnectionProfile
                     )
 
                     NodeWorkspaceRoutesSection(

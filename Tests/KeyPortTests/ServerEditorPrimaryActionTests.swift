@@ -1,51 +1,38 @@
 @testable import KeyPort
 import XCTest
 
-final class ServerEditorPrimaryActionTests: XCTestCase {
-    func testPasswordlessEditorStartsWithConnectionTest() {
-        XCTAssertEqual(
-            serverEditorPrimaryAction(
-                offersPasswordlessSetup: true,
-                passwordValidationPassed: false,
-                metadataOnlySaveAllowed: false
-            ),
-            .testConnection
-        )
+final class ServerAccessFormTests: XCTestCase {
+    func testAccessFormOnlyMarksNetworkPhasesAsRunning() {
+        XCTAssertTrue(ServerAccessFormPhase.checking.isRunning)
+        XCTAssertTrue(ServerAccessFormPhase.authorizing.isRunning)
+        XCTAssertFalse(ServerAccessFormPhase.hostKeyConfirmation.isRunning)
+        XCTAssertFalse(ServerAccessFormPhase.succeeded.isRunning)
     }
 
-    func testSuccessfulPasswordCheckTurnsIntoSaveAndAuthorize() {
-        XCTAssertEqual(
-            serverEditorPrimaryAction(
-                offersPasswordlessSetup: true,
-                passwordValidationPassed: true,
-                metadataOnlySaveAllowed: false
-            ),
-            .saveAndAuthorize
+    func testFirstAccessSubmissionCanKeepPasswordEphemeral() {
+        let submission = ServerEditorSubmission(
+            draft: ServerDraft(),
+            password: "one-time-password",
+            synchronizable: false,
+            savePassword: false,
+            confirmedHostKeys: [],
+            passwordCheck: nil,
+            machineConfiguration: nil
         )
+
+        XCTAssertFalse(submission.savePassword)
     }
 
-    func testMetadataOnlyEditCanStillSaveWithoutConnectionTest() {
-        XCTAssertEqual(
-            serverEditorPrimaryAction(
-                offersPasswordlessSetup: false,
-                passwordValidationPassed: false,
-                metadataOnlySaveAllowed: true
-            ),
-            .save
+    func testLegacySubmissionDefaultsToSavingForCompatibility() {
+        let submission = ServerEditorSubmission(
+            draft: ServerDraft(),
+            password: "password",
+            synchronizable: false,
+            confirmedHostKeys: [],
+            passwordCheck: nil,
+            machineConfiguration: nil
         )
-    }
 
-    func testPasswordEntryStartsWithPasswordVerification() {
-        XCTAssertEqual(
-            passwordEntryPrimaryAction(canAuthorize: true, validationPassed: false),
-            .verifyPassword
-        )
-    }
-
-    func testPasswordEntryTurnsIntoSaveAndAuthorizeAfterVerification() {
-        XCTAssertEqual(
-            passwordEntryPrimaryAction(canAuthorize: true, validationPassed: true),
-            .saveAndAuthorize
-        )
+        XCTAssertTrue(submission.savePassword)
     }
 }
