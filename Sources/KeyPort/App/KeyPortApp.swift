@@ -4,6 +4,10 @@ import Network
 import OSLog
 import SwiftUI
 
+extension Notification.Name {
+    static let keyPortNetworkEpochChanged = Notification.Name("KeyPort.networkEpochChanged")
+}
+
 @main
 struct KeyPortApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -154,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 _ = await tunnelRegistry.networkEpochChanged()
+                NotificationCenter.default.post(name: .keyPortNetworkEpochChanged, object: nil)
             }
         }
         monitor.start(queue: DispatchQueue(label: "com.jihtsan.KeyPort.network-epoch"))
@@ -163,7 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleWillSleep(_ notification: Notification) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            _ = await tunnelRegistry.closeAll(reason: .sleep)
+            _ = await tunnelRegistry.systemSleepOccurred()
+            NotificationCenter.default.post(name: .keyPortNetworkEpochChanged, object: nil)
         }
     }
 }

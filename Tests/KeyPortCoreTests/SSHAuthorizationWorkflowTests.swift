@@ -260,4 +260,81 @@ final class SSHAuthorizationWorkflowTests: XCTestCase {
         let encoded = String(decoding: try JSONEncoder().encode(summaries), as: UTF8.self)
         XCTAssertFalse(encoded.localizedCaseInsensitiveContains("privateKeyPath"))
     }
+
+    func testAccessEvidenceSeparatesUnknownExpiredAndNetworkChanged() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = AccessVerification(
+            accountID: accountID,
+            deviceID: currentDeviceID,
+            networkEpoch: 4,
+            status: .authorized,
+            lastCheckedAt: now.addingTimeInterval(-60)
+        )
+        let old = AccessVerification(
+            accountID: accountID,
+            deviceID: currentDeviceID,
+            networkEpoch: 4,
+            status: .authorized,
+            lastCheckedAt: now.addingTimeInterval(-TopologyEvidencePolicy.accessVerificationValidityDuration - 1)
+        )
+        let unscoped = AccessVerification(
+            accountID: accountID,
+            deviceID: currentDeviceID,
+            status: .authorized,
+            lastCheckedAt: now
+        )
+
+        XCTAssertEqual(recent.freshness(at: now, networkEpoch: 4), .fresh)
+        XCTAssertEqual(old.freshness(at: now, networkEpoch: 4), .expired)
+        XCTAssertEqual(recent.freshness(at: now, networkEpoch: 5), .networkChanged)
+        XCTAssertEqual(unscoped.freshness(at: now, networkEpoch: 4), .unknown)
+    }
+
+    func testProjectionRequiresCurrentNetworkEvidenceForAuthorizedDevice() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let key = SSHKey(
+            id: "key-current",
+            deviceID: currentDeviceID,
+            kind: .ed25519,
+            publicKey: "ssh-ed25519 AAAA current",
+            fingerprint: "SHA256:current",
+            privateKeyPath: "/local/current",
+            origin: .generated,
+            isLocallyAvailable: true
+        )
+        let topology = TopologySnapshot(
+            profiles: [WorkspaceDeviceProfile(id: currentDeviceID, nodeID: UUID(), name: "当前 Mac")],
+            sshKeys: [key],
+            authorizations: [SSHAuthorization(
+                accountID: accountID,
+                keyID: key.id,
+                fingerprint: key.fingerprint,
+                remoteComment: "KeyPort:current",
+                remoteState: .authorized
+            )],
+            accessVerifications: [AccessVerification(
+                accountID: accountID,
+                deviceID: currentDeviceID,
+                networkEpoch: 3,
+                status: .authorized,
+                lastCheckedAt: now.addingTimeInterval(-60),
+                keyCheck: AuthenticationCheck(
+                    state: .succeeded,
+                    detail: "verified",
+                    checkedAt: now.addingTimeInterval(-60)
+                )
+            )]
+        )
+
+        let summaries = SSHAuthorizationProjection.summaries(
+            for: accountID,
+            currentDeviceID: currentDeviceID,
+            topology: topology,
+            now: now,
+            currentNetworkEpoch: 4
+        )
+
+        XCTAssertEqual(summaries.first?.status, .staleVerification)
+        XCTAssertEqual(summaries.first?.remoteAuthorized, true)
+    }
 }

@@ -95,6 +95,33 @@ final class SSHConnectionPlanningTests: XCTestCase {
         XCTAssertEqual(plans.first?.reason, .currentNetworkSuccess)
     }
 
+    func testAutomaticProfileDoesNotPreferExpiredReachabilityEvidence() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
+        topology.reachabilityObservations = [ReachabilityObservation(
+            endpointID: tailnetEndpointID,
+            observerDeviceID: "device-current",
+            networkEpoch: 9,
+            observedAt: now.addingTimeInterval(-TopologyEvidencePolicy.reachabilityValidityDuration - 1),
+            wasReachable: true
+        )]
+
+        let plans = try SSHConnectionPlanner().plans(
+            for: SSHConnectionIntent(profileID: profileID),
+            in: topology,
+            currentDeviceID: "device-current",
+            networkEpoch: 9,
+            now: now
+        )
+
+        XCTAssertEqual(plans.map(\.endpointID), [lanEndpointID, tailnetEndpointID])
+        XCTAssertEqual(plans.first?.reason, .endpointPriority)
+        XCTAssertEqual(
+            topology.reachabilityObservations[0].freshness(at: now, networkEpoch: 9),
+            .expired
+        )
+    }
+
     func testAutomaticProfileUsesExplicitCandidateOrderWithoutReorderingByEvidence() throws {
         var topology = makeTopology(routePolicy: .automatic(networkScope: nil))
         topology.sshConnectionProfiles[0].candidateEndpointIDs = [tailnetEndpointID, lanEndpointID]

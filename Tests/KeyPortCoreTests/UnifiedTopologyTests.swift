@@ -48,7 +48,7 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertTrue(graph.edges.contains { $0.kind == .candidateAccess })
     }
 
-    func testMultiplePortsStayOnOneNodeAndAuthorizedKeyCreatesNodeAccessEdge() {
+    func testDifferentPortsWithoutIdentityProofStayOnSeparateNodes() {
         let currentDeviceID = "device-current"
         let key = SSHKeyRecord(
             id: "key-current",
@@ -97,8 +97,8 @@ final class UnifiedTopologyTests: XCTestCase {
             currentDeviceID: currentDeviceID,
             currentDeviceName: "我的 Mac"
         )
-        let remoteNode = try! XCTUnwrap(topology.nodes.first(where: { $0.isSSHHost }))
-        XCTAssertEqual(topology.endpoints.filter { $0.nodeID == remoteNode.id }.count, 2)
+        let remoteNodes = topology.nodes.filter { $0.isSSHHost }
+        XCTAssertEqual(remoteNodes.count, 2)
 
         let graph = TopologyGraphProjector().project(
             topology: topology,
@@ -108,11 +108,173 @@ final class UnifiedTopologyTests: XCTestCase {
         XCTAssertTrue(graph.edges.contains {
             $0.kind == .nodeAccess
                 && $0.from == .node(TopologyStableID.node(forDeviceID: currentDeviceID))
-                && $0.to == .node(remoteNode.id)
+                && $0.to == .node(remoteNodes.first(where: { $0.name == "生产服务器" })!.id)
         })
+        XCTAssertTrue(remoteNodes.allSatisfy { node in
+            topology.endpoints.filter { $0.nodeID == node.id }.count == 1
+        })
+    }
+
+    func testConflictingLegacyNamesAtOneAddressDoNotBecomeOneNode() {
+        let currentDeviceID = "device-current"
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000005")!,
+                name: "容器 A",
+                host: "203.0.113.50",
+                username: "root",
+                alias: "container-a"
+            ),
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000006")!,
+                name: "容器 B",
+                host: "203.0.113.50",
+                username: "root",
+                alias: "container-b"
+            ),
+        ]
+
+        let first = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+        let second = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        let remoteNodes = first.activeNodes.filter(\.isSSHHost)
+        XCTAssertEqual(remoteNodes.count, 2)
+        XCTAssertEqual(Set(first.activeAccounts.map(\.nodeID)).count, 2)
+        XCTAssertEqual(first.nodes.map(\.id), second.nodes.map(\.id))
+    }
+
+    func testConflictingConfirmedHostKeysSplitLegacyIdentityWithoutDroppingRecords() {
+        let currentDeviceID = "device-current"
+        let firstKey = HostKeyRecord(
+            algorithm: "ssh-ed25519",
+            fingerprint: "SHA256:first",
+            knownHostsLine: "host ssh-ed25519 first"
+        )
+        let secondKey = HostKeyRecord(
+            algorithm: "ssh-ed25519",
+            fingerprint: "SHA256:second",
+            knownHostsLine: "host ssh-ed25519 second"
+        )
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.servers = [
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000007")!,
+                name: "同名入口",
+                host: "203.0.113.51",
+                username: "root",
+                alias: "host-one",
+                confirmedHostKeys: [firstKey]
+            ),
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000008")!,
+                name: "同名入口",
+                host: "203.0.113.51",
+                username: "root",
+                alias: "host-two",
+                confirmedHostKeys: [secondKey]
+            ),
+        ]
+
+        let topology = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        XCTAssertEqual(topology.activeNodes.filter(\.isSSHHost).count, 2)
+        XCTAssertEqual(topology.activeConnectionProfiles.count, 2)
+        XCTAssertEqual(topology.hostKeyTrusts.filter { !$0.isDeleted }.count, 2)
+    }
+
+    func testAdditionalAddressReusesOneAccountAuthorization() {
+        let currentDeviceID = "device-current"
+        let key = SSHKeyRecord(
+            id: "key-current",
+            deviceID: currentDeviceID,
+            kind: .ed25519,
+            publicKey: "ssh-ed25519 AAAA current",
+            fingerprint: "SHA256:current",
+            privateKeyPath: "/tmp/current",
+            isInAgent: false,
+            origin: .generated,
+            isLocallyAvailable: true
+        )
+        let accountID = TopologyStableID.sshAccount(
+            nodeID: TopologyStableID.node(forHost: "server.example.com"),
+            username: "root"
+        )
+        var legacy = AppSnapshot()
+        legacy.devices = [Device(id: currentDeviceID, name: "我的 Mac", isCurrent: true)]
+        legacy.keys = [key]
+        legacy.servers = [
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-000000000009")!,
+                name: "生产服务器",
+                host: "server.example.com",
+                port: 22,
+                username: "root",
+                alias: "prod-root",
+                confirmedHostKeys: [HostKeyRecord(
+                    algorithm: "ssh-ed25519",
+                    fingerprint: "SHA256:shared",
+                    knownHostsLine: "server.example.com ssh-ed25519 shared"
+                )]
+            ),
+            ServerConnection(
+                id: UUID(uuidString: "10000000-0000-4000-8000-00000000000a")!,
+                name: "生产服务器",
+                host: "server.example.com",
+                port: 2222,
+                username: "root",
+                alias: "prod-root-alt",
+                confirmedHostKeys: [HostKeyRecord(
+                    algorithm: "ssh-ed25519",
+                    fingerprint: "SHA256:shared",
+                    knownHostsLine: "server.example.com ssh-ed25519 shared"
+                )]
+            ),
+        ]
+        legacy.authorizations = [Authorization(
+            serverID: legacy.servers[0].id,
+            keyID: key.id,
+            fingerprint: key.fingerprint,
+            remoteComment: "current",
+            status: .authorized
+        )]
+
+        let topology = TopologySnapshotMigration.fromLegacy(
+            legacy,
+            currentDeviceID: currentDeviceID,
+            currentDeviceName: "我的 Mac"
+        )
+
+        XCTAssertEqual(topology.activeAccounts.map(\.id), [accountID])
+        XCTAssertEqual(topology.activeConnectionProfiles.count, 2)
+        XCTAssertEqual(topology.activeAuthorizations(for: accountID).count, 1)
+        XCTAssertTrue(topology.hasActiveAuthorization(
+            for: accountID,
+            keyID: key.id,
+            fingerprint: key.fingerprint
+        ))
+        let profileID = try! XCTUnwrap(topology.activeConnectionProfiles.first?.id)
         XCTAssertEqual(
-            graph.nodes.first(where: { $0.id == .node(remoteNode.id) })?.endpointSummaries.count,
-            2
+            topology.authorizationDecision(
+                forProfileID: profileID,
+                keyID: key.id,
+                fingerprint: key.fingerprint
+            ),
+            .verifyExistingAccountAuthorization
         )
     }
 

@@ -125,7 +125,7 @@ V6 runtime 当前在 `Sources/KeyPort/App/HostV6RuntimeAssembly.swift:22-28,66-1
 | --- | --- | --- | --- | --- |
 | `Sources/KeyPort/Stores/AppModel.swift` | 所有 UI 状态、legacy snapshot 写入、SSH/Keychain/Cloud 调度 | 拆分并降级为应用协调器；不再拥有领域数组 | `ServerAccessStore`/`EnrollmentCoordinator`/`AccessCoordinator`/`SyncCoordinator`；#80–#83 | AppModel 不直接改 `snapshot.servers/authorizations`；旧字段仅 compatibility/recovery 读取；全链路测试通过 |
 | `Sources/KeyPortCore/Models/DomainModels.swift` | `ServerConnection`、legacy Device/Key/Authorization、AppSnapshot schema 5 | 保留解码、导入和恢复；禁止新 UI 依赖 | `TopologyModels`/V6 model；#80–#83 | 迁移样本可 round-trip；没有活跃入口写 AppSnapshot；删除前保留可恢复导入 |
-| `Sources/KeyPortCore/Topology/TopologyModels.swift` | Node/Endpoint/Account/Profile/Trust/Auth/Observation，legacy↔topology migration/projection | 收敛为本地应用模型或明确 V6 adapter；修复 host/port 分组和 account-level auth fan-out | `AccessDomain` + V6 adapter；#80 | 新增/编辑/删除/同步均通过唯一 command；legacy projection 只读且有回滚记录 |
+| `Sources/KeyPortCore/Topology/TopologyModels.swift` | Node/Endpoint/Account/Profile/Trust/Auth/Observation，legacy↔topology migration/projection | 收敛为本地应用模型或明确 V6 adapter；按身份证据拆分 host/port，并把授权收敛到账户级 | `AccessDomain` + V6 adapter；#80 | 新增/编辑/删除/同步均通过唯一 command；legacy projection 只读且有回滚记录 |
 | `Sources/KeyPortCore/Hosts/HostV6Models.swift` | Cloud/authority 的 Host/Address/SSHIdentity/device/key/pin/auth/local state | 保留为共享元数据 authority；明确 SSHIdentity 与账户/profile 的映射 | V6 metadata repository；#80–#83 | V6 写命令覆盖所有产品写场景；authority gate 和 Cloud schema 有真实签名证据 |
 | `Sources/KeyPort/Stores/TopologyStore.swift` | `topology-v1.json` 原子保存/加载 | 保留并补备份、版本、恢复选择 | `AccessStore` 的唯一本地快照；#80 | 保存前 checkpoint；损坏/中断可恢复；旧文件不会被静默覆盖 |
 | `Sources/KeyPort/Stores/SnapshotStore.swift` | `state-v1.json` legacy 保存；V6 shadow staging 输入 | 保留为只读兼容/迁移输入；不再作为活跃写源 | `TopologyStore`/V6 authority；#80–#83 | V6/local authority 完成双读验证；迁移失败仍可恢复旧文件；无新写调用 |
@@ -173,12 +173,14 @@ V6 runtime 当前在 `Sources/KeyPort/App/HostV6RuntimeAssembly.swift:22-28,66-1
 ### 6.2 兼容迁移的具体规则
 
 - legacy `ServerConnection` 的稳定 ID 先作为 profile/来源 ID 记录，不能直接把每条记录当作一个新节点。
-- 当前 `TopologySnapshotMigration.fromLegacy` 在 `Sources/KeyPortCore/Topology/TopologyModels.swift:855-1070` 按 normalized host 组织节点；审计发现该逻辑需同时纳入 port/协议，避免两个不同端口被错误合并。#80 必须先补测试再改变生产迁移。
+- 当前 `TopologySnapshotMigration.fromLegacy` 在 `Sources/KeyPortCore/Topology/TopologyModels.swift` 已不再只按 normalized host 组织节点：同端口且显示身份一致的记录可保留同一节点；不同端口只有在共享 confirmed Host Key 时才合并，冲突名称/身份会使用稳定 discriminator 拆分。#80 必须保持这一保守规则，并先以迁移测试锁定行为。
 - 当前 `legacyProjection` 在 `TopologyModels.swift:1638-1774` 为连接 profile 生成 legacy server，并可能把账户级授权展开到多个 profile；这只能作为兼容读投影，不能反向成为授权事实。#80 必须验证“同账户新增地址不重复安装/复制授权”。
 - 账户 canonical ID 为 `(nodeID, normalized username)`；修改用户名不能静默丢失 Keychain、授权或验证，必须通过显式 migration map 和旧 owner 清理 journal。
 - 地址删除只有在 profile 已迁移、固定地址已清理或明确替换后才允许；若是主体最后一个可用地址，按域模型拒绝删除并保留恢复信息。
 - 任何 host key mismatch 都停止该 endpoint 的认证/授权动作；不能用另一个地址的成功结果覆盖当前地址的观察。
 - `state-v1.json`、`topology-v1.json` 和 V6 compatibility projection 不在 #80 立即删除；它们必须至少经历一次启动恢复、导出/导入和损坏文件恢复测试，#83 才能确定删除或永久只读保留。
+
+#80 已验证的迁移约束：新增同一 `(Node, username)` 账户地址只复用账户级授权关系，当前地址仍必须单独完成 Host Key 与公钥验证；不同主机/容器 SSH 服务不会仅凭名称或 IP 合并。显式手动绑定优先于自动迁移推断，旧账户/地址在被新身份替代后保留为 tombstone 以便恢复和审计。
 
 ### 6.3 外部文件和秘密边界
 

@@ -671,6 +671,11 @@ actor TunnelRegistry {
         return await closeAll(reason: .networkChanged)
     }
 
+    func systemSleepOccurred() async -> TunnelCloseResult {
+        networkEpoch &+= 1
+        return await closeAll(reason: .sleep)
+    }
+
     func currentNetworkEpoch() -> UInt64 {
         networkEpoch
     }
