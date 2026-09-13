@@ -1,0 +1,137 @@
+{
+  "buildCommit": "1148b12cdb60b640b231fbe4b2b63df65f3c1f98",
+  "app": "/Users/joo00der/.codex/worktrees/7de9/key-port/dist/KeyPortDesignPreview.app",
+  "capture": "computer-use sky.get_app_state; original JPEG bytes, no resizing or conversion",
+  "files": [
+    {
+      "file": "existing-key-valid.jpg",
+      "sha256": "f96bd09f80a6b05f733d2f9e7eb8a32ad101e4cde16aac8c95c2b404f24377bc",
+      "width": 260,
+      "height": 139
+    },
+    {
+      "file": "existing-key-valid.txt",
+      "sha256": "9f12ac14b6a52e47c03a6de2236744b90af25cb3cdadc61263dea2f5ac56937c"
+    },
+    {
+      "file": "form-advanced-password.jpg",
+      "sha256": "dcaa5d201bea9381cc75dcd0f9b414e7b58d6aa7ce8922564fe4754e4e7c5eb9",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-advanced-password.txt",
+      "sha256": "fc88b452a3b229b4b1a890f062b3a0bcdc5214b1fcea5db641d974d5df87125b"
+    },
+    {
+      "file": "form-after-success.jpg",
+      "sha256": "ece1838962c9c92600d108e63b00d4f718a1f7a8611b221d05cd66bbecc33784",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-after-success.txt",
+      "sha256": "bdd9d4453d09f9b6fc31359328262741112584c5850bd69fd11a087a844b8261"
+    },
+    {
+      "file": "form-existing-key.jpg",
+      "sha256": "c1aaa2540c616173c220bc5cd854f628cc4dd35d073c482cf41d2a1d687ae4ad",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-existing-key.txt",
+      "sha256": "c3ca232622cca31dfe407b29b6c429d86e4fac49e52d8fd2b62573bd40e5c7f9"
+    },
+    {
+      "file": "form-hidden.jpg",
+      "sha256": "4342a5356bb835fd83004312976fb7646aa7f35f917fcb3c176f981e3e7280e8",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-hidden.txt",
+      "sha256": "4ad9da8520f63de0470fe532f8d0000974a6adc8822f1d6a8e634b08b77fa771"
+    },
+    {
+      "file": "form-invalid-address.jpg",
+      "sha256": "f9c48d6669db76912f24627fd2dac74e9dba590cdf640eb4192eb8ca095b80ae",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-invalid-address.txt",
+      "sha256": "f207373132ab4c78ca257163211c24471e91fb802fb125a027e2f636a4d1e2b7"
+    },
+    {
+      "file": "form-shown.jpg",
+      "sha256": "8b5923c89aa33c8806cd038f5a530f5bc63e64bae2fd40ca1e3c813378f3a8b5",
+      "width": 880,
+      "height": 740
+    },
+    {
+      "file": "form-shown.txt",
+      "sha256": "88bf18333461bf922bea2464d406363c219541c53e51703780ed45206c958d86"
+    },
+    {
+      "file": "home-long-name.jpg",
+      "sha256": "f81e87429b972ea14e36b37b1c6133bd09b0592eb6a10abfa027e6d276113826",
+      "width": 1237,
+      "height": 768
+    },
+    {
+      "file": "home-long-name.txt",
+      "sha256": "f95b795bed1eb02ae1c21e5e4dafbf5e98f5b7678c5b6e1788fc176ada561f98"
+    },
+    {
+      "file": "home-narrow-long.jpg",
+      "sha256": "19dd25669f1dcc56188242d32efabaa0704619dec8d7eba3c4a43fb4e24e60fc",
+      "width": 1112,
+      "height": 760
+    },
+    {
+      "file": "home-narrow-long.txt",
+      "sha256": "f95b795bed1eb02ae1c21e5e4dafbf5e98f5b7678c5b6e1788fc176ada561f98"
+    },
+    {
+      "file": "home-ready.jpg",
+      "sha256": "cd70ea53c19e4a250d48ccd6c1ba9d45cbc17785e8f36699a246f27e97f9c019",
+      "width": 1237,
+      "height": 768
+    },
+    {
+      "file": "home-ready.txt",
+      "sha256": "852a7c741ee448a7f7dd2cc2a54fa741faf2c4460f01f076e1202f50d0672d9e"
+    },
+    {
+      "file": "home-unconfigured.jpg",
+      "sha256": "1d2a4e18b1dc86e622583f817c8d4e7e62f47f95bfc5eaa366d880c3e1b1c7bb",
+      "width": 1237,
+      "height": 768
+    },
+    {
+      "file": "home-unconfigured.txt",
+      "sha256": "8844eb4bc5984aa33b4319bf539237216b777714bca7c5aa6ac48a72337b2e79"
+    },
+    {
+      "file": "home-unreachable.jpg",
+      "sha256": "7003845fe51ea2ab083e8d85080a9f799662b55806399cc8b42285e1a17ef542",
+      "width": 1237,
+      "height": 768
+    },
+    {
+      "file": "home-unreachable.txt",
+      "sha256": "826ec6da25532db2052c577e5cbe34769340746d2bad04ab936105954d6dd2a7"
+    },
+    {
+      "file": "ipv6-valid.jpg",
+      "sha256": "89dba0670d775bde9bab6327273d5614fd6128159ad9314c8b2e7bedce8b6ca8",
+      "width": 260,
+      "height": 139
+    },
+    {
+      "file": "ipv6-valid.txt",
+      "sha256": "9f12ac14b6a52e47c03a6de2236744b90af25cb3cdadc61263dea2f5ac56937c"
+    }
+  ]
+}

@@ -31,51 +31,75 @@
 
 本阶段没有被新入口接管的生产实现，故未删除生产视图。不得将上述后续清理标为完成；最终不得长期保留双 UI。
 
-## 阶段结论
+## 阶段结论（2026-09-13 复核修复后）
 
-待用户验收。代码与交互自查已有证据；主页同尺寸对照与原生控件差异尚未获确认，不合并、不关闭 Issue、不进入下一阶段。
+**待用户验收**。#90 评论 5653681184 指出的地址校验与提示返回错误已修复并通过真实 UI 回归。可确认的布局差异已修复；仍不合并 PR #91、不关闭 #90、不进入 Graph 或真实授权。
 
-## 2026-09-13 真实 App 自查记录
+## 唯一最终构建与证据
 
-- 已验收：真实独立 macOS App 启动，三栏、详情与表单可交互；App 二进制位于本 worktree 的 `dist/KeyPortDesignPreview.app/Contents/MacOS/KeyPortDesignPreview`。只链接新界面模块，不初始化生产模型。
-- 已验收：表单截图 `evidence/native-form.png` 与 `evidence/figma-form.png` 均为 880×740。修正主内容上移及按钮宽度后重新截取。
-- 已验收：默认 SecureField；显示后 AX 明确呈现固定 `demo-only`。使用现有密钥移除密码输入，无密码提交只弹出“表单校验通过。此预览未执行网络连接或授权。”。
-- 已验收：高级项展开与可编辑别名；端口 0 阻止提交并显示“端口必须为 1–65535。”；长名称输入保持在字段内。Tab 实测：名称→地址→端口→账户→密码，Escape 关闭表单。
-- 已验收：缩窄窗口约 1112×760 后三栏及操作仍完整可见，见 `evidence/native-narrow.png`。三种状态通过右上角菜单实际切换；Mac Studio 列表不会随 gl-mt3600 的状态变化。
-- 已验收：JetBrains Mono 官方 Regular/Medium 字体及 OFL 随模块资源打包，使用 CoreText 进程级注册，不安装到系统。来源为 JetBrains/JetBrainsMono 的 fonts/ttf 与 OFL.txt。
-
-## 差异与待确认
-
-| 项目 | 结果 | 证据/操作 |
-|---|---|---|
-| 主页层级、200/320/800 初始栏宽 | 已验收 | `native-home.png`，App 构造窗口为 1320×820，只有一行工具栏 |
-| 主页同尺寸像素级对照 | 待用户验收 | computer-use 截图缩为 1237×768，Figma 工具输出为 1024×659 且含阴影；未放大伪装为原尺寸。请用 macOS 截取 App 原窗口，与 Figma 2:2 原尺寸导出核对 |
-| 表单内容区与操作位置 | 已验收 | 两张 880×740 图；主要内容 x32/y156/w816/h464、底部操作 y636 |
-| 中文与图标 | 待用户验收 | 3:528 明确允许系统中文及 SF Symbols；实际使用苹方/系统符号，外观与 Figma Noto/Lucide 有差别 |
-| 原生窗口控制与账户选择器 | 待用户验收 | 系统 traffic lights 靠上，Picker 使用系统控件高度/箭头，尚未得到用户接受，不得把原生默认值当作自动通过 |
-| 密码显示位置 | 待用户验收 | 使用宽 100 的可编辑密码字段，显示链接略右于 Figma，保留真实输入及选择行为 |
-| 高级项组合 | 已验收 | `native-advanced.png` 为现有密钥+高级展开组合；Figma 19:76 是密码模式+高级展开，布局相同但不是同状态逐像素证据 |
-| 长名称主页行与列表选择 | 已验收 | `native-home-long.png` 显示长名称截断且未撑破栏宽；实际选择 Mac Studio 显示 jooder/192.0.2.2，tencent-cloud 显示待添加账户/cloud.example |
-| 真实 SSH、iCloud、迁移、Graph | 后续阶段 | 按 #78 门槛暂不接入，不将预览视为生产闭环 |
-
-## 用户复现
-
-1. 运行 `./script/build_design_preview.sh`，或打开本 worktree 的 `dist/KeyPortDesignPreview.app`。这是隔离示例，请勿输入真实密码。
-2. 主页右上角“…”选择三个预览状态；核对 2:2、3:170、3:341 的层级、留白、按钮、字体与状态。
-3. 点击列表“+”打开单表单；对照 16:2，测试显示/隐藏、现有密钥、高级项、Tab、Escape。
-4. 待确认：原生窗口控制/Picker 是否符合批准设计，以及 1320×820 原尺寸截图的差异。未收到明确验收前，不合并、不关闭 #90、不进入第二阶段。
-
-## 检查结果
-
-- `./script/test.sh` 首次：KeyPortTests 193 个中 1 个失败，ProcessExecutorTests.testExitStatusAndSeparatedOutputAreCaptured 意外报告 timedOut；该文件未修改。独立复跑通过。
-- `./script/test.sh` 完整复跑退出 0：KeyPortTests 193/193、KeyPortCoreTests 312/312、新界面测试 2/2；CoreChecks、SSH relay IPv4/IPv6 fixture、AskPass FIFO 检查通过。
-- 最后主页 fixture 调整后重新构建并启动；表单测试再次通过。`git diff --check` 通过。
-- 真实服务器、用户 SSH 配置、钥匙串、CloudKit 未作为测试目标。
-
-## 确切运行版本
-
-- 实现/构建 commit：`608b34867f5bd666438148ce08f6f6fbb9838f2d`。
+- 实现/构建 commit：`1148b12cdb60b640b231fbe4b2b63df65f3c1f98`。之后的提交只更新本文及证据，不改变构建源码。
 - App：`/Users/joo00der/.codex/worktrees/7de9/key-port/dist/KeyPortDesignPreview.app`。
-- 提交后执行 `./script/build_design_preview.sh`，构建 3.44 秒，ad-hoc codesign 严格验证成功；PID 98371 的 argv 指向上述 App。
-- 随后 computer-use 读取真实窗口标题“KeyPort · 隔离设计预览”，AX 包含三栏内容、状态、主页操作及系统窗口按钮。
-- `native-home.png`、`native-form.png` 和变体是实现过程真实运行截图；此前校验/窄窗口截图保留相应中间版本，不宣称全部逐像素对应此 commit。最终源码变化包括独立示例详情及公网标签。
+- 从该提交运行 `./script/build_design_preview.sh`；构建成功，ad-hoc codesign 验证成功；真实窗口由 computer-use 操作确认。
+- **所有最终原生截图及对应 AX 文本均在 [evidence/1148b12](evidence/1148b12)**。清单、SHA-256、原始图像尺寸见 [manifest.json](evidence/1148b12/manifest.json)。文件保留工具返回的 JPEG 原始字节，未放大、重采样或转换。
+- 前一版及中间版原生截图已从当前目录删除，不能作为本版本验收证据。Figma 参考图仍保留。
+
+## 逐项验收
+
+| 环节 | 结论 | 最终构建证据 |
+|---|---|---|
+| 真实设计读取 | 已验收 | 2:2、3:170、3:341、3:528、16:2、19:2、19:39、19:76 已读取实际 design context |
+| 隔离 App 构建启动 | 已验收 | 独立 executable 仅链接 KeyPortInterface，无生产 AppModel、Keychain、CloudKit、SSH 初始化 |
+| 主页三状态 | 已验收（结构/文案/交互） | home-ready、home-unconfigured、home-unreachable，均有 JPG 与 AX；菜单实际切换 |
+| 密码默认隐藏/显示 | 已验收 | form-hidden / form-shown；固定 demo-only，SecureField 与明文 TextField 实际切换 |
+| 现有密钥不强制密码 | 已验收 | form-existing-key / existing-key-valid；无密码提交仅提示校验通过，不产生授权结果 |
+| 高级别名 | 已验收 | form-advanced-password；与 Figma 19:76 一样为密码模式+高级展开；输入起点修正为 x112 |
+| 无效地址拒绝且保留输入 | 已验收 | form-invalid-address；!!! 被拒绝，名称/账户/密码/地址均保留供修正 |
+| 合法 IPv6 | 已验收 | ipv6-valid；2001:db8::1 实际提交通过；IPv4/DNS/IPv6 其它边界由回归测试验证 |
+| 提示返回状态 | 已验收 | form-after-success；关闭提示后地址保留、密码清空、无必填错误。再次主动提交才校验空密码 |
+| 长名称与窄窗口 | 已验收 | home-long-name / home-narrow-long；1112×760 原生截图，名称截断且主要操作不溢出 |
+| 输入 Tab / Escape | 已验收 | 首轮实际检查：名称→地址→端口→账户→密码；本轮 Escape 多次关闭表单并重新打开，行为保持 |
+| 主页原尺寸像素级一致 | 待用户验收 | 详见尺寸限制，不把缩图当作原尺寸证据 |
+| 中文/系统图标整体视觉 | 待用户验收 | 3:528 允许系统中文与 SF Symbols；需用户确认最终原生观感 |
+
+## 本轮修复和差异表
+
+| 项目 | Figma 基准 | 最终实现与检查 |
+|---|---|---|
+| 窗口按钮 | 56 高标题区，居中布置 | AppKit 保留系统按钮及关闭/缩小/缩放行为，layout 时重设父区 56 高与按钮位置；截图已确认不再紧贴顶边 |
+| 账户选择器 | 142×30，白底、边框、右箭头 | 改为原生 Menu + 自定义按钮外观，142×30、5 圆角、#D7DCE3 边框；默认 borderless 样式会丢弃布局，已改 button/plain 并真实验证 |
+| 密码显示链接 | 约 x304 | 密码编辑区由 100 调整为 84，加 12 间距，链接 x304；实际截图已核对 |
+| 高级别名 | 约 x112 | 标签宽 44、间距 12，输入由 x196 改为 x112；密码模式截图已重新取得 |
+| 主表单 | 880×740；内容 x32/y156/816×464；操作 y636 | 原始截图 880×740，纵向位置和主操作宽 137/取消宽 112 保持对齐 |
+| 技术字体 | JetBrains Mono | 官方 Regular/Medium 字体和 OFL 随模块打包，CoreText 进程级注册；不安装系统字体 |
+| 中文与图标字形 | 设计以 Noto/Lucide 代替原生 | 按 3:528 使用系统中文与 SF Symbols，存在字形/抗锯齿差异；不是未经尝试的布局例外 |
+| 密码掩码 | Figma 静态 10 个点，但显示示例 demo-only 为 9 字符 | 原生 SecureField 如实掩码 9 字符，未为模仿静态图伪造密码长度 |
+
+### 地址语法与提交边界
+
+IPv4 使用系统 inet_pton 并要求四段、无歧义前导零；IPv6 使用 inet_pton，允许括号与合法 scope 标识；DNS 允许单段名称、连字符、多个标签、结尾点及 punycode，标签最长 63、总长最多 253。拒绝 !!!、越界/残缺 IPv4、错误 IPv6、协议/账户/端口混入、空标签、非法字符。Unicode 域名需使用 punycode。此处只检查语法，不做 DNS 查询、不证明可达性或主机身份。
+
+错误属于提交尝试，编辑会清除旧提示；有效提交复制当次值给回调后立即清空本地密码，不持久化。关闭预览成功提示不会对清空后的密码自动重新校验。
+
+## 尺寸限制与尝试记录
+
+1. 已用 Figma download_assets 明确 defaultScale=1 重新导出主页，原文件 [figma-home-1x.png](evidence/figma-home-1x.png) 为 **1400×900**，包含设计 frame 1320×820 之外的阴影边界。不是旧的 1024×659 缩图。
+2. 原生初始 window contentRect 为 **1320×820**；sidebar=200、list=320、detail=800、toolbar=56、detail padding=32。Computer Use 的 get_app_state 原始返回图仍为 **1237×768 JPEG**。该受支持 API 只有 app/disableDiff，没有请求原始分辨率或缩放系数的参数。未借助不受支持的截图接口或放大图片伪装原尺寸。
+3. 表单 get_app_state 返回 **880×740 JPEG**，与 Figma 表单 PNG 同尺寸，可直接对照。窄窗口实际返回 1112×760，无额外放大。
+4. 仍无法自行确认的只有主页原始尺度的像素差异及最终原生字形观感。请用户用系统窗口截图与 Figma 1× 导出核对，或明确接受按参数与现有缩图完成视觉验收。用户未确认前保持待验收。
+
+## 验证结果
+
+- 最终 commit `swift test --filter AccessFormDraftTests`：4/4 通过。覆盖有效 IPv4/IPv6/DNS、非法边界、输入保留、成功清空密码而不产生错误、再次提交与现有密钥分支。
+- 本轮测试曾发现 Darwin inet_pton 接受 IPv4 前导零，已补四段前导零检查并重跑通过，未忽略失败。
+- 最终 commit `./script/build_design_preview.sh`：构建 2.84 秒、签名验证/启动通过；之后真实 UI 证据如上。
+- 上一轮完整 `./script/test.sh` 复跑退出 0：KeyPortTests 193/193、KeyPortCoreTests 312/312、CoreChecks、SSH relay IPv4/IPv6 fixture、AskPass FIFO 通过。首次原有 ProcessExecutor 退出状态测试偶发失败、独立和全量复跑通过的记录保留；本轮未重复宣称全量测试覆盖新变更。
+- 本轮修改只在独立界面/预览入口与相关测试；最终 `git diff --check` 通过。
+
+## 用户复现与剩余确认
+
+1. 打开上述 App；主页“…”切换免密就绪/未配置/不可达及长名称，核对布局与原生字形。
+2. 点击“+”，先将地址设为 !!! 并提交，应留在原表单并显示地址错误；换回有效地址后提交，关闭提示应保留表单且不出现密码必填错误。
+3. 核对显示/隐藏、现有密钥、高级展开；密码模式高级项应在 x112 开始编辑别名。
+4. 仅请确认主页原尺度截图差异与整体原生视觉。校验修复和可修复控件位置已自行确认，不再作为用户代测事项。
+
+仍不合并、不关闭 #90、不进入下一阶段。预览按钮不连接真实服务器，不执行真实授权。
