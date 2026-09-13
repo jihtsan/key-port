@@ -18,7 +18,7 @@ final class PreviewDelegate: NSObject, NSApplicationDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = false
-        window.contentView = NSHostingView(rootView: ServerHomeView().preferredColorScheme(.light).ignoresSafeArea())
+        window.contentView = NSHostingView(rootView: ServerHomeView { draft, close in AnyView(FixtureAccessPreview(draft: draft, onClose: close)) }.preferredColorScheme(.light).ignoresSafeArea())
         window.minSize = NSSize(width: 1100, height: 740)
         window.center(); window.makeKeyAndOrderFront(nil)
         self.window = window
