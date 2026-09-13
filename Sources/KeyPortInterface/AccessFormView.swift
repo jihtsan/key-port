@@ -54,9 +54,10 @@ public struct AccessFormView: View {
                         .font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x677D98)).frame(height: 34)
                 }.buttonStyle(.plain)
                 if advanced {
-                    HStack(spacing: 20) {
-                        Text("SSH 别名").frame(width: 120, alignment: .leading)
-                        TextField(draft.suggestedAlias + "（自动生成，可修改）", text: $draft.alias).accessibilityLabel("SSH 别名").textFieldStyle(.plain).font(InterfaceStyle.technical(12))
+                    HStack(spacing: 12) {
+                        Text("SSH 别名").frame(width: 44, alignment: .leading)
+                        TextField("SSH 别名", text: $draft.alias, prompt: Text(draft.suggestedAlias + "（自动生成，可修改）").foregroundStyle(InterfaceStyle.color(0x677D98)))
+                            .accessibilityLabel("SSH 别名").textFieldStyle(.plain).font(.system(size: 11))
                     }.font(.system(size: 11)).foregroundStyle(InterfaceStyle.muted).frame(height: 17)
                 } else {
                     Text("首次连接会请求核对主机身份；之后的步骤自动继续。").font(.system(size: 11)).foregroundStyle(InterfaceStyle.color(0x94A1B3)).frame(height: 17)
