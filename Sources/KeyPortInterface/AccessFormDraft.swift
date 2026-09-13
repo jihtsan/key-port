@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 public struct AccessFormDraft: Equatable {
     public var name = ""
@@ -55,8 +56,15 @@ public struct AccessFormDraft: Equatable {
     }
 
     public var suggestedAlias: String {
-        name.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") ? String($0) : "-" }.joined().trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let readable = name.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") ? String($0) : "-" }.joined().trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if !readable.isEmpty { return readable }
+        // Stable across retries and address changes; never derive an SSH target from an empty slug.
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        let digest = SHA256.hash(data: Data(normalized.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "server-" + digest
     }
+
+    public var resolvedAlias: String { alias.isEmpty ? suggestedAlias : alias }
 }
 
 /// Validation errors belong to a submit attempt, not to the cleared credential afterward.

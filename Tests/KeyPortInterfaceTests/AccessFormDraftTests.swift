@@ -44,3 +44,23 @@ extension AccessFormDraftTests {
         XCTAssertNotNil(state.prepare(&draft)); XCTAssertNil(state.error)
     }
 }
+
+extension AccessFormDraftTests {
+    func testAutomaticAliasHandlesNonASCIIAndSymbolNamesStably() {
+        var aliases: Set<String> = []
+        for name in ["我的服务器", "另一台服务器", "🔑", "!!!", "---"] {
+            var draft = AccessFormDraft(); draft.name = name; draft.address = "192.0.2.1"
+            draft.account = "root"; draft.existingKey = true
+            let alias = draft.resolvedAlias
+            XCTAssertFalse(alias.isEmpty)
+            XCTAssertFalse(alias.hasPrefix("-"))
+            XCTAssertTrue(aliases.insert(alias).inserted)
+            draft.address = "2001:db8::1"
+            XCTAssertEqual(draft.resolvedAlias, alias)
+            draft.alias = alias
+            XCTAssertNil(draft.validationMessage)
+            draft.alias = "custom-router"
+            XCTAssertEqual(draft.resolvedAlias, "custom-router")
+        }
+    }
+}

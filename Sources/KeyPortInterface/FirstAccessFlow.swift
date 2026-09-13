@@ -64,7 +64,7 @@ public enum FirstAccessState: Equatable {
     private var generation = UUID()
     private var task: Task<Void, Never>?
     public var isSimulation: Bool { adapter.isSimulation }
-    public var command: String { "ssh " + (draft.alias.isEmpty ? draft.suggestedAlias : draft.alias) }
+    public var command: String { "ssh " + draft.resolvedAlias }
     public var authorizationKey: AccessAuthorizationKey? {
         identity.map { AccessAuthorizationKey(deviceID: adapter.deviceID, serverID: $0.serverID, account: draft.account) }
     }
@@ -76,7 +76,7 @@ public enum FirstAccessState: Equatable {
     public func submit(_ input: AccessFormDraft) {
         guard state == .form, input.validationMessage == nil else { return }
         invalidate()
-        draft = input; draft.password = ""; credential = input.password
+        draft = input; draft.alias = input.resolvedAlias; draft.password = ""; credential = input.password
         authorization = .absent
         identity = nil; handoff = .idle; formNotice = nil
         state = .checkingHost

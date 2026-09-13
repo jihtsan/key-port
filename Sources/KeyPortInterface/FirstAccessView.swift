@@ -151,7 +151,6 @@ public struct FirstAccessView<Controls: View>: View {
     private var cancelledContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("已取消后续步骤").font(.system(size: 20, weight: .medium))
-            Text(authorizationText).font(.system(size: 13))
             Text("取消不代表撤销已经发生的授权。迟到结果不会改变当前页面。")
             Text("再次尝试会重新核对主机身份和账户授权；密码已清空。")
         }.font(.system(size: 12)).foregroundStyle(InterfaceStyle.muted)

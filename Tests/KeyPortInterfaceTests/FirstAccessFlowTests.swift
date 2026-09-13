@@ -131,6 +131,19 @@ import XCTest
         flow.submit(draft()); await settle()
         XCTAssertEqual(flow.state, .failed(.authorizationUnknown)); XCTAssertEqual(adapter.installs, 0)
     }
+    func testChineseNameResolvesOneTargetForSuccessAndBothHandoffs() async {
+        var input = draft(); input.name = "我的服务器"; input.alias = ""
+        let adapter = TestAccessAdapter()
+        let flow = FirstAccessFlow(draft: input, adapter: adapter)
+        flow.submit(input); await settle()
+        XCTAssertEqual(flow.state, .success)
+        XCTAssertFalse(flow.draft.alias.isEmpty)
+        XCTAssertEqual(flow.command, "ssh " + flow.draft.alias)
+        flow.performHandoff(); await settle()
+        flow.performHandoff(copy: true); await settle()
+        XCTAssertEqual(adapter.commands, [flow.command, flow.command])
+        XCTAssertEqual(flow.handoff, .copied)
+    }
     func testCloseRejectsLateHandoff() async {
         let adapter = TestAccessAdapter(); let flow = FirstAccessFlow(draft: draft(), adapter: adapter)
         flow.submit(draft()); await settle(); adapter.holdHandoff = true
@@ -151,6 +164,7 @@ import XCTest
     var handoffFails = false
     var confirmations = 0, logins = 0, installs = 0, statusChecks = 0, terminalCalls = 0, copyCalls = 0
     var keys: Set<AccessAuthorizationKey> = []
+    var commands: [String] = []
     private var continuation: CheckedContinuation<Void, Never>?
     func inspectHost(address: String, port: String) async throws -> AccessHostIdentity {
         if failure == .unreachable || failure == .identityMismatch { throw failure! }
@@ -175,11 +189,11 @@ import XCTest
         if failure == .verification { throw failure! }
     }
     func openTerminal(command: String) async throws {
-        terminalCalls += 1; if holdHandoff { await pause() }
+        commands.append(command); terminalCalls += 1; if holdHandoff { await pause() }
         if handoffFails { throw AccessFlowFailure.unreachable }
     }
     func copyCommand(_ command: String) async throws {
-        copyCalls += 1; if holdHandoff { await pause() }
+        commands.append(command); copyCalls += 1; if holdHandoff { await pause() }
         if handoffFails { throw AccessFlowFailure.unreachable }
     }
     func cancel() {} // intentionally ignores cancellation to exercise late callbacks
