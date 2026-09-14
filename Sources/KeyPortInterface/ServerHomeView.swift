@@ -2,8 +2,7 @@ import SwiftUI
 
 public struct ServerHomeView: View {
     @ObservedObject private var workspace: AccessWorkspace
-    @State private var showsForm = false
-    @State private var formDraft: AccessFormDraft?
+    @State private var formSession: AccessFormSession?
     @State private var retainedDraft: AccessFormDraft?
     @State private var notice: String?
     private let accessFlow: (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView
@@ -27,8 +26,8 @@ public struct ServerHomeView: View {
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
-        .sheet(isPresented: $showsForm) { accessFlow(formDraft ?? exampleDraft, { if $0.editingEntryID == nil { retainedDraft = $0 }; showsForm = false }) }
-        .alert("隔离预览", isPresented: Binding(get: { notice != nil && !showsForm }, set: { if !$0 { notice = nil } })) {
+        .sheet(item: $formSession) { session in accessFlow(session.draft, { if $0.editingEntryID == nil { retainedDraft = $0 }; formSession = nil }) }
+        .alert("隔离预览", isPresented: Binding(get: { notice != nil && formSession == nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
     }
@@ -100,8 +99,8 @@ public struct ServerHomeView: View {
                 .buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue).background(InterfaceStyle.color(0xF5F5F7))
         }.background(InterfaceStyle.color(0xFBFBFC))
     }
-    private func beginAdd() { formDraft = retainedDraft ?? exampleDraft; showsForm = true }
-    private func configure(_ draft: AccessFormDraft) { formDraft = draft; showsForm = true }
+    private func beginAdd() { formSession = AccessFormSession(draft: retainedDraft ?? exampleDraft) }
+    private func configure(_ draft: AccessFormDraft) { formSession = AccessFormSession(draft: draft) }
     private func previewNotice() { notice = "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" }
 }
 
@@ -128,4 +127,9 @@ struct WorkspaceSearch: View {
         }.foregroundStyle(.secondary).padding(8).frame(height: 32)
             .background(InterfaceStyle.color(0xECEEF1), in: RoundedRectangle(cornerRadius: 6))
     }
+}
+
+private struct AccessFormSession: Identifiable {
+    let id = UUID()
+    let draft: AccessFormDraft
 }
