@@ -1,53 +1,38 @@
-# Issue 96 — Graph preview and multiple paths
+# Issue 96 — Current repair acceptance
 
-Source commit: `9cfc4fdaf8c093b7aa38f810516cd9c65951014b`.
-Branch: `codex/issue-96-graph-preview`, stacked on PR #95.
+Current source: `6269ed40cf31f882c37b3a27217bbd6b1e51729e`. PR #97 remains stacked on #95 and draft pending visual sign-off. Old evidence under `9cfc4fd` is historical, not current-source proof.
 
-## Scope and design
+## Changes after review
 
-User authorized the multiple-path proposal on 2026-09-14. Existing #96 scope applies. New UI remains a fixture-only preview; production entry and main are not replaced.
+- Restore contextual primary actions: missing/unknown account authorization → 配置免密; unreachable address → 检查地址; installed authorization → 在终端打开. Configuration uses the selected server alias/description/account/address/port and no stored password.
+- Use an identified form session so SwiftUI cannot present stale example input on first open. Keep new-server draft retention separate from configuring an existing server. Existing alias owner is preserved, with duplicate validation still applied to newly added servers.
+- List and group inspector use full verification counts. Selecting a multi-path server does not silently select the first path or claim its account status for the entire server. Explicitly selected paths retain their own authorization and reachability.
+- Fit uses actual available dimensions, with 90 points above and below reserved for toolbar/legend. Removed the 75% minimum that caused overflow. Fit is an overview; users can zoom for detailed canvas labels while the inspector remains full size.
+- Path labels now use the two-line account/address + verification hierarchy of the Figma states. Mixed-status node captions use neutral color.
+- Verified simulated access updates only the in-memory fixture workspace on return; failure/cancellation does not report success. New paths can appear after a completed simulation. No production persistence or remote effects were introduced.
 
-Figma file: https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY
-- Original direct layout: `6:2`; future jump-host planning: `6:232`.
-- Naming rules: `27:2`, `28:2`.
-- Research and proposal: `37:2`.
-- New state drafts: `41:2` two paths, `44:2` six collapsed, `45:2` six expanded.
+## Verification on current source
 
-Existing Figma contains no component instances, Code Connect definitions, local variables or text styles for this screen. New state drafts reuse the existing Graph frame and its fonts and parts. They are state drafts pending visual acceptance, not approved replacements for all original frames.
+`swift test --filter KeyPortInterfaceTests`: **37 passed**. New tests cover account action policy, own-alias context versus new-server collision, and fit bounds in a 604-point canvas and a large graph. Existing first-access/alias/multi-path regressions pass. `script/build_design_preview.sh` built, signed, validated and launched the app; staged diff whitespace check passed.
 
-## Delivered behavior
+Actual Computer Use screenshots and AX in `evidence/6269ed4`:
 
-List and Graph use one injected AccessWorkspace. Stable server/path IDs retain selection and search. Configured paths alone produce directed edges; isolated servers remain without edges. Account authorization is independent of address reachability.
+1. Context form has `home-router`, root, correct address/port and an empty password; configuration title identifies an existing server.
+2. Submit with simulated existing-key authentication → host confirmation → login → authorization → verification → success → terminal handoff feedback → return to the SAME server with installed authorization and a new verified-path timestamp.
+3. Unreachable path opens its address/account form; cancel leaves it unchanged.
+4. Six-path list and server inspector show **1 verified / 4 pending / 1 failed**, with no implicit first-path selection.
+5. Actual resized window screenshot is 1103×745. Fit at approximately 51% shows all six paths and all three server nodes without canvas scrollbars/toolbar overlap. Inspector remains separately readable. Geometry tests additionally cover the declared 1100-point minimum.
+6. Long alias and Chinese description use truncation plus full AX/help text, without overlapping actions. Empty workspace shows add-server entry and no inferred paths.
 
-Paths group by current device and server. One to three paths have separate curves, endpoints and labels; four or more are collapsed by default with counts for verified/pending/failed. Expanding exposes each path; collapsing preserves the selected path in the inspector. Expanded state survives list/Graph switching; selecting a path opens its group. Paths use ID order rather than unrelated whole-graph indexes. Expanded graphs can scroll to preserve legibility; fit does not shrink below 75%.
+The manifest records exact bundle path, signed binary hash and all screenshot/AX/log hashes. Computer Use rendering changes screenshot pixel scale by window size: default screenshots are 1237×768 for a 1320×820 logical window; resized screenshots are recorded at their actual tool-rendered size. No screenshot dimensions were fabricated.
 
-No SSH configuration, Keychain, CloudKit, terminal, clipboard or remote write occurs. Status and time are fixture examples. Jump-host sheet is planning text only.
+## Figma and remaining acceptance boundary
 
-## Verified on this source
+File: https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY
+Baseline `6:2`, naming `27:2`/`28:2`; research `37:2`; new state drafts `41:2` (two paths), `44:2` (collapsed), `45:2` (expanded). Original three-column split is retained. No design frame was silently rewritten to match an implementation defect.
 
-- `swift test --filter KeyPortInterfaceTests`: 35 tests passed, including prior form/alias/first-access tests. This is the interface suite, not the full production suite.
-- `./script/build_design_preview.sh`: build, ad-hoc signing and bundle validation succeeded; exact App path is in the evidence manifest.
-- `git diff --cached --check`: passed before source commit.
-- Actual App: two paths, filtered two paths, six-path collapse/expand, exact failed-path detail, list/Graph search/selection/expansion retention, collapse retaining inspector selection, Cmd+] navigation to device, no-search-results.
-- Earlier actual-window checks in this task covered fit-to-canvas and IPv6 detail; final captures cover the changed paths above.
+Functional review findings are fixed and runtime-verified. The native app still uses system Chinese fonts versus Figma's Noto Sans SC substitute; dynamic fit/scrolling, interactive hit areas, and selectable inspector rows have no fully equivalent static-frame representation. Thus these checks are **not pixel-level visual approval**. User visual sign-off, complete assistive-technology traversal, and existing #90/#92 visual exceptions remain outstanding. Do not merge the preview stack, close the entire #82, or claim real SSH/CloudKit acceptance.
 
-`evidence/9cfc4fd` contains unmodified Computer Use screenshots, matching AX dumps, build/test logs, and SHA-256 manifest. Screenshots are tool-rendered 1237×768 window images for a 1320×820 logical window, not fabricated pixel-perfect Figma-size exports. The signed App binary hash differs from the unsigned SwiftPM executable by signing; the manifest hashes the actual launched bundle.
+## Production seams
 
-## Figma comparison and outstanding acceptance
-
-| Area | Evidence / status |
-| --- | --- |
-| Sidebar 200, canvas 824, inspector 296 at default size | Implemented; new drafts preserve original three-column dimensions |
-| Two paths without overlapping labels | Regression test and actual App capture pass |
-| Six paths with mixed status and individual selection | Test and actual App capture pass |
-| Font | Native system Chinese plus bundled JetBrains Mono; Figma uses Noto Sans SC substitute; user visual acceptance pending |
-| Path labels and inspector | Native App uses filled clickable labels and separate selectable rows; Figma state drafts use text labels/path directory; visual parity not yet accepted |
-| Dynamic layout | Expansion allocates vertical room and shifts node positions; Figma is a static state composition; transition/position behavior needs visual acceptance |
-| Narrow window, long text, empty data and full AX traversal | Fixtures exist; final-source comprehensive UI acceptance still pending |
-| Whole first-access GUI replay | Unit regressions pass; not replayed end-to-end on this source |
-
-Therefore #96 is **implemented for the reviewed multiple-path scope, pending broader visual/UI acceptance**. Do not mark the whole Issue passed, merge the stacked previews, close #82, or begin production SSH takeover on the strength of these checks. Prior #90/#92 visual exceptions remain outstanding.
-
-## Production migration seams
-
-AccessWorkspaceSnapshot is the injection boundary for future service data. DirectAccessProjection filters invalid/orphan/foreign-device paths and does not infer discovery edges. AccessAuthorizationKey keeps device/server/account semantics. A future adapter must connect persisted server naming, configured paths and verified identities without reintroducing the old NodeWorkspace layout. Future multihop needs explicit ordered hop identities; never group different hop sequences as identical direct paths.
+AccessWorkspaceSnapshot remains the injection boundary; DirectAccessProjection only accepts valid configured paths belonging to the current device. Authorization keys use device/server/account, independent of address. Future multi-hop paths need explicit ordered hop identities; current jump-host UI is planning only. KeyPort production entry, SSH configuration, Keychain, CloudKit and real terminal/clipboard behavior are untouched.
