@@ -1,0 +1,9 @@
+Explicit trusted-endpoint acceptance recheck; exit 0
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 16:02:38.418.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'KeyPortTests.xctest' passed at 2026-09-14 16:02:40.094.
+	 Executed 24 tests, with 0 failures (0 unexpected) in 1.568 (1.571) seconds
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 16:02:40.307.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.082 (0.087) seconds
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 16:02:40.415.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds

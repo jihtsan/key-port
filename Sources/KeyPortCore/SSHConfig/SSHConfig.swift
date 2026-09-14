@@ -162,3 +162,44 @@ public enum SSHConfigGenerator {
             .joined(separator: " ")
     }
 }
+
+extension SSHConfigGenerator {
+    /// Explicit, strictly verified direct routes; no helper or app executable dependency.
+    public static func directConfig(entries: [SSHConfigEntry], knownHostsPath: String) throws -> String {
+        func quoted(_ value: String) throws -> String {
+            guard !value.isEmpty, !value.contains(where: { $0.isNewline || $0 == "\0" || $0 == "%" || $0 == "\\" || $0 == "\"" }) else {
+                throw CocoaError(.fileWriteInapplicableStringEncoding)
+            }
+            return "\"\(value)\""
+        }
+        return try entries.map { entry in
+            let server = entry.server
+            guard !server.alias.isEmpty, server.alias.first != "-", server.alias.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }), (1...65535).contains(server.port), entry.proxyCommand == nil else {
+                throw CocoaError(.fileWriteInapplicableStringEncoding)
+            }
+            return """
+            Host \(server.alias)
+                HostName \(try quoted(server.host))
+                Port \(server.port)
+                User \(try quoted(server.username))
+                IdentityFile \(try quoted(entry.identityPath))
+                UserKnownHostsFile \(try quoted(knownHostsPath))
+                GlobalKnownHostsFile /dev/null
+                StrictHostKeyChecking yes
+                HostKeyAlgorithms ssh-ed25519
+                IdentitiesOnly yes
+                IdentityAgent none
+                PreferredAuthentications publickey
+                PasswordAuthentication no
+                KbdInteractiveAuthentication no
+                ControlMaster no
+                ControlPath none
+                ClearAllForwardings yes
+                ForwardAgent no
+                ConnectTimeout 5
+                ConnectionAttempts 1
+
+            """
+        }.joined(separator: "\n") + (entries.isEmpty ? "" : "\nHost *\n")
+    }
+}

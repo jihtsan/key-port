@@ -1,0 +1,21 @@
+Source: 42f4473ca1f3df1d599579fd7f6982300ddbede7
+Command: ./script/test.sh
+Exit: 0
+
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 15:50:57.949.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.049 (0.049) seconds
+Test Suite 'KeyPortTests.xctest' passed at 2026-09-14 15:51:15.942.
+	 Executed 217 tests, with 1 test skipped and 0 failures (0 unexpected) in 17.788 (17.860) seconds
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 15:51:16.162.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.085 (0.089) seconds
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 15:52:19.055.
+	 Executed 312 tests, with 0 failures (0 unexpected) in 62.739 (62.767) seconds
+KeyPortCoreChecks: all assertions passed
+SSH relay IPv4: ordered preconnect fallback, bidirectional bytes, and no postconnect fallback passed
+SSH relay bounded failure: timeout/budget diagnostic stayed stable
+SSH relay IPv6: preconnect and byte forwarding passed
+SSH relay fixture passed
+KeyPortAskPassChecks: protected FIFO consumed once
+
+SSHKnownHostsPathTests: explicit-endpoint opt-in test skipped by the standard suite.
+Real strict-host-key short-alias login separately succeeded in this task.

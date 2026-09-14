@@ -34,12 +34,13 @@ private struct AccessPilotHome: View {
     @State private var pathTask: Task<Void, Never>?
     var body: some View {
         ServerHomeView(workspace: store.workspace, onPathAction: act, previewControls: {
-            AnyView(Text(checking ? "正在测试路径…" : "真实连接验收 · 仅此 Mac").font(.system(size: 11)).foregroundStyle(.secondary))
+            AnyView(AccessPilotControls(store: store, workspace: store.workspace, notice: $notice))
         }) { draft, close in AnyView(AccessPilotFlowView(store: store, draft: draft, close: close)) }
         .alert("连接结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
         .onDisappear { pathTask?.cancel() }
+        .task { do { try store.synchronizeAliases() } catch { notice = error.localizedDescription } }
     }
     private func act(_ path: ConfiguredAccessPath, test: Bool) {
         guard !checking, let connection = store.state.connections.first(where: { $0.id == path.id }),
@@ -67,7 +68,7 @@ private struct AccessPilotHome: View {
                 }
             } catch {
                 if test { try? store.checked(path.id, success: false, unreachable: (error as? AccessFlowFailure) == .unreachable) }
-                notice = test ? "路径验证未通过。请打开连接设置检查；身份不匹配时不会自动继续。" : "终端交接失败，请在配置成功页复制命令。"
+                notice = (error as? SSHConfigService.AliasInstallation.Failure)?.message ?? (test ? "路径验证未通过。请打开连接设置检查；身份不匹配时不会自动继续。" : "终端交接失败，请在配置成功页复制命令。")
             }
         }
     }
@@ -95,5 +96,50 @@ private struct AccessPilotFlowView: View {
             }
             .alert("检测结果未保存", isPresented: $storageError) { Button("好") {} }
                 message: { Text("本次操作失败，且本地存储未能更新。已有记录不代表本次检测成功。") }
+    }
+}
+
+private struct AccessPilotControls: View {
+    let store: AccessPilotStore
+    @ObservedObject var workspace: AccessWorkspace
+    @Binding var notice: String?
+    @State private var renaming = false
+    @State private var alias = ""
+    private var connection: AccessPilotStore.Connection? {
+        if let path = workspace.selectedPath { return store.state.connections.first { $0.id == path.id } }
+        guard let server = workspace.selectedServer else { return nil }
+        return store.state.connections.first { $0.serverID == server.id && store.isDefault($0) }
+    }
+    var body: some View {
+        Menu("SSH 连接") {
+            Button("同步终端别名") { perform { try store.synchronizeAliases(); notice = "终端别名已同步。" } }
+            if let connection {
+                Text(store.isDefault(connection) ? "当前为默认连接" : "当前为指定路径")
+                Button("复制连接命令") { perform {
+                    let command = try store.command(for: connection)
+                    NSPasteboard.general.clearContents()
+                    guard NSPasteboard.general.setString(command, forType: .string) else { throw AccessPilotError.terminal }
+                    notice = "已复制：" + command
+                } }
+                Button("在终端打开此连接") {
+                    Task { @MainActor in
+                        do { try await OpenSSHFirstAccessAdapter.handoff(store.command(for: connection), directory: store.paths.applicationSupport) }
+                        catch { notice = error.localizedDescription }
+                    }
+                }
+                Button("设为默认连接") { perform { try store.setDefault(connection.id) } }
+                    .disabled(connection.verification != "verified" || store.isDefault(connection))
+                Button("修改 SSH 别名") { alias = connection.alias; renaming = true }
+                Button("删除当前路径", role: .destructive) { perform { try store.remove(connection.id) } }
+            }
+        }.font(.system(size: 11)).fixedSize()
+        .alert("修改 SSH 别名", isPresented: $renaming) {
+            TextField("SSH 别名", text: $alias)
+            Button("取消", role: .cancel) {}
+            Button("保存") { if let connection { perform { try store.rename(serverID: connection.serverID, alias: alias) } } }
+        } message: { Text("同步更新该服务器的路径；原别名将从管理配置中移除。") }
+    }
+    private func perform(_ action: () throws -> Void) {
+        do { try action() } catch { notice = error.localizedDescription }
     }
 }

@@ -42,8 +42,7 @@ import KeyPortInterface
         try await adapter!.verify(authorization, address: input.address, port: input.port)
         XCTAssertEqual(store!.workspace.graph.paths.first?.verification, .verified)
         let command = adapter!.command(for: input)
-        XCTAssertTrue(command.contains(" -F "))
-        XCTAssertTrue(command.hasSuffix("'test-server'"))
+        XCTAssertEqual(command, "ssh test-server")
         let requests = await executor.requests
         XCTAssertEqual(requests.filter { String(data: $0.standardInput ?? Data(), encoding: .utf8)?.contains(Data(publicLine.utf8).base64EncodedString()) == true }.count, 1)
         for request in requests {
@@ -63,6 +62,60 @@ import KeyPortInterface
         XCTAssertEqual(restored.state.deviceID, device)
         XCTAssertEqual(restored.workspace.graph.paths.first?.verification, .verified)
         XCTAssertEqual(restored.workspace.graph.servers.first?.description, input.description)
+    }
+    func testDefaultPathRenameDeletionAndRestartStayConsistent() throws {
+        let root = try directory()
+        var store: AccessPilotStore? = try AccessPilotStore(home: root)
+        let key = try key(store!)
+        let server = UUID().uuidString
+        let first = try store!.save(draft: draft(), serverID: server, key: key)
+        try store!.checked(first, success: true)
+        var secondDraft = draft(); secondDraft.address = "second.example"
+        let second = try store!.save(draft: secondDraft, serverID: server, key: key)
+        try store!.checked(second, success: true)
+        XCTAssertEqual(try store!.command(for: store!.state.connections[0]), "ssh test-server")
+        XCTAssertTrue(try store!.command(for: store!.state.connections[1]).contains(" -F "))
+        XCTAssertTrue(try String(contentsOf: store!.installation.managed).contains("test.example"))
+        try store!.setDefault(second)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: store!.paths.keyPortDirectory.appendingPathComponent("path-\(first).conf").path))
+        XCTAssertTrue(try String(contentsOf: store!.installation.managed).contains("second.example"))
+        try store!.rename(serverID: server, alias: "renamed")
+        XCTAssertFalse(try String(contentsOf: store!.installation.managed).contains("Host test-server"))
+        XCTAssertTrue(store!.state.connections.allSatisfy { $0.alias == "renamed" })
+        store = nil
+        store = try AccessPilotStore(home: root)
+        try store!.synchronizeAliases()
+        XCTAssertEqual(store!.state.defaultPaths?[server], second)
+        XCTAssertEqual(try store!.command(for: store!.state.connections.first { $0.id == second }!), "ssh renamed")
+        try store!.remove(second)
+        XCTAssertNil(store!.state.defaultPaths?[server])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store!.installation.managed.path))
+        XCTAssertTrue(try store!.command(for: store!.state.connections[0]).contains(" -F "))
+        XCTAssertEqual(store!.state.keys.count, 1)
+    }
+    func testConflictingRenamePreservesStateAndConfiguration() throws {
+        let store = try AccessPilotStore(home: directory()), key = try key(store)
+        let server = UUID().uuidString
+        let id = try store.save(draft: draft(), serverID: server, key: key)
+        try store.checked(id, success: true)
+        let original = try String(contentsOf: store.installation.userConfig)
+        try Data((original + "\nHost occupied\n HostName other.example\n").utf8).write(to: store.installation.userConfig)
+        XCTAssertThrowsError(try store.rename(serverID: server, alias: "occupied"))
+        XCTAssertEqual(store.state.connections[0].alias, "test-server")
+        XCTAssertTrue(try String(contentsOf: store.installation.managed).contains("Host test-server"))
+    }
+    func testRepeatedSaveRetainsDefaultAndRequiresFreshVerification() throws {
+        let store = try AccessPilotStore(home: directory()), key = try key(store)
+        let server = UUID().uuidString
+        let id = try store.save(draft: draft(), serverID: server, key: key)
+        try store.checked(id, success: true)
+        let repeated = try store.save(draft: draft(), serverID: server, key: key)
+        XCTAssertEqual(id, repeated); XCTAssertEqual(store.state.connections.count, 1)
+        XCTAssertEqual(store.state.defaultPaths?[server], id)
+        XCTAssertThrowsError(try store.command(for: store.state.connections[0]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.installation.managed.path))
+        try store.checked(id, success: true)
+        XCTAssertEqual(try store.command(for: store.state.connections[0]), "ssh test-server")
     }
     func testChangedHostStopsBeforeAuthentication() async throws {
         let store = try AccessPilotStore(home: directory()); _ = try key(store)
