@@ -86,7 +86,7 @@ public struct ServerHomeView: View {
                                         Text(workspace.paths(for: server.id).isEmpty ? "暂无配置路径" : workspace.paths(for: server.id).verificationSummary)
                                             .font(.system(size: 10)).opacity(0.75)
                                     }.frame(maxWidth: .infinity, alignment: .leading)
-                                }.padding(12).frame(height: workspace.selectedServer?.id == server.id ? 84 : 74)
+                                }.padding(12).frame(height: 74)
                                     .foregroundStyle(workspace.selectedServer?.id == server.id ? .white : InterfaceStyle.ink)
                                     .background(workspace.selectedServer?.id == server.id ? InterfaceStyle.blue : .clear, in: RoundedRectangle(cornerRadius: 8))
                                     .contentShape(Rectangle())
