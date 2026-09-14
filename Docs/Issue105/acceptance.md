@@ -34,7 +34,7 @@
 
 完整脚本覆盖 SwiftPM 各测试目标、KeyPortCoreChecks、实际本机进程、受保护 AskPass FIFO 与独立 Relay 的本机 OpenSSH fixture。发布模式构建、应用签名校验及 `--verify` 启动检查均执行；最终命令摘要见 `verification.txt`。
 
-原生 UI 检查使用 `/tmp/keyport105-ui-workspace`，运行正式 KeyPort 入口：空白首页、设备面板、iCloud/归档设置和单表单字段均已读取与查看。用于列表/Graph 检查的数据为 `example.invalid`、未验证状态，不执行 SSH，不作为真实服务器验收。
+原生 UI 检查使用 `/tmp/keyport105-ui-workspace`，运行正式 KeyPort 入口：空白首页、设备面板、iCloud/归档设置和单表单字段均已读取与查看。用于列表/Graph 检查的数据为 `example.invalid`、未验证状态，不执行 SSH，不作为真实服务器验收。最终窗口已确认授权按钮打开设备/授权管理，列表切换到 Graph 后保留同一服务器、账户、地址和未验证状态。截图见 [隔离 Graph](graph-isolated.jpg)。
 
 ## 尚未由本次验证证明的边界
 

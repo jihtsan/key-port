@@ -1,0 +1,20 @@
+Code revision: b6dffdc6bfcd912c27caecda9d163e5b801bc259
+Date: 2026-09-14 (Asia/Shanghai)
+
+./script/test.sh: PASS
+KeyPortTunnelBrokerTests.xctest: Executed 1 test, with 0 failures (0 unexpected) in 0.044 (0.044) seconds
+KeyPortTests.xctest: Executed 59 tests, with 1 test skipped and 0 failures (0 unexpected) in 4.116 (4.124) seconds
+KeyPortInterfaceTests.xctest: Executed 39 tests, with 0 failures (0 unexpected) in 0.081 (0.085) seconds
+KeyPortCoreTests.xctest: Executed 312 tests, with 0 failures (0 unexpected) in 63.214 (63.249) seconds
+KeyPortCoreChecks: all assertions passed
+SSH relay fixture passed
+KeyPortAskPassChecks: protected FIFO consumed once
+Skipped: opt-in real host trust test; no user-approved real endpoint supplied.
+
+swift build -c release --product KeyPort: PASS
+KEYPORT_WORKSPACE_HOME=/tmp/keyport105-ui-workspace ./script/build_and_run.sh --verify: PASS
+codesign --verify --deep --strict: PASS; ad-hoc signing (CloudKit unavailable).
+
+Native UI: PASS for new home, single form, device/authorization sheet, iCloud/archive settings, and shared list/Graph selection with unverified example.invalid fixture.
+No real remote authorization/revocation, production workspace migration, or dual-Mac CloudKit acceptance was performed.
+git diff --check: PASS
