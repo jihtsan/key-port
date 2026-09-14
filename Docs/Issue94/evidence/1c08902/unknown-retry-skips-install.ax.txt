@@ -1,0 +1,16 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 正在配置免密 root @ home-router-2 · 请保持服务器网络连接。 1 · 验证登录 已验证地址、身份和登录凭据 2 · 安装本机公钥 此 Mac 对该服务器账户的公钥授权已确认；不重复安装 3 · 验证免密登录 正在使用本机密钥验证免密登录…
+		3 button 停止后续步骤
+		4 text 隔离模拟 · 无真实凭据与网络操作
+		5 menu button 模拟场景：首次连接成功, Description: 模拟场景
+		6 button 模拟完成：免密验证
+7 menu bar
+	8 KeyPort Design Preview
+	9 Edit
+	10 View
+	11 Window
+	12 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise

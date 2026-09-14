@@ -1,0 +1,32 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 添加服务器并配置免密 别名用于 SSH 连接，描述帮助你识别服务器。 SSH 别名
+		3 text field (settable) Description: SSH 别名, Value: home-router-2, Placeholder: 例如 home-router
+		4 text 以字母开头，仅含英文字母、数字、- 和 _；别名不可重复。 描述（选填）
+		5 text field (settable) Description: 描述（选填）, Value: 取消后保留的中文说明, Placeholder: 选填，例如：家里的主路由器
+		6 text 地址 / 端口
+		7 text field (settable) Description: 地址, Value: 192.168.8.1, Placeholder: IP 地址或主机名
+		8 text :
+		9 text field (settable) Description: 端口, Value: 22
+		10 text 登录账户
+		11 text field (settable) Description: 登录账户, Value: root
+		12 text 认证方式 使用本机现有 SSH 密钥 优先使用本机已有密钥认证；不需要填写登录密码。
+		13 button 改用登录密码
+		14 text 描述可随时修改，不改变 SSH 别名与连接配置。
+		15 button 验证并配置免密
+		16 button 取消
+		17 text 可点击演示 · 固定示例数据，无真实凭据与网络操作
+		18 menu button 模拟场景
+19 menu bar
+	20 KeyPort Design Preview
+	21 Edit
+	22 View
+	23 Window
+	24 Help
+
+Selected text: ```
+home-router-2
+```
+
+Note: Pay special attention to the content selected by the user. If the user asks a question or refers to the content they are looking at on-screen, they might be referring to the selected content (but they might be referring to something else that's visible, too).

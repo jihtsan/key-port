@@ -1,0 +1,49 @@
+Window: "KeyPort · 隔离设计预览", App: KeyPort Design Preview.
+0 standard window KeyPort · 隔离设计预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器 3
+		3 button Description: 添加服务器, ID: plus
+		4 text 列表
+		5 button 拓扑
+		6 text 服务器详情
+		7 menu button 预览状态
+		8 image Description: 密码, ID: key
+		9 text KeyPort
+		10 image Description: 搜索, ID: magnifyingglass
+		11 text field (settable) Description: 搜索别名或描述, Value: 主路由
+		12 text 已添加 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button Description: home-router, 家里的主路由器, root · 免密已就绪, Help: home-router, 家里的主路由器
+		16 button 活动记录
+		17 text 标签 家庭网络 管理信息已同步
+		18 button 设置
+		19 button 添加或导入服务器
+		20 scroll area
+			21 image server.rack
+			22 text Help: home-router, Value: home-router 家里的主路由器   ·   家庭网络 登录账户
+			23 menu button 登录账户
+			24 menu button Description: 登录账户, ID: chevron.up.chevron.down
+			25 text 本机免密已就绪 · 最近登录测试成功
+			26 button 在终端打开
+			27 button 测试连接
+			28 button 管理免密授权
+			29 text 连接地址
+			30 button 管理地址
+			31 image Description: Wi-Fi, ID: wifi
+			32 text 局域网 192.168.8.1:22 可到达 · 当前使用 当前使用固定地址
+			33 button 连接设置, 描述、地址选择策略
+			34 text 最近活动
+			35 image (selected) Description: 已选择, ID: checkmark
+			36 text 登录测试成功 root 今天 22:00 设计示例 · 状态非实时
+	37 close button
+	38 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	39 minimize button
+40 menu bar
+	41 KeyPort Design Preview
+	42 Edit
+	43 View
+	44 Window
+	45 Help
+
+The focused UI element is 11 text field (settable) Description: 搜索别名或描述, Value: 主路由

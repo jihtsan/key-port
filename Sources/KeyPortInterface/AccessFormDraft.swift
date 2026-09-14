@@ -1,9 +1,9 @@
 import Foundation
 import Darwin
-import CryptoKit
 
 public struct AccessFormDraft: Equatable {
-    public var name = ""
+    public var description = ""
+    public var editingEntryID: String?
     public var address = ""
     public var port = "22"
     public var account = ""
@@ -13,14 +13,16 @@ public struct AccessFormDraft: Equatable {
     public init() {}
 
     public var validationMessage: String? {
-        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "请输入服务器名称。" }
+        validationMessage(in: AliasDirectory())
+    }
+
+    public func validationMessage(in directory: AliasDirectory) -> String? {
+        if let error = directory.validationMessage(for: alias, editingEntryID: editingEntryID) { return error }
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
         if !Self.isValidHost(host) { return "请输入有效的 IP 地址或主机名，不含协议与账户。" }
         if !port.allSatisfy({ $0.isASCII && $0.isNumber }) || Int(port).map({ !(1...65535).contains($0) }) != false { return "端口必须为 1–65535。" }
         if account.isEmpty || account.hasPrefix("-") || account.contains(where: { $0.isWhitespace }) { return "请输入有效的登录账户。" }
         if !existingKey && password.isEmpty { return "请输入登录密码，或选择使用现有密钥。" }
-        if !alias.isEmpty && !alias.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }) { return "SSH 别名只能包含英文字母、数字、点、横线及下划线。" }
-        if alias.hasPrefix("-") { return "SSH 别名不能以横线开头。" }
         return nil
     }
     /// Syntax validation only. No DNS lookup, network probe, or identity claim.
@@ -55,23 +57,14 @@ public struct AccessFormDraft: Equatable {
         }
     }
 
-    public var suggestedAlias: String {
-        let readable = name.lowercased().map { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") ? String($0) : "-" }.joined().trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        if !readable.isEmpty { return readable }
-        // Stable across retries and address changes; never derive an SSH target from an empty slug.
-        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
-        let digest = SHA256.hash(data: Data(normalized.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
-        return "server-" + digest
-    }
 
-    public var resolvedAlias: String { alias.isEmpty ? suggestedAlias : alias }
 }
 
 /// Validation errors belong to a submit attempt, not to the cleared credential afterward.
 struct AccessFormSubmissionState {
     private(set) var error: String?
-    mutating func prepare(_ draft: inout AccessFormDraft) -> AccessFormDraft? {
-        error = draft.validationMessage
+    mutating func prepare(_ draft: inout AccessFormDraft, directory: AliasDirectory = .init()) -> AccessFormDraft? {
+        error = draft.validationMessage(in: directory)
         guard error == nil else { return nil }
         let submission = draft
         draft.password = ""

@@ -73,11 +73,15 @@ import KeyPortInterface
     @StateObject private var adapter: FixtureAccessAdapter
     @StateObject private var flow: FirstAccessFlow
     let initial: AccessFormDraft
-    let onClose: () -> Void
-    init(draft: AccessFormDraft, onClose: @escaping () -> Void) {
+    let onClose: (AccessFormDraft) -> Void
+    init(draft: AccessFormDraft, onClose: @escaping (AccessFormDraft) -> Void) {
         let adapter = FixtureAccessAdapter()
         _adapter = StateObject(wrappedValue: adapter)
-        _flow = StateObject(wrappedValue: FirstAccessFlow(draft: draft, adapter: adapter))
+        _flow = StateObject(wrappedValue: FirstAccessFlow(draft: draft, adapter: adapter, aliasDirectory: AliasDirectory(entries: [
+            .init(alias: "home-router", source: .sshConfiguration),
+            .init(alias: "mac-studio", source: .managed, ownerID: "studio"),
+            .init(alias: "tencent-cloud", source: .managed, ownerID: "cloud")
+        ])))
         initial = draft; self.onClose = onClose
     }
     var body: some View {

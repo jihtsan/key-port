@@ -1,0 +1,19 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 免密访问已就绪 此 Mac 已通过 root 账户的免密登录验证。（模拟）
+		3 image (selected) Description: 已选择, ID: checkmark
+		4 text Help: home-router-2, Value: home-router-2 更改后的中文描述 root · 此 Mac · 免密登录验证成功（模拟） ssh home-router-2 SSH 命令使用别名；修改描述不改变连接配置。 终端不可用，请重试或复制命令 · 演示反馈 未打开终端、未写剪贴板；预览中的 SSH 别名没有安装。
+		5 button 在终端打开
+		6 button 返回服务器
+		7 button 复制命令（演示）
+		8 text 隔离模拟 · 无真实凭据与网络操作
+		9 menu button 模拟场景：终端不可用, Description: 模拟场景
+10 menu bar
+	11 KeyPort Design Preview
+	12 Edit
+	13 View
+	14 Window
+	15 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise

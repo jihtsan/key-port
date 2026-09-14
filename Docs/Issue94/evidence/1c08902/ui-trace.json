@@ -1,0 +1,772 @@
+[
+  {
+    "label": "home-ready",
+    "time": "2026-09-14T00:33:00.686Z"
+  },
+  {
+    "label": "search-description",
+    "time": "2026-09-14T00:33:18.577Z"
+  },
+  {
+    "label": "search-alias",
+    "time": "2026-09-14T00:33:19.121Z"
+  },
+  {
+    "label": "home-empty-description",
+    "time": "2026-09-14T00:33:31.023Z"
+  },
+  {
+    "label": "home-long-description",
+    "time": "2026-09-14T00:33:48.702Z"
+  },
+  {
+    "label": "home-long-description",
+    "time": "2026-09-14T00:34:13.087Z"
+  },
+  {
+    "action": "click",
+    "needle": "预览：未配置",
+    "index": 3
+  },
+  {
+    "label": "home-unconfigured",
+    "time": "2026-09-14T00:34:40.811Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 预览状态",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "预览：不可达",
+    "index": 4
+  },
+  {
+    "label": "home-unreachable",
+    "time": "2026-09-14T00:34:42.931Z"
+  },
+  {
+    "action": "click",
+    "needle": "button Description: 添加服务器",
+    "index": 3
+  },
+  {
+    "label": "form-empty-alias",
+    "time": "2026-09-14T00:34:44.948Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 18
+  },
+  {
+    "label": "alias-required",
+    "time": "2026-09-14T00:35:02.336Z"
+  },
+  {
+    "action": "set",
+    "needle": "SSH 别名",
+    "value": "我的服务器"
+  },
+  {
+    "label": "alias-invalid",
+    "time": "2026-09-14T00:35:03.493Z"
+  },
+  {
+    "action": "set",
+    "needle": "SSH 别名",
+    "value": "home-router"
+  },
+  {
+    "label": "alias-config-conflict",
+    "time": "2026-09-14T00:35:04.135Z"
+  },
+  {
+    "action": "set",
+    "needle": "SSH 别名",
+    "value": "MAC-STUDIO"
+  },
+  {
+    "label": "alias-managed-conflict",
+    "time": "2026-09-14T00:35:04.794Z"
+  },
+  {
+    "action": "set",
+    "needle": "SSH 别名",
+    "value": "home-router-2"
+  },
+  {
+    "label": "form-password-hidden",
+    "time": "2026-09-14T00:35:14.396Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 显示",
+    "index": 14
+  },
+  {
+    "label": "form-password-shown",
+    "time": "2026-09-14T00:35:15.748Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 隐藏",
+    "index": 14
+  },
+  {
+    "action": "set",
+    "needle": "地址,",
+    "value": "!!!"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 18
+  },
+  {
+    "label": "invalid-address",
+    "time": "2026-09-14T00:35:18.718Z"
+  },
+  {
+    "action": "set",
+    "needle": "地址,",
+    "value": "192.168.8.1"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 18
+  },
+  {
+    "label": "host-confirmation",
+    "time": "2026-09-14T00:35:21.071Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 已核对，继续",
+    "index": 3
+  },
+  {
+    "label": "login",
+    "time": "2026-09-14T00:35:35.459Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "label": "authorization",
+    "time": "2026-09-14T00:35:37.088Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：设备授权",
+    "index": 6
+  },
+  {
+    "label": "verification",
+    "time": "2026-09-14T00:35:38.036Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "label": "success-description",
+    "time": "2026-09-14T00:35:38.954Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 在终端打开",
+    "index": 5
+  },
+  {
+    "label": "terminal-pending",
+    "time": "2026-09-14T00:35:49.425Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：终端交接",
+    "index": 10
+  },
+  {
+    "label": "terminal-feedback",
+    "time": "2026-09-14T00:35:50.975Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 复制命令",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：复制命令",
+    "index": 10
+  },
+  {
+    "label": "copy-feedback",
+    "time": "2026-09-14T00:35:53.649Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回服务器",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button Description: 添加服务器",
+    "index": 3
+  },
+  {
+    "label": "reopened-password-cleared",
+    "time": "2026-09-14T00:35:57.007Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 已能通过密钥登录",
+    "index": 16
+  },
+  {
+    "action": "set",
+    "needle": "描述（选填）",
+    "value": ""
+  },
+  {
+    "label": "existing-key-empty-description",
+    "time": "2026-09-14T00:35:59.709Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "label": "host-cancel-preserves-alias",
+    "time": "2026-09-14T00:36:13.429Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 已核对，继续",
+    "index": 3
+  },
+  {
+    "label": "login-cancel-preserves-alias",
+    "time": "2026-09-14T00:36:15.899Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "label": "authorization-cancelled",
+    "time": "2026-09-14T00:36:19.146Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回表单",
+    "index": 3
+  },
+  {
+    "label": "cancel-return-form",
+    "time": "2026-09-14T00:36:20.566Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：设备授权",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "label": "success-empty-description",
+    "time": "2026-09-14T00:36:24.378Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回服务器",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button Description: 添加服务器",
+    "index": 3
+  },
+  {
+    "action": "set",
+    "needle": "描述（选填）",
+    "value": "取消后保留的中文说明"
+  },
+  {
+    "label": "form-cancel-reopen",
+    "time": "2026-09-14T00:36:43.954Z"
+  },
+  {
+    "label": "keyboard-alias-to-description",
+    "time": "2026-09-14T00:36:44.674Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "已授权但验证失败",
+    "index": 8
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 已核对，继续",
+    "index": 3
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：设备授权",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "label": "failure-partial-success",
+    "time": "2026-09-14T00:37:06.116Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回修改",
+    "index": 5
+  },
+  {
+    "action": "set",
+    "needle": "描述（选填）",
+    "value": "更改后的中文描述"
+  },
+  {
+    "action": "set",
+    "needle": "地址,",
+    "value": "2001:db8::2"
+  },
+  {
+    "label": "partial-edit-description-address",
+    "time": "2026-09-14T00:37:09.599Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "首次连接成功",
+    "index": 1
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "label": "retry-skips-install",
+    "time": "2026-09-14T00:37:15.291Z"
+  },
+  {
+    "label": "verification-cancelled",
+    "time": "2026-09-14T00:37:15.782Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 重新验证",
+    "index": 4
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "label": "success-description-address-edited",
+    "time": "2026-09-14T00:37:19.228Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 8
+  },
+  {
+    "action": "click",
+    "needle": "终端不可用",
+    "index": 10
+  },
+  {
+    "action": "click",
+    "needle": "button 在终端打开",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：终端交接",
+    "index": 10
+  },
+  {
+    "label": "terminal-unavailable",
+    "time": "2026-09-14T00:37:40.273Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 9
+  },
+  {
+    "action": "click",
+    "needle": "复制失败",
+    "index": 11
+  },
+  {
+    "action": "click",
+    "needle": "button 复制命令",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：复制命令",
+    "index": 10
+  },
+  {
+    "label": "copy-failed",
+    "time": "2026-09-14T00:37:44.987Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 9
+  },
+  {
+    "action": "click",
+    "needle": "首次连接成功",
+    "index": 1
+  },
+  {
+    "action": "click",
+    "needle": "button 复制命令",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：复制命令",
+    "index": 10
+  },
+  {
+    "label": "copy-recovered",
+    "time": "2026-09-14T00:37:49.678Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回服务器",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button Description: 添加服务器",
+    "index": 3
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "地址不可达",
+    "index": 4
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "label": "failure-unreachable",
+    "time": "2026-09-14T00:37:56.658Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回修改",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "主机身份不匹配",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "label": "failure-identity-mismatch",
+    "time": "2026-09-14T00:38:01.167Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回修改",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "登录失败",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 已核对，继续",
+    "index": 3
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "label": "failure-login",
+    "time": "2026-09-14T00:38:23.462Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 修改账户或密码",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "授权失败（未写入）",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：设备授权",
+    "index": 6
+  },
+  {
+    "label": "failure-authorization",
+    "time": "2026-09-14T00:38:30.582Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回修改",
+    "index": 5
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "授权结果未知",
+    "index": 9
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：设备授权",
+    "index": 6
+  },
+  {
+    "label": "failure-authorization-unknown",
+    "time": "2026-09-14T00:38:37.573Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 8
+  },
+  {
+    "action": "click",
+    "needle": "首次连接成功",
+    "index": 1
+  },
+  {
+    "action": "click",
+    "needle": "button 重新验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "label": "unknown-retry-skips-install",
+    "time": "2026-09-14T00:38:42.294Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 返回服务器",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button Description: 添加服务器",
+    "index": 3
+  },
+  {
+    "action": "set",
+    "needle": "描述（选填）",
+    "value": "家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；家里的主路由器，负责客厅与书房的网络连接；"
+  },
+  {
+    "label": "form-long-description",
+    "time": "2026-09-14T00:39:05.758Z"
+  },
+  {
+    "action": "click",
+    "needle": "menu button 模拟场景",
+    "index": 18
+  },
+  {
+    "action": "click",
+    "needle": "已授权账户／新增地址",
+    "index": 3
+  },
+  {
+    "action": "click",
+    "needle": "button 验证并配置免密",
+    "index": 15
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：登录验证",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "button 模拟完成：免密验证",
+    "index": 6
+  },
+  {
+    "label": "success-long-description",
+    "time": "2026-09-14T00:39:11.816Z"
+  },
+  {
+    "action": "click",
+    "needle": "button 返回服务器",
+    "index": 6
+  },
+  {
+    "action": "click",
+    "needle": "Description: 预览状态",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "预览：免密就绪",
+    "index": 2
+  },
+  {
+    "action": "click",
+    "needle": "预览状态",
+    "index": 7
+  },
+  {
+    "action": "click",
+    "needle": "预览：长中文描述",
+    "index": 1
+  },
+  {
+    "label": "home-narrow-long-description",
+    "time": "2026-09-14T00:40:08.941Z"
+  }
+]

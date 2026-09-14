@@ -1,0 +1,17 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 服务器身份不匹配，已停止 本次尚未安装本机公钥。
+		3 image Description: 错误, ID: exclamationmark.circle
+		4 text 服务器身份不匹配，已停止 本次主机身份与已信任身份不一致；没有继续登录或授权。 请通过可信渠道核对主机身份；此处不能忽略或自动继续。 别名、描述、地址与账户保留。密码已清空，不落盘保存。 本次尚未安装本机公钥。
+		5 button 返回修改
+		6 text 隔离模拟 · 无真实凭据与网络操作
+		7 menu button 模拟场景
+8 menu bar
+	9 KeyPort Design Preview
+	10 Edit
+	11 View
+	12 Window
+	13 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise

@@ -1,0 +1,16 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 配置已停止 本机公钥已存在；尚未完成免密验证，不代表全部成功。 已取消后续步骤 取消不代表撤销已经发生的授权。迟到结果不会改变当前页面。 再次尝试会重新核对主机身份和账户授权；密码已清空。
+		3 button 返回表单
+		4 button 重新验证
+		5 text 隔离模拟 · 无真实凭据与网络操作
+		6 menu button 模拟场景
+7 menu bar
+	8 KeyPort Design Preview
+	9 Edit
+	10 View
+	11 Window
+	12 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise
