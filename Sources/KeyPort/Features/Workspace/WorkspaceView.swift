@@ -41,6 +41,10 @@ private struct WorkspaceHome: View {
         .task {
             do { try store.synchronizeAliases() } catch { notice = error.localizedDescription }
             store.setSyncEnabled(UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled"))
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                await store.synchronize(automatically: true)
+            }
         }
     }
     private func act(_ path: ConfiguredAccessPath, test: Bool) {

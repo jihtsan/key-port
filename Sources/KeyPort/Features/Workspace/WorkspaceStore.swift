@@ -60,7 +60,7 @@ import Observation
         syncTask?.cancel()
         syncTask = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-            await self?.synchronize()
+            await self?.synchronize(automatically: true)
         }
     }
     private(set) var syncState: CloudSyncState = .disabled
@@ -231,13 +231,15 @@ import Observation
         next.topology.profiles[i].name = name; next.topology.profiles[i].modifiedAt = Date()
         try commit(next)
     }
-    func synchronize() async {
+    func synchronize(automatically: Bool = false) async {
+        guard !automatically || syncEnabled else { return }
         guard syncState != .syncing else { return }
         syncState = .syncing
         let sentRevision = revision
         do {
             let sent = topology
             let merged = try await cloud.synchronize(sent)
+            if automatically && !syncEnabled { syncState = .disabled; return }
             // A local SSH operation may have completed while CloudKit was suspended.
             var next = document
             next.topology = TopologyCloudMetadataSnapshotPolicy.restoringLocalState(in: TopologyCloudMetadataSnapshotPolicy.merge(local: topology, remote: merged), from: topology)
@@ -245,6 +247,7 @@ import Observation
             try commit(next, scheduleSync: false); syncState = .succeeded(Date())
             if localChanged { scheduleSync() }
         } catch let error as CloudSyncError {
+            if automatically && !syncEnabled { syncState = .disabled; return }
             switch error {
             case .adHocSignature: syncState = .adHocSigned
             case .missingEntitlement: syncState = .cloudKitDisabled
