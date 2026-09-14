@@ -1,0 +1,52 @@
+Window: "KeyPort · 隔离设计预览", App: KeyPort Design Preview.
+0 standard window KeyPort · 隔离设计预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器 3
+		3 button Description: 添加服务器, ID: plus
+		4 text 列表
+		5 button 拓扑
+		6 text 服务器详情
+		7 menu button 预览状态
+		8 image Description: 密码, ID: key
+		9 text KeyPort
+		10 image Description: 搜索, ID: magnifyingglass
+		11 text field (settable) 搜索别名或描述
+		12 text 已添加 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button Description: home-router, 家里的主路由器, root · 免密已就绪, Help: home-router, 家里的主路由器
+		16 button 活动记录
+		17 button Description: mac-studio, jooder · 免密已就绪, Help: mac-studio
+		18 text 标签 家庭网络
+		19 button Description: tencent-cloud, 待添加登录账户, Help: tencent-cloud
+		20 text Help: 设计示例，未连接 iCloud, Value: 管理信息已同步
+		21 button 设置
+		22 button 添加或导入服务器
+		23 scroll area
+			24 image server.rack
+			25 text Help: home-router, Value: home-router 家里的主路由器   ·   家庭网络 登录账户
+			26 menu button 登录账户
+			27 menu button Description: 登录账户, ID: chevron.up.chevron.down
+			28 text 本机免密已就绪 · 最近登录测试成功
+			29 button 在终端打开
+			30 button 测试连接
+			31 button 管理免密授权
+			32 text 连接地址
+			33 button 管理地址
+			34 image Description: Wi-Fi, ID: wifi
+			35 text 局域网 192.168.8.1:22 可到达 · 当前使用 当前使用固定地址
+			36 button 连接设置, 描述、地址选择策略
+			37 text 最近活动
+			38 image (selected) Description: 已选择, ID: checkmark
+			39 text 登录测试成功 root 今天 22:00 设计示例 · 状态非实时
+	40 close button
+	41 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	42 minimize button
+43 menu bar
+	44 KeyPort Design Preview
+	45 Edit
+	46 View
+	47 Window
+	48 Help
+
+The focused UI element is 0 standard window KeyPort · 隔离设计预览, Secondary Actions: Raise

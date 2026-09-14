@@ -1,0 +1,756 @@
+{
+  "sourceCommit": "1c0890252361f79d5de331e4a2ff4d11036f0ab1",
+  "baseCommit": "4ddc60a3dbf933d0de3d16dc995a75dd60e6b2b5",
+  "appPath": "/Users/joo00der/.codex/worktrees/8ea3/key-port/dist/KeyPortDesignPreview.app",
+  "binarySHA256": "54880dbda0f366f1952b9040ca8627d50b7ce1fe9bcc014d39e40043d0821d26",
+  "bundleFiles": [
+    {
+      "file": "Contents/Info.plist",
+      "sha256": "4a6247b276c01e0ecad0eb450e810f186442aa808ed4ae6f3c34a39a2b0d0561"
+    },
+    {
+      "file": "Contents/MacOS/KeyPortDesignPreview",
+      "sha256": "54880dbda0f366f1952b9040ca8627d50b7ce1fe9bcc014d39e40043d0821d26"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/Info.plist",
+      "sha256": "eb2209c1ce0d335fb335314bf1c4632cda6f4b356fd9d1709888b0395e3eb56e"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/Resources/JetBrainsMono-Medium.ttf",
+      "sha256": "d16e6dc99672734698d629705f617c79f6eb6040f5113efe3a145204dc988109"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/Resources/JetBrainsMono-Regular.ttf",
+      "sha256": "e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/Resources/OFL.txt",
+      "sha256": "c1ab7c666206842a02b35b30770dac0d7a10156ed401c9defc3f02a754d89e90"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/_CodeSignature/CodeDirectory",
+      "sha256": "ec01f774be497157d3c84e48a02a25ba8aa4a70c6eb8da07532cbac1b0f55fa9"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/_CodeSignature/CodeRequirements",
+      "sha256": "987920904eab650e75788c054aa0b0524e6a80bfc71aa32df8d237a61743f986"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/_CodeSignature/CodeResources",
+      "sha256": "0abf6cabe125f660013d9c583b9df9716e4d669a10b64cb93585db4af07ca57f"
+    },
+    {
+      "file": "Contents/Resources/KeyPort_KeyPortInterface.bundle/Contents/_CodeSignature/CodeSignature",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "Contents/_CodeSignature/CodeResources",
+      "sha256": "23897c3fef5ef0173ff191a08098083af7af8b5ace9c7d42656cbc560fad29e2"
+    }
+  ],
+  "captureMethod": "sky.get_app_state; original screenshot bytes; no resizing, conversion, crop or enhancement",
+  "files": [
+    {
+      "file": "alias-config-conflict.ax.txt",
+      "sha256": "9d45b842c930093a55d3d25c901360d6170083c93df02692a166abfdc8d52d30",
+      "bytes": 1613
+    },
+    {
+      "file": "alias-config-conflict.jpg",
+      "sha256": "6fb7a44545afa7ce4295749f61a905e740948254f4bf09562a666ae4b6e18725",
+      "bytes": 70487,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "alias-invalid.ax.txt",
+      "sha256": "9f77a6cec15e6d97bc9a077bae96396502a2948078c959ad9bd3214d84a140f9",
+      "bytes": 1648
+    },
+    {
+      "file": "alias-invalid.jpg",
+      "sha256": "e7628f05c9d0efbdf55e51a8cbfc4e3c08bc04f34127f89bec95be15e0dd1d25",
+      "bytes": 71284,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "alias-managed-conflict.ax.txt",
+      "sha256": "e931089f543a01b1c90bfcff99626dc602d075a662d415b89220273a8814ac85",
+      "bytes": 1595
+    },
+    {
+      "file": "alias-managed-conflict.jpg",
+      "sha256": "5d10a4103550e7a55a2210b71d348b52fa1e19e3e93dd91260235d8b67cf49a5",
+      "bytes": 69573,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "alias-required.ax.txt",
+      "sha256": "3e620018b3a56554c8228fa7add13c9bd5c2ace13cc7ed7a0ec6abe40b8d3e08",
+      "bytes": 1520
+    },
+    {
+      "file": "alias-required.jpg",
+      "sha256": "29604e4638caceb52858a15e4554d51ffb6b58f9641d809c0b736c705f452053",
+      "bytes": 67845,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "authorization-cancelled.ax.txt",
+      "sha256": "9587e924923a058b2d4ce482091a1c2594e5078ae6046b2225d4c438f6c3d082",
+      "bytes": 671
+    },
+    {
+      "file": "authorization-cancelled.jpg",
+      "sha256": "3e9b2f8737edfc4613ea0fcec46e3bae5459b36290835ce4144b40012e171c99",
+      "bytes": 39156,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "authorization.ax.txt",
+      "sha256": "87c46eae3835173c4f8f3a8d9ca82e10e120c7dff44529181e79e009514b0be1",
+      "bytes": 686
+    },
+    {
+      "file": "authorization.jpg",
+      "sha256": "80d10d4cd59434348dd7171adb3c64088e9f605d11201471515abface0b4fe37",
+      "bytes": 44669,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "build.log",
+      "sha256": "acd63bfba33f816270f65c2f0ce25873df6fdb9d232c977118000da6e3045f23",
+      "bytes": 248
+    },
+    {
+      "file": "cancel-return-form.ax.txt",
+      "sha256": "0732a103cde312a309e4bdf2fcd4ba85f369ea3e33c8e716867b15f8c93a6629",
+      "bytes": 1456
+    },
+    {
+      "file": "cancel-return-form.jpg",
+      "sha256": "c558d1503f21086415a99316f2c84872a432ce24cf74ffa7808bafd85fdae5b9",
+      "bytes": 68064,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "copy-failed.ax.txt",
+      "sha256": "09642b84413059e3e815e8d9ee8ac38272a3cafd3acf5bffb2d5f59a9aac9ca9",
+      "bytes": 973
+    },
+    {
+      "file": "copy-failed.jpg",
+      "sha256": "ad41913e967a5bc2dafe60e60063b9b0b61c292cb7f37e30fd2aee8255c0d06b",
+      "bytes": 51561,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "copy-feedback.ax.txt",
+      "sha256": "546acc3d752d2749a1c10ed726ab34beed6737de3e3959b4b017420f6f183444",
+      "bytes": 889
+    },
+    {
+      "file": "copy-feedback.jpg",
+      "sha256": "95c678c7b592ca38b528236b3f1e1b0850406770dbbf9c0940b109cfb3eabf15",
+      "bytes": 49444,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "copy-recovered.ax.txt",
+      "sha256": "be81b7ec94f444df6901e47c5d4aebd8f49440a31bec8c2ba1604828bbbb40f5",
+      "bytes": 940
+    },
+    {
+      "file": "copy-recovered.jpg",
+      "sha256": "fcac613715e129c432397b9b76b2f11e9c61c2fc9fb692b5828df2d03254f684",
+      "bytes": 49575,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "existing-key-empty-description.ax.txt",
+      "sha256": "7786efe0c50375b4134dd28df451d459b8f463589c0f791bd531c65357d634fd",
+      "bytes": 1439
+    },
+    {
+      "file": "existing-key-empty-description.jpg",
+      "sha256": "96de78511782494f1d9a8bcb0b067f9692683019c39abce227490599ecf017a4",
+      "bytes": 67891,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-authorization-unknown.ax.txt",
+      "sha256": "a0d8bcfb661c7136acb71b6f07085b64e039bb4d8477f245def3e02afd7ae2fc",
+      "bytes": 907
+    },
+    {
+      "file": "failure-authorization-unknown.jpg",
+      "sha256": "2ba75032f8619f6d745a8ccf03f887a616e9986ddf8051e06dadd75765c20773",
+      "bytes": 49518,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-authorization.ax.txt",
+      "sha256": "4dcc60944255d0b0ea0d5ccb7d205241c97cdf9142e98c69e8fa6367a2fd5f21",
+      "bytes": 907
+    },
+    {
+      "file": "failure-authorization.jpg",
+      "sha256": "5e8f8df9fc411789b3f690e8152ecf38e963421b2574ffea213b79771d4aa9f6",
+      "bytes": 49715,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-identity-mismatch.ax.txt",
+      "sha256": "a027cb75459cbd9873e9435aa5bf2455b0f68b333008d35ae544c8c32f10079f",
+      "bytes": 813
+    },
+    {
+      "file": "failure-identity-mismatch.jpg",
+      "sha256": "693aba6b83c9bc5c81fcac5eea0949982c61a55908d4ee2b89946a2c07e80cb8",
+      "bytes": 47399,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-login.ax.txt",
+      "sha256": "f64c4bfe11c0f46eca88a18ba3f627ac88e592243f29589e0c38a7296356eeff",
+      "bytes": 836
+    },
+    {
+      "file": "failure-login.jpg",
+      "sha256": "4d6856959b0c518f928ab0c21e38f5102eebc34f3d2cb1dd76441a5a49190dc9",
+      "bytes": 46304,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-partial-success.ax.txt",
+      "sha256": "8b6f29c9949865ff53f11892bddaf077d4c6a4bd27c02dec01f60ed8fafc50bf",
+      "bytes": 922
+    },
+    {
+      "file": "failure-partial-success.jpg",
+      "sha256": "f3263e1527fd154ad2451e82d09d08f0d5f2de31ac245f37c1f0bbc09e240877",
+      "bytes": 52869,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "failure-unreachable.ax.txt",
+      "sha256": "0cf56dd6fa179914a8935d78ff70c819fe804809fd90c9cbfea912ffbfef56b5",
+      "bytes": 796
+    },
+    {
+      "file": "failure-unreachable.jpg",
+      "sha256": "e39ea36df0b069584eec1e1d30e06c1e70a1fe704658bb39a0eb5c5074b80ac5",
+      "bytes": 43988,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "form-cancel-reopen.ax.txt",
+      "sha256": "21c820535b6d36b8519bd81925194ab7bb4fcce6a4548d0f5dc5f27f45d51149",
+      "bytes": 1646
+    },
+    {
+      "file": "form-cancel-reopen.jpg",
+      "sha256": "1bfa01f5f5125311dfef5c585f7d142581f809e639997a17aeafb06660a1b9ae",
+      "bytes": 68618,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "form-empty-alias.ax.txt",
+      "sha256": "dc96a811ed9404bea3c72aeee4b06f7fb1b1d5c84ce7998fec280b1fadc823c3",
+      "bytes": 1565
+    },
+    {
+      "file": "form-empty-alias.jpg",
+      "sha256": "f58cffde5b1150b84505edbb87ca6557de058a87e1ed5f83c3de02ac966bd337",
+      "bytes": 67510,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "form-long-description.ax.txt",
+      "sha256": "fe585d952d79ad14cb347f2e00b02be20f256ce25b51b8c961646cf585dbc2bc",
+      "bytes": 2465
+    },
+    {
+      "file": "form-long-description.jpg",
+      "sha256": "a59e3a1c93952479ca5745f408033f2ce9c3acb46d9ae18a30201c1403f7011e",
+      "bytes": 75031,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "form-password-hidden.ax.txt",
+      "sha256": "81218a98b0c2fef1f2607fb4a82f7a2618036e1556c0bc59bd549a275bcf8e53",
+      "bytes": 1609
+    },
+    {
+      "file": "form-password-hidden.jpg",
+      "sha256": "762e162629c3e1fdaecf9dce161f96f3c27c9ab78010d0568f50dba33c8b08f6",
+      "bytes": 68158,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "form-password-shown.ax.txt",
+      "sha256": "f6644daf79e0eba275f435a2b90473e9753f70258a8f76b246c7c0073d7e4707",
+      "bytes": 1553
+    },
+    {
+      "file": "form-password-shown.jpg",
+      "sha256": "5d8071b4cbd26b901aec809ce5e50bde11c674a78ff54ac4c67c86f80bdd3cf2",
+      "bytes": 67978,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "home-empty-description.ax.txt",
+      "sha256": "7098eaf73410c2d4dbf675b4463a317652a552776780e2c4c221a4e5db91fe79",
+      "bytes": 1884
+    },
+    {
+      "file": "home-empty-description.jpg",
+      "sha256": "1700b8db13aba2dd2e819773b06fd5f4fdc4d911bef552ce79174757fd77fb0d",
+      "bytes": 70594,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "home-long-description.ax.txt",
+      "sha256": "11b66873129f423e668997b5635b3eb5909c831939fa963ed981a98b9b654985",
+      "bytes": 3579
+    },
+    {
+      "file": "home-long-description.jpg",
+      "sha256": "c476b915e960dff2498555dea722430e80818dcf2dad1eb07f2e941df91d3f01",
+      "bytes": 82883,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "home-narrow-long-description.ax.txt",
+      "sha256": "e3962b63935877be558e3be9ec60bdc931e69fdb730bf106c918355c10a78798",
+      "bytes": 3641
+    },
+    {
+      "file": "home-narrow-long-description.jpg",
+      "sha256": "b2c938c39f3cb100829ae3978945ef8efd707cdb45f37c90aee42acbfe9ea9a0",
+      "bytes": 80545,
+      "pixels": [
+        1152,
+        768
+      ]
+    },
+    {
+      "file": "home-ready.ax.txt",
+      "sha256": "ba6fb49950cc21f05df714a84ec5a81131297f851691fda3bda1afa8bb637462",
+      "bytes": 2157
+    },
+    {
+      "file": "home-ready.jpg",
+      "sha256": "566e303b00c9137f7eb2ff5225c069ab32d7604916fd9c32e79a8f1254f45918",
+      "bytes": 76904,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "home-unconfigured.ax.txt",
+      "sha256": "ff4d5835f02b716c966b60e03a0b84154cbaa255a8a249cff1fff5618f6f84fd",
+      "bytes": 2122
+    },
+    {
+      "file": "home-unconfigured.jpg",
+      "sha256": "b706d0b4eae9d0ce0cca247e3735bd49c2f458a84714f7cdc533515a50b65f45",
+      "bytes": 77185,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "home-unreachable.ax.txt",
+      "sha256": "4c1f7a93b9237a29baadca7f4c29f4ab98916fe42626b8bb6ea9bc318227744d",
+      "bytes": 2200
+    },
+    {
+      "file": "home-unreachable.jpg",
+      "sha256": "fa957a420e1c3a7cd4c77596582d37377e3b45a33c6e45d3d57ba82c28890cc4",
+      "bytes": 79889,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "host-cancel-preserves-alias.ax.txt",
+      "sha256": "14a4f6139e806c28fd3d5fc69ad9c7957f696b42ff68143de79b23d78cda22f9",
+      "bytes": 1420
+    },
+    {
+      "file": "host-cancel-preserves-alias.jpg",
+      "sha256": "6e9e35ef20a4c992604cd6d22e3ef8d1bf36537ef944a317cfb40440ff25c269",
+      "bytes": 67037,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "host-confirmation.ax.txt",
+      "sha256": "26cb0f25aca5d05ab1e30bfc2452796fbdf43b3870b0b28b1df531e353423fd5",
+      "bytes": 771
+    },
+    {
+      "file": "host-confirmation.jpg",
+      "sha256": "3aa8e8561c927a31e257a013acda940dae4d3f9be0643ab97ca2e552903e3f4e",
+      "bytes": 52184,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "invalid-address.ax.txt",
+      "sha256": "e38f5a90a8d83131c9e816afc35ec86f590b05c4c7ecfe5267c8c17322555d3d",
+      "bytes": 1658
+    },
+    {
+      "file": "invalid-address.jpg",
+      "sha256": "f2ba6ceece11b777136858434369791c7e142b19f60f9e5ec88e1fc6db44ed08",
+      "bytes": 69816,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "keyboard-alias-to-description.ax.txt",
+      "sha256": "b59e1af52df1af7c7aba882c08cf9d839ffdc837f824c389f514ec131e53ef81",
+      "bytes": 1663
+    },
+    {
+      "file": "keyboard-alias-to-description.jpg",
+      "sha256": "4300482869f6ca3eea25b69c071cc0f4bcc027c0703dade124c4f3edc3ebf9c4",
+      "bytes": 68350,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "login-cancel-preserves-alias.ax.txt",
+      "sha256": "14a4f6139e806c28fd3d5fc69ad9c7957f696b42ff68143de79b23d78cda22f9",
+      "bytes": 1420
+    },
+    {
+      "file": "login-cancel-preserves-alias.jpg",
+      "sha256": "83fe9326dbefbc4346d7181806f7c161dda439753f35e550be565e531225e94b",
+      "bytes": 67436,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "login.ax.txt",
+      "sha256": "e4cc93a3d7960cea4aac5ac751b3a8ea2cc03aea5e6d8acaa357df277a120193",
+      "bytes": 647
+    },
+    {
+      "file": "login.jpg",
+      "sha256": "631e975172dd3cf58e6d7ff1c51e6ebbf2b21920e1817f1e42bb5daa7a0bf64b",
+      "bytes": 42579,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "partial-edit-description-address.ax.txt",
+      "sha256": "9f816fb7cdd7c49c75cfa76e2fbaf2732d87e9610ab01cbac42dde6517ba61ec",
+      "bytes": 1556
+    },
+    {
+      "file": "partial-edit-description-address.jpg",
+      "sha256": "bd2bfec274167c85c35d6ce82b996d67c81d7a7e0164a2583cb08483403b806a",
+      "bytes": 68665,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "reopened-password-cleared.ax.txt",
+      "sha256": "e4dec89f4c71e3eebe654c82edc092c0ca68ad903b6a843ce6e4fe3364ef2516",
+      "bytes": 1704
+    },
+    {
+      "file": "reopened-password-cleared.jpg",
+      "sha256": "1f11bf0625eb1ced208365795ab312060a0612277d9fc5d9c61c4905e41c65ab",
+      "bytes": 67659,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "retry-skips-install.ax.txt",
+      "sha256": "5bdc1b288f377758c323a81a9ca17bb640a7122a3081f9228b93b7cb53c9cec7",
+      "bytes": 712
+    },
+    {
+      "file": "retry-skips-install.jpg",
+      "sha256": "e622e267d28b1c896e038109474e77f1ed341788f0443427c0f3c9fbe9fa851c",
+      "bytes": 46697,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "search-alias.ax.txt",
+      "sha256": "cec80bf5b65ccff34e4e08a420b499d61546d572c186e9d23b55501fa262d410",
+      "bytes": 1928
+    },
+    {
+      "file": "search-alias.jpg",
+      "sha256": "af829955e677db6754c48d7b1d47ada2b291a6f8c7bc25114fbcbf0b0ea3ace9",
+      "bytes": 68936,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "search-description.ax.txt",
+      "sha256": "da3345c2b4deb4861ddd1c21abf7888d093651a923bcf56def34c072f4af6437",
+      "bytes": 1972
+    },
+    {
+      "file": "search-description.jpg",
+      "sha256": "a8aa1d2cfe216ab19dd6cfce3806c90284a483f8149a0b3d8e90ec63a058567f",
+      "bytes": 72586,
+      "pixels": [
+        1237,
+        768
+      ]
+    },
+    {
+      "file": "success-description-address-edited.ax.txt",
+      "sha256": "72a3ab08109967626e8650a685a6398742113770e4935757b03dc3ea7e893d4c",
+      "bytes": 757
+    },
+    {
+      "file": "success-description-address-edited.jpg",
+      "sha256": "55eafd77a760d6f012d76140ad9fe659ddafb94d895b380057a4758beca5bca6",
+      "bytes": 42376,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "success-description.ax.txt",
+      "sha256": "eb8baa0be1780af1cfac36c82c9b7b9183eac0c389105c0fb1b35e0cc297d9f4",
+      "bytes": 754
+    },
+    {
+      "file": "success-description.jpg",
+      "sha256": "d70b9b36e677fab14531a95cd7801b2340d271584fc78c9b5eee46a58b487bb1",
+      "bytes": 42235,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "success-empty-description.ax.txt",
+      "sha256": "6b74f31f649aebff5e6ab1e1281ffed7cc0f732d0a9fcebbee38134c937e20d4",
+      "bytes": 732
+    },
+    {
+      "file": "success-empty-description.jpg",
+      "sha256": "fe41346c73708b89ba79cf1d83326efd5ca52fe14beebfe4461a9f48ecee0f61",
+      "bytes": 41721,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "success-long-description.ax.txt",
+      "sha256": "b69e84841d336dd687d22907b58d5f0fc7eac517086034ee0cecbc859fb6d902",
+      "bytes": 1237
+    },
+    {
+      "file": "success-long-description.jpg",
+      "sha256": "be9a48ba969a565b026da11a65f5a7b5e0639582298f0743c530558a48a35349",
+      "bytes": 56615,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "terminal-feedback.ax.txt",
+      "sha256": "517b2a169c3916561bb36793dbc49659b1c803be59a6d943ae1475b4eb6cc885",
+      "bytes": 910
+    },
+    {
+      "file": "terminal-feedback.jpg",
+      "sha256": "a863b179ed408dc01890f716f9e590e1bd4d382faf8a6ef0e5510f2a3e68d364",
+      "bytes": 50697,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "terminal-pending.ax.txt",
+      "sha256": "a78d76ea60527e7f839bdd2fbc89289894d949c75929f444b0a4e91ed8ba989c",
+      "bytes": 947
+    },
+    {
+      "file": "terminal-pending.jpg",
+      "sha256": "4acbc80794b338bf2ead880806223e9667cff29c9862cb463647d90764040032",
+      "bytes": 51494,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "terminal-unavailable.ax.txt",
+      "sha256": "cb2c1b1054438360042bbbfa63de99f80d21a625e9fbfa5bf09f57ef6e74ec2b",
+      "bytes": 973
+    },
+    {
+      "file": "terminal-unavailable.jpg",
+      "sha256": "809a4e87664603fe464e9a9f48d8cb30438b0270e3636297fa49655d3fdccc0e",
+      "bytes": 51492,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "tests.log",
+      "sha256": "a4fd760ec207612555a7fa0751b970c0b45ed69135c4d9908f993205cf901697",
+      "bytes": 8667
+    },
+    {
+      "file": "ui-trace.json",
+      "sha256": "d7ed39f3f511a55e0cd046213b6f08c952ab27b38662c30eb00f881338488403",
+      "bytes": 15143
+    },
+    {
+      "file": "unknown-retry-skips-install.ax.txt",
+      "sha256": "3fd3380c05f5a6f5f2ee673d193d10db063aa3b4c71435dddd16b72559015da0",
+      "bytes": 760
+    },
+    {
+      "file": "unknown-retry-skips-install.jpg",
+      "sha256": "97ac8b289918b318767c1ed6be5f5295356fff3c22ac28f18d0d40d273c425e4",
+      "bytes": 46685,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "verification-cancelled.ax.txt",
+      "sha256": "4c1fdf26f3d83b2439b429a1a54cf57f1035788786a27927ca038bdc9082956b",
+      "bytes": 665
+    },
+    {
+      "file": "verification-cancelled.jpg",
+      "sha256": "d6cce510860f58fb927a62308b24003bc19b3273ad8852037cc18b083a65b65d",
+      "bytes": 38803,
+      "pixels": [
+        880,
+        740
+      ]
+    },
+    {
+      "file": "verification.ax.txt",
+      "sha256": "5bdc1b288f377758c323a81a9ca17bb640a7122a3081f9228b93b7cb53c9cec7",
+      "bytes": 712
+    },
+    {
+      "file": "verification.jpg",
+      "sha256": "85f9005f905d1efab0631f039cf92c77a2e8ef26bfff212532a6f9c57138d170",
+      "bytes": 46692,
+      "pixels": [
+        880,
+        740
+      ]
+    }
+  ]
+}
