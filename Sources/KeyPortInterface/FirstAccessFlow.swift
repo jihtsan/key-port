@@ -36,6 +36,12 @@ public enum FirstAccessState: Equatable {
 /// Only completed adapter results advance the flow. Implementations must enforce host trust,
 /// idempotent authorization and cancellation at their real service boundary. The executable
 /// injects either a fixture adapter or the opt-in local OpenSSH acceptance adapter.
+/// Only explicitly classified, non-secret messages may cross into the user interface.
+/// Raw stderr and arbitrary localized errors are intentionally excluded.
+public protocol AccessFlowFailureDetailProviding: Error {
+    var safeAccessFailureDetail: String { get }
+}
+
 @MainActor public protocol FirstAccessAdapter: AnyObject {
     var isSimulation: Bool { get }
     var deviceID: String { get }
@@ -61,6 +67,7 @@ extension FirstAccessAdapter {
     @Published public private(set) var draft: AccessFormDraft
     @Published public private(set) var authorization: AccessAuthorizationStatus = .absent
     @Published public private(set) var handoff: AccessHandoff = .idle
+    @Published public private(set) var failureDetail: String?
     @Published public private(set) var formNotice: String?
     public let aliasDirectory: AliasDirectory
     private let adapter: any FirstAccessAdapter
@@ -193,6 +200,7 @@ extension FirstAccessAdapter {
     }
     public func close() { invalidate() }
     private func invalidate() {
+        failureDetail = nil
         generation = UUID(); task?.cancel(); task = nil
         adapter.cancel(); credential = ""; draft.password = ""
     }
@@ -203,6 +211,7 @@ extension FirstAccessAdapter {
     private func fail(_ error: Error, fallback: AccessFlowFailure, token: UUID) {
         guard current(token) else { return }
         credential = ""; draft.password = ""
+        failureDetail = (error as? any AccessFlowFailureDetailProviding)?.safeAccessFailureDetail
         state = .failed((error as? AccessFlowFailure) ?? fallback)
         adapter.cancel()
     }

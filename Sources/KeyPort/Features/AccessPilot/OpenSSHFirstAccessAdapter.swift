@@ -163,3 +163,8 @@ import KeyPortInterface
         return (server, key)
     }
 }
+
+// SSHServiceError messages are locally classified strings, never raw server stderr.
+extension SSHServiceError: AccessFlowFailureDetailProviding {
+    var safeAccessFailureDetail: String { errorDescription ?? "SSH 操作未完成。" }
+}
