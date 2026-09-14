@@ -1,0 +1,27 @@
+{
+  "sourceCommit": "9cfc4fdaf8c093b7aa38f810516cd9c65951014b",
+  "appPath": "/Users/joo00der/.codex/worktrees/issue96/key-port/dist/KeyPortGraphPreview.app",
+  "binarySha256": "002abd4ad843bf36c01144e3d36774099618efa1ed401874a99b281a9a059670",
+  "files": {
+    "04-group-expanded.txt": "c1ec844c21b3313db2716d6667cbf2a8741ca054e7f95c8bf35c89cff63c9053",
+    "06-selected-path-graph.txt": "b263b3a8b93b73e64541bb523f317ece76141698525521eb0d4e9567b93c2901",
+    "05-selected-path-list.png": "1d4e5ab82dd04ea5256dfdb5b8377d4fe1db34c0c637099552df8a277ebef15b",
+    "08-keyboard-path.png": "8e151438d66e6f8956c79d35b21febb7f00bbd0604145a6bd1b691a13677b89f",
+    "07-collapse-preserves-selection.txt": "fc8f7de1f6b987a88c2ebd77ba1ad23242fcc041f30aafb2183900703dcce5fe",
+    "02-dual-search.txt": "da64086e79e7e165e73f109ce18768941a46f2a896e678267ebf49c76958ff95",
+    "04-group-expanded.png": "d082d5de7d8b8b658b66d9744036184c23e6f0f68ee2a4fa7ca2e60b00ef3a7b",
+    "06-selected-path-graph.png": "329bfe0369d84db96a4f069727e12b0dbe3b88fa1212b89d65aada45dc4cb9f2",
+    "05-selected-path-list.txt": "7666a07bf4a74913378d5827081d8570d9c58ff884ea29f089328b7c075e2028",
+    "08-keyboard-path.txt": "38c91567caaed228b36059aa2c14d5e335adf015131952d128f18c2cc44780c3",
+    "07-collapse-preserves-selection.png": "e1198abcf35647e93befea3cda7d7715f1eb2aeb8a8513ff332144da7a3e7ef5",
+    "02-dual-search.png": "85efdb9a27902e2d4fdab93c70ee9700862818090e2e68319022df66dc04016f",
+    "09-no-results.txt": "316e2934e9a95bfe9c08c46d53ddeab798ec2dd6381688b759745283fc21792c",
+    "03-group-collapsed.png": "5cb39dc4dedd037d01ef9d0a254c6f0c7fdee9425c6683e70b6738d9135527e2",
+    "01-dual.png": "ef9ec0a712ba64b1ede58ac1d0c6d236aa2cc8af69326bcc3f910bd49e66b144",
+    "tests.log": "2e6f1898fe472eaa1eb8e8910fa0ed81b82ee9131831f6e265c9a70d7d0daa8e",
+    "09-no-results.png": "a5974260a5b8d6e525486507fa970abf935ab3e0bc7f5b79996a54591f1f8cae",
+    "01-dual.txt": "9bed924532f57c86d57762370f685ea8d8c43595ce87b8410fad7dae94177f5e",
+    "03-group-collapsed.txt": "880fd0309e545009d96035688a6034b09a89ddf4d2ec09cdf32d16e066ea74ec",
+    "build.log": "1a14e99721c0e3e58208d1c41222e4918a3f71c20be373ec3074f40c3f641949"
+  }
+}

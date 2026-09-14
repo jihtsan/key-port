@@ -1,0 +1,61 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器
+		3 button 列表
+		4 button 拓扑
+		5 image Description: 搜索, ID: magnifyingglass
+		6 text field (settable) Description: 搜索别名或描述, Value: 主路由
+		7 button Description: 添加服务器, ID: plus
+		8 menu button Description: 工作区示例场景, Help: 当前示例：六条路径
+		9 image Description: 密码, ID: key
+		10 text KeyPort 访问拓扑
+		11 button 跳板机规划
+		12 text 已配置的直连路径 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 管理信息已同步
+		17 button 设置
+		18 text 实线：已验证   虚线：待验证或失败 · 示例时间 CST
+		19 button 缩小画布
+		20 text 100%
+		21 button 放大画布
+		22 button 适应画布
+		23 button 定位结果
+		24 button 下一个对象
+		25 scroll area
+			26 button Description: 节点 home-router，家里的主路由器，6 条已配置路径, Help: home-router, 家里的主路由器
+			27 button 展开路径组 home-router，1 已验证 / 4 待验证 / 1 失败
+			28 button 节点 此 Mac，访问来源
+		29 scroll area Secondary Actions: Scroll Up, Scroll Down
+			30 text 路径详情 home-router 家里的主路由器 登录账户 deploy 此账户尚未授权 · 示例 选中的直连路径 此 Mac → home-router deploy@192.0.2.6:22 验证失败 可达性未知 检测：09-14 00:00 CST
+			31 button 在终端打开
+			32 button 测试路径
+			33 text 该服务器的全部路径
+			34 button 选择路径 root 192.0.2.1:22
+			35 button 选择路径 root 192.0.2.2:22
+			36 button 选择路径 root 192.0.2.3:22
+			37 button 选择路径 deploy 192.0.2.4:22
+			38 button 选择路径 deploy 192.0.2.5:22
+			39 button 选择路径 deploy 192.0.2.6:22
+			40 button 连接设置
+			41 text 示例数据 · 非实时状态
+			42 button 清除选择
+			43 scroll bar (settable, float) 0
+				44 value indicator (settable, float) 0
+				45 increment arrow button
+				46 decrement arrow button
+				47 increment page button
+				48 decrement page button
+	49 close button
+	50 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	51 minimize button
+52 menu bar
+	53 KeyPort Graph Preview
+	54 Edit
+	55 View
+	56 Window
+	57 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise

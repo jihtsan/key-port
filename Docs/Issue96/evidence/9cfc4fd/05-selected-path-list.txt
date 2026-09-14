@@ -1,0 +1,55 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器 3
+		3 button Description: 添加服务器, ID: plus
+		4 button 列表
+		5 button 拓扑
+		6 text 服务器详情
+		7 menu button Description: 工作区示例场景, Help: 当前示例：六条路径
+		8 image Description: 密码, ID: key
+		9 text KeyPort
+		10 image Description: 搜索, ID: magnifyingglass
+		11 text field (settable) Description: 搜索别名或描述, Value: 主路由
+		12 text 已添加 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 管理信息已同步
+		17 button 设置
+		18 scroll area
+			19 button Description: 服务器 home-router，家里的主路由器, Help: home-router, 家里的主路由器
+		20 button 添加或导入服务器
+		21 scroll area Secondary Actions: Scroll Up, Scroll Down
+			22 image server.rack
+			23 text Help: home-router, Value: home-router 家里的主路由器 登录账户 deploy 此账户尚未授权 · 示例 可达性未知 · 验证失败
+			24 button 在终端打开
+			25 button 测试路径
+			26 button 管理免密授权
+			27 text 选中的直连路径 此 Mac → home-router deploy@192.0.2.6:22 验证失败 可达性未知 检测：09-14 00:00 CST 该服务器的全部路径
+			28 button 选择路径 root 192.0.2.1:22
+			29 button 选择路径 root 192.0.2.2:22
+			30 button 选择路径 root 192.0.2.3:22
+			31 button 选择路径 deploy 192.0.2.4:22
+			32 button 选择路径 deploy 192.0.2.5:22
+			33 button 选择路径 deploy 192.0.2.6:22
+			34 button 连接设置
+			35 text 最近活动 验证失败 · 09-14 00:00 CST 示例数据 · 非实时状态
+			36 button 清除选择
+			37 scroll bar (settable, float) 0
+				38 value indicator (settable, float) 0
+				39 increment arrow button
+				40 decrement arrow button
+				41 increment page button
+				42 decrement page button
+	43 close button
+	44 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	45 minimize button
+46 menu bar
+	47 KeyPort Graph Preview
+	48 Edit
+	49 View
+	50 Window
+	51 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
