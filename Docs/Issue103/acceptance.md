@@ -58,3 +58,13 @@ App：`/Users/joo00der/.codex/worktrees/b8bf/key-port/dist/KeyPortAccessPilot.ap
 原生截图、AX、App 退出/重启证据、完整测试日志和本机 manifest 位于本任务本地 `issue103` 证据目录；服务器个人配置和截图不提交公共仓库。必要配置的首次备份在 `~/Library/Application Support/KeyPort/Issue103-backups/20260914-154209`，没有备份或读取私钥内容。
 
 本 PR base 是 #102 分支。#91 → #93 → #95 → #97 → #99 → #102 仍有前置验收及逐层合并约束，不能把本次通过视为整条链可合入 main。PR 保持堆叠 Draft、Issue 保持 open；本阶段没有已知未完成的功能/本机验收项，剩余仅合并门槛。后续顺序保持 #100 → 真实全流程/Figma 收尾 → iCloud/迁移/旧代码清理与逐层合并，不在本 PR 展开。
+
+
+## 用户要求后的再次验收（2026-09-14）
+
+- 当前工作树干净，App executable SHA-256 仍与上述已验收版本相同；精确进程来自当前 worktree，签名校验通过。
+- 再次执行普通 `ssh -G tencent-cloud`，账户、地址、端口、密钥与保存记录一致；5 个原有别名解析不变。
+- 再次以 BatchMode 并禁用密码/交互认证登录，返回 `ACCEPTANCE_RECHECK_OK` 与 `ubuntu`，exit 0。
+- 原生 App 点击“测试路径”，反馈“当前路径已通过主机身份与免密登录验证”。
+- 本轮 62 项定向测试通过，无失败、无跳过：AccessPilot 13、AliasInstallation 10、SSHKnownHostsPath 1、Interface 38。此前标准全量套件跳过的信任路径实机测试，本次通过显式指定已授权端点和既有 known_hosts 完成；未接受新指纹或发送密码。
+- 本轮仅补充验收记录，不修改实现；#104 仍基于 #102，前置链合并条件没有因重复验收而自动解除。
