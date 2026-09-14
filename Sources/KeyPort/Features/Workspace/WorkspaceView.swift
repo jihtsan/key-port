@@ -36,7 +36,10 @@ private struct WorkspaceHome: View {
         .alert("连接结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
-        .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) { WorkspaceManagementView(store: store, section: panel ?? "设置") }
+        .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
+            if panel == "设置" { WorkspaceSettingsView(store: store) }
+            else { WorkspaceManagementView(store: store, section: panel ?? "我的设备") }
+        }
         .onDisappear { pathTask?.cancel() }
         .task {
             do { try store.synchronizeAliases() } catch { notice = error.localizedDescription }

@@ -64,6 +64,22 @@ import Observation
         }
     }
     private(set) var syncState: CloudSyncState = .disabled
+    private(set) var syncUnavailable: CloudSyncError?
+    private(set) var checkingSyncAvailability = false
+    func checkSyncAvailability() async {
+        guard !checkingSyncAvailability else { return }
+        checkingSyncAvailability = true
+        defer { checkingSyncAvailability = false }
+        switch await cloud.availability() {
+        case .available:
+            syncUnavailable = nil
+            switch syncState {
+            case .adHocSigned, .cloudKitDisabled, .signedOut: syncState = .disabled
+            default: break
+            }
+        case .unavailable(let error): syncUnavailable = error
+        }
+    }
     var topology: TopologySnapshot { document.topology }
     private var stateURL: URL { paths.applicationSupport.appendingPathComponent("workspace-v1.json") }
 
