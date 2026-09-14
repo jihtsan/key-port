@@ -16,6 +16,8 @@ import KeyPortInterface
     @Published private(set) var pending: String?
     let isSimulation = true
     let deviceID = "fixture-this-mac"
+    let serverID: String
+    init(serverID: String = "fixture-server-1") { self.serverID = serverID }
     private var continuation: CheckedContinuation<Void, Error>?
     private var installed: Set<AccessAuthorizationKey> = []
     private var trusted = false
@@ -23,7 +25,7 @@ import KeyPortInterface
     func inspectHost(address: String, port: String) async throws -> AccessHostIdentity {
         if scenario == .unreachable { throw AccessFlowFailure.unreachable }
         if scenario == .mismatch { throw AccessFlowFailure.identityMismatch }
-        return AccessHostIdentity(serverID: "fixture-server-1", fingerprint: "SHA256:DEMO-ONLY-NOT-A-REAL-HOST-FINGERPRINT", needsConfirmation: !trusted && scenario != .trusted && scenario != .existing)
+        return AccessHostIdentity(serverID: serverID, fingerprint: "SHA256:DEMO-ONLY-NOT-A-REAL-HOST-FINGERPRINT", needsConfirmation: !trusted && scenario != .trusted && scenario != .existing)
     }
     func confirmHost(_ identity: AccessHostIdentity) async throws { trusted = true }
     func login(draft: AccessFormDraft, identity: AccessHostIdentity) async throws {
@@ -74,18 +76,18 @@ import KeyPortInterface
     @StateObject private var flow: FirstAccessFlow
     let initial: AccessFormDraft
     let onClose: (AccessFormDraft) -> Void
-    init(draft: AccessFormDraft, onClose: @escaping (AccessFormDraft) -> Void) {
-        let adapter = FixtureAccessAdapter()
+    let onVerified: (AccessFormDraft) -> Void
+    init(draft: AccessFormDraft, aliasDirectory: AliasDirectory, onClose: @escaping (AccessFormDraft) -> Void, onVerified: @escaping (AccessFormDraft) -> Void = { _ in }) {
+        let adapter = FixtureAccessAdapter(serverID: draft.editingEntryID ?? "fixture-server-1")
         _adapter = StateObject(wrappedValue: adapter)
-        _flow = StateObject(wrappedValue: FirstAccessFlow(draft: draft, adapter: adapter, aliasDirectory: AliasDirectory(entries: [
-            .init(alias: "home-router", source: .sshConfiguration),
-            .init(alias: "mac-studio", source: .managed, ownerID: "studio"),
-            .init(alias: "tencent-cloud", source: .managed, ownerID: "cloud")
-        ])))
-        initial = draft; self.onClose = onClose
+        _flow = StateObject(wrappedValue: FirstAccessFlow(draft: draft, adapter: adapter, aliasDirectory: aliasDirectory))
+        initial = draft; self.onClose = onClose; self.onVerified = onVerified
     }
     var body: some View {
-        FirstAccessView(flow: flow, initialDraft: initial, onClose: onClose) {
+        FirstAccessView(flow: flow, initialDraft: initial, onClose: { draft in
+            if flow.state == .success { onVerified(draft) }
+            onClose(draft)
+        }) {
             HStack(spacing: 12) {
                 Menu("模拟场景：" + adapter.scenario.rawValue) {
                     ForEach(FixtureAccessAdapter.Scenario.allCases, id: \.self) { scenario in

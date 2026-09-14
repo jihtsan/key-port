@@ -1,0 +1,41 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器
+		3 button 列表
+		4 button 拓扑
+		5 image Description: 搜索, ID: magnifyingglass
+		6 text field (settable) 搜索别名或描述
+		7 button Description: 添加服务器, ID: plus
+		8 menu button Description: 工作区示例场景, Help: 当前示例：空数据
+		9 image Description: 密码, ID: key
+		10 text KeyPort 访问拓扑
+		11 button 跳板机规划
+		12 text 已配置的直连路径 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 还没有服务器 添加服务器后，已配置的直连路径将在这里显示。
+		17 button 添加服务器
+		18 text Help: 设计示例，未连接 iCloud, Value: 管理信息已同步
+		19 button 设置
+		20 text 实线：已验证   虚线：待验证或失败 · 示例时间 CST
+		21 button 缩小画布
+		22 text 67%
+		23 button 放大画布
+		24 button 适应画布
+		25 button (disabled) 定位结果
+		26 button 下一个对象
+		27 scroll area
+			28 text 未选择对象 点选节点查看服务器；点选连线或路径标签查看路径。 示例数据 · 非实时状态
+	29 close button
+	30 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	31 minimize button
+32 menu bar
+	33 KeyPort Graph Preview
+	34 Edit
+	35 View
+	36 Window
+	37 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise

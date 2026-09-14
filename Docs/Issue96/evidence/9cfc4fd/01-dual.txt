@@ -1,0 +1,54 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器
+		3 button 列表
+		4 button 拓扑
+		5 image Description: 搜索, ID: magnifyingglass
+		6 text field (settable) 搜索别名或描述
+		7 button Description: 添加服务器, ID: plus
+		8 menu button Description: 工作区示例场景, Help: 当前示例：同服务器双路径
+		9 image Description: 密码, ID: key
+		10 text KeyPort 访问拓扑
+		11 button 跳板机规划
+		12 text 已配置的直连路径 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 管理信息已同步
+		17 button 设置
+		18 text 实线：已验证   虚线：待验证或失败 · 示例时间 CST
+		19 button 缩小画布
+		20 text 100%
+		21 button 放大画布
+		22 button 适应画布
+		23 button 定位结果
+		24 button 下一个对象
+		25 scroll area
+			26 button Description: 节点 home-router，家里的主路由器，2 条已配置路径, Help: home-router, 家里的主路由器
+			27 button Description: 节点 mac-studio，0 条已配置路径, Help: mac-studio
+			28 button Description: 节点 tencent-cloud，0 条已配置路径, Help: tencent-cloud
+			29 button 路径 此 Mac 到 home-router，root，[2001:db8::1]:22，路径未验证，09-14 00:00 CST
+			30 button 路径 此 Mac 到 home-router，root，192.168.8.1:22，直连已验证，09-14 00:00 CST
+			31 button 节点 此 Mac，访问来源
+		32 scroll area
+			33 text 服务器详情 home-router 家里的主路由器 登录账户 root 本机公钥已授权 · 示例 访问路径 此 Mac → home-router root@192.168.8.1:22 直连已验证 地址可到达 检测：09-14 00:00 CST
+			34 button 在终端打开
+			35 button 测试路径
+			36 text 该服务器的全部路径
+			37 button 选择路径 root 192.168.8.1:22
+			38 button 选择路径 root [2001:db8::1]:22
+			39 button 连接设置
+			40 text 示例数据 · 非实时状态
+			41 button 清除选择
+	42 close button
+	43 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	44 minimize button
+45 menu bar
+	46 KeyPort Graph Preview
+	47 Edit
+	48 View
+	49 Window
+	50 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise

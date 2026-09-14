@@ -1,0 +1,60 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器
+		3 button 列表
+		4 button 拓扑
+		5 image Description: 搜索, ID: magnifyingglass
+		6 text field (settable) 搜索别名或描述
+		7 button Description: 添加服务器, ID: plus
+		8 menu button Description: 工作区示例场景, Help: 当前示例：六条路径
+		9 image Description: 密码, ID: key
+		10 text KeyPort 访问拓扑
+		11 button 跳板机规划
+		12 text 已配置的直连路径 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 管理信息已同步
+		17 scroll area
+			18 button Description: 节点 home-router，家里的主路由器，6 条已配置路径, Help: home-router, 家里的主路由器
+			19 button Description: 节点 mac-studio，0 条已配置路径, Help: mac-studio
+			20 button Description: 节点 tencent-cloud，0 条已配置路径, Help: tencent-cloud
+			21 button 路径 此 Mac 到 home-router，root，192.0.2.1:22，直连已验证，09-14 00:00 CST
+			22 button 路径 此 Mac 到 home-router，root，192.0.2.2:22，路径未验证，09-14 00:00 CST
+			23 button 路径 此 Mac 到 home-router，root，192.0.2.3:22，路径未验证，09-14 00:00 CST
+			24 button 节点 此 Mac，访问来源
+			25 button 路径 此 Mac 到 home-router，deploy，192.0.2.4:22，路径未验证，09-14 00:00 CST
+			26 button 路径 此 Mac 到 home-router，deploy，192.0.2.5:22，路径未验证，09-14 00:00 CST
+			27 button 路径 此 Mac 到 home-router，deploy，192.0.2.6:22，验证失败，09-14 00:00 CST
+			28 button 收起路径组 home-router，1 已验证 / 4 待验证 / 1 失败
+		29 button 设置
+		30 text 实线：已验证   虚线：待验证或失败 · 示例时间 CST
+		31 button 缩小画布
+		32 text 51%
+		33 button 放大画布
+		34 button 适应画布
+		35 button 定位结果
+		36 button 下一个对象
+		37 scroll area
+			38 text 服务器详情 home-router 家里的主路由器 访问路径 1 已验证 / 4 待验证 / 1 失败 选择路径查看账户、地址与检测时间 该服务器的全部路径
+			39 button 选择路径 root 192.0.2.1:22
+			40 button 选择路径 root 192.0.2.2:22
+			41 button 选择路径 root 192.0.2.3:22
+			42 button 选择路径 deploy 192.0.2.4:22
+			43 button 选择路径 deploy 192.0.2.5:22
+			44 button 选择路径 deploy 192.0.2.6:22
+			45 button 连接设置
+			46 text 示例数据 · 非实时状态
+			47 button 清除选择
+	48 close button
+	49 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	50 minimize button
+51 menu bar
+	52 KeyPort Graph Preview
+	53 Edit
+	54 View
+	55 Window
+	56 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise

@@ -1,0 +1,45 @@
+Window: "KeyPort · Graph 隔离预览", App: KeyPort Graph Preview.
+0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
+	1 container
+		2 text 服务器 3
+		3 button Description: 添加服务器, ID: plus
+		4 button 列表
+		5 button 拓扑
+		6 text 服务器详情
+		7 menu button Description: 工作区示例场景, Help: 当前示例：账户未授权
+		8 image Description: 密码, ID: key
+		9 text KeyPort
+		10 image Description: 搜索, ID: magnifyingglass
+		11 text field (settable) 搜索别名或描述
+		12 text 已添加 · 示例状态 工作空间
+		13 button 服务器
+		14 button 我的设备
+		15 button 活动记录
+		16 text 标签 家庭网络 管理信息已同步
+		17 button 设置
+		18 scroll area
+			19 button Description: 服务器 home-router，家里的主路由器, Help: home-router, 家里的主路由器
+			20 button Description: 服务器 mac-studio, Help: mac-studio
+			21 button Description: 服务器 tencent-cloud, Help: tencent-cloud
+		22 button 添加或导入服务器
+		23 scroll area
+			24 image server.rack
+			25 text Help: home-router, Value: home-router 家里的主路由器 登录账户 root 本机公钥已授权 · 示例 地址可到达 · 直连已验证
+			26 button 在终端打开
+			27 button 测试路径
+			28 button 管理免密授权
+			29 text 选中的直连路径 此 Mac → home-router root@192.168.8.1:22 直连已验证 地址可到达 检测：09-14 13:58 CST
+			30 button 连接设置
+			31 text 最近活动 直连已验证 · 09-14 13:58 CST 示例数据 · 非实时状态
+			32 button 清除选择
+	33 close button
+	34 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	35 minimize button
+36 menu bar
+	37 KeyPort Graph Preview
+	38 Edit
+	39 View
+	40 Window
+	41 Help
+
+The focused UI element is 0 standard window KeyPort · Graph 隔离预览, Secondary Actions: Raise
