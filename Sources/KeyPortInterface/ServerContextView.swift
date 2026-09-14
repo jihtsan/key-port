@@ -6,6 +6,7 @@ struct ServerContextView: View {
     let onAction: () -> Void
     let onAdd: () -> Void
     let onConfigure: (AccessFormDraft) -> Void
+    var onManageAuthorization: (() -> Void)? = nil
     var onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil
     private var path: ConfiguredAccessPath? { workspace.selectedPath ?? workspace.selectedServer.flatMap { server in
         let paths = workspace.paths(for: server.id); return paths.count == 1 ? paths.first : nil
@@ -116,7 +117,7 @@ struct ServerContextView: View {
             HStack(spacing: 10) {
                 primaryAction(path)
                 Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
-                Button("管理免密授权") { if let draft = workspace.accessDraft(for: path) { onConfigure(draft) } }.buttonStyle(InterfaceButtonStyle())
+                Button("管理免密授权") { if let onManageAuthorization { onManageAuthorization() } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
             }
         }
     }

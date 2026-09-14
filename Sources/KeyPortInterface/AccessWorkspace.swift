@@ -139,12 +139,14 @@ public enum PathPrimaryAction: Equatable {
 extension AccessWorkspace {
     public func primaryAction(for path: ConfiguredAccessPath) -> PathPrimaryAction {
         if path.reachability == .unreachable { return .checkAddress }
-        return snapshot.authorization(for: path) == .installed ? .openTerminal : .authorize
+        if snapshot.authorization(for: path) == .installed { return path.verification == .verified ? .openTerminal : .checkAddress }
+        return .authorize
     }
     public func accessDraft(for path: ConfiguredAccessPath) -> AccessFormDraft? {
         guard let server = graph.servers.first(where: { $0.id == path.serverID }), graph.paths.contains(where: { $0.id == path.id }) else { return nil }
         var draft = AccessFormDraft()
         draft.editingEntryID = server.id; draft.alias = path.sshAlias ?? server.alias; draft.description = server.description
+        draft.existingKey = snapshot.authorization(for: path) == .installed
         draft.address = path.address; draft.port = String(path.port); draft.account = path.account
         return draft
     }

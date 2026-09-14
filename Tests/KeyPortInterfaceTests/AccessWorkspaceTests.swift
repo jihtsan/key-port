@@ -119,6 +119,14 @@ import XCTest
         }
     }
 
+    func testRecordedAuthorizationDoesNotOfferTerminalBeforePathVerification() {
+        var input = snapshot()
+        input.configuredPaths[0].verification = .pending
+        let workspace = AccessWorkspace(snapshot: input)
+        XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[0]), .checkAddress)
+        XCTAssertTrue(workspace.accessDraft(for: input.configuredPaths[0])!.existingKey)
+    }
+
     func testPrimaryActionPreservesAuthorizationAndAddressRecovery() {
         var input = snapshot(); let workspace = AccessWorkspace(snapshot: input)
         XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[0]), .openTerminal)

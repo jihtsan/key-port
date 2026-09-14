@@ -25,7 +25,7 @@ public struct ServerHomeView: View {
                     HStack {
                         Text("服务器详情").foregroundStyle(.secondary); Spacer(); previewControls()
                     }.padding(.horizontal, 24).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
-                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure, onPathAction: onPathAction)
+                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure, onManageAuthorization: { if let onNavigate { onNavigate("我的设备") } else { previewNotice() } }, onPathAction: onPathAction)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
