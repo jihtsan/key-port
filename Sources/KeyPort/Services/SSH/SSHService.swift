@@ -31,17 +31,20 @@ actor OpenSSHService {
     private let paths: KeyPortPaths
     private let askPassPath: String
     private let transportAdapter: SSHTransportAdapter
+    private let isolatedConfiguration: Bool
 
     init(
         runner: ProcessRunner,
         paths: KeyPortPaths = KeyPortPaths(),
         askPassPath: String,
-        transportAdapter: SSHTransportAdapter = SSHTransportAdapter()
+        transportAdapter: SSHTransportAdapter = SSHTransportAdapter(),
+        isolatedConfiguration: Bool = false
     ) {
         self.runner = runner
         self.paths = paths
         self.askPassPath = askPassPath
         self.transportAdapter = transportAdapter
+        self.isolatedConfiguration = isolatedConfiguration
     }
 
     func testPublicKey(
@@ -186,12 +189,26 @@ actor OpenSSHService {
         return AuthorizedKeysParser.parse(result.stdout)
     }
 
+    /// Reconcile after an interrupted enrollment without assuming rejection means no key exists.
+    func containsPublicKey(server: ServerConnection, key: SSHKeyRecord, passwordData: Data) async throws -> Bool {
+        guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
+        let broker = try passwordBroker(passwordData: passwordData)
+        broker.startWriter()
+        defer { broker.cleanup() }
+        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: .direct)
+            + SSHAuthenticationPolicy.passwordOnlyArguments + ["\(server.username)@\(server.host)", "sh", "-s"],
+            input: Data(SSHRemoteCommandScripts.readAuthorizedKeys.utf8), environment: askPassEnvironment(broker: broker))
+        guard result.succeeded else { throw SSHServiceError.operationFailed("无法核对远端公钥授权。") }
+        return result.stdout.split(separator: "\n").contains { PublicKeyParser.parse(String($0))?.fingerprint == key.fingerprint }
+    }
+
     private func commonArguments(
         server: ServerConnection,
         transport: SSHConnectionTransport
     ) throws -> [String] {
         let transport = try transportAdapter.configuration(for: transport)
-        return [
+        return (isolatedConfiguration ? ["-F", "/dev/null", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "HostKeyAlgorithms=ssh-ed25519"] : []) + [
             "-T", "-p", String(server.port),
             "-o", "ConnectTimeout=5",
             "-o", "ConnectionAttempts=1",

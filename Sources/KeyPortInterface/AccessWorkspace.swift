@@ -65,14 +65,16 @@ public struct DirectAccessProjection {
 public enum WorkspaceSelection: Equatable, Hashable { case device(String), server(String), path(String) }
 public enum WorkspacePresentation { case list, graph }
 
-/// One scene owns data, selection and search across both presentations. No persisted state.
+/// One scene owns data, selection and search across both presentations. Persistence is supplied by its owner.
 @MainActor public final class AccessWorkspace: ObservableObject {
     @Published public private(set) var snapshot: AccessWorkspaceSnapshot
     @Published public var expandedGraphServerIDs: Set<String> = []
+    public let isSimulation: Bool
     @Published public var query = ""
     @Published public var presentation = WorkspacePresentation.list
     @Published public private(set) var selection: WorkspaceSelection?
-    public init(snapshot: AccessWorkspaceSnapshot, selection: WorkspaceSelection? = nil) {
+    public init(snapshot: AccessWorkspaceSnapshot, selection: WorkspaceSelection? = nil, isSimulation: Bool = true) {
+        self.isSimulation = isSimulation
         self.snapshot = snapshot
         select(selection)
     }

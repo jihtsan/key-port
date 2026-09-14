@@ -39,7 +39,7 @@ public struct AccessFormView: View {
                 }
                 row("地址 / 端口") {
                     HStack(spacing: 12) {
-                        TextField("IP 地址或主机名", text: $draft.address).frame(width: max(100, min(360, CGFloat(draft.address.count) * 8.5))).accessibilityLabel("地址")
+                        TextField("IP 地址或主机名", text: $draft.address).frame(width: max(220, min(360, CGFloat(draft.address.count) * 8.5))).accessibilityLabel("地址")
                         Text(":").foregroundStyle(InterfaceStyle.muted)
                         TextField("22", text: $draft.port).frame(width: 72).accessibilityLabel("端口")
                         Spacer(minLength: 0)
@@ -48,7 +48,8 @@ public struct AccessFormView: View {
                 row("登录账户") { field("登录账户", text: $draft.account) }
                 row(draft.existingKey ? "认证方式" : "登录密码") {
                     if draft.existingKey {
-                        Text("使用本机现有 SSH 密钥").frame(maxWidth: .infinity, alignment: .leading).modifier(InputSurface(technical: false))
+                        if fixture { Text("使用本机现有 SSH 密钥").frame(maxWidth: .infinity, alignment: .leading).modifier(InputSurface(technical: false)) }
+                        else { TextField("私钥绝对路径；留空使用验收入口密钥", text: $draft.privateKeyPath).accessibilityLabel("本机私钥路径").modifier(InputSurface()) }
                     } else {
                         HStack(spacing: 12) {
                             if showsPassword { TextField("登录密码", text: $draft.password).frame(width: 84) }
@@ -58,7 +59,7 @@ public struct AccessFormView: View {
                         }.modifier(InputSurface())
                     }
                 }
-                Text(draft.existingKey ? "优先使用本机已有密钥认证；不需要填写登录密码。" : "密码仅用于首次登录和安装公钥，默认不保存。")
+                Text(draft.existingKey ? "使用指定私钥及同名 .pub；留空使用本验收入口已生成的密钥。" : "密码仅本次使用；为此 Mac 生成专用密钥并安装公钥，不保存密码。")
                     .font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8090A6)).frame(height: 18)
                 Button(draft.existingKey ? "改用登录密码" : "已能通过密钥登录？使用现有密钥") {
                     draft.existingKey.toggle(); draft.password = ""; showsPassword = false

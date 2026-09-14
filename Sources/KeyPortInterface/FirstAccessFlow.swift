@@ -34,8 +34,8 @@ public enum FirstAccessState: Equatable {
 }
 
 /// Only completed adapter results advance the flow. Implementations must enforce host trust,
-/// idempotent authorization and cancellation at their real service boundary. No production
-/// implementation is supplied by this isolated UI stage.
+/// idempotent authorization and cancellation at their real service boundary. The executable
+/// injects either a fixture adapter or the opt-in local OpenSSH acceptance adapter.
 @MainActor public protocol FirstAccessAdapter: AnyObject {
     var isSimulation: Bool { get }
     var deviceID: String { get }
@@ -45,10 +45,15 @@ public enum FirstAccessState: Equatable {
     func authorizationStatus(for key: AccessAuthorizationKey) async throws -> AccessAuthorizationStatus
     func authorize(_ key: AccessAuthorizationKey) async throws
     func verify(_ key: AccessAuthorizationKey, address: String, port: String) async throws
+    func command(for draft: AccessFormDraft) -> String
     func openTerminal(command: String) async throws
     func copyCommand(_ command: String) async throws
     /// Must release pending credential/session resources; cancellation cannot imply rollback.
     func cancel()
+}
+
+extension FirstAccessAdapter {
+    public func command(for draft: AccessFormDraft) -> String { "ssh " + draft.alias }
 }
 
 @MainActor public final class FirstAccessFlow: ObservableObject {
@@ -65,7 +70,7 @@ public enum FirstAccessState: Equatable {
     private var generation = UUID()
     private var task: Task<Void, Never>?
     public var isSimulation: Bool { adapter.isSimulation }
-    public var command: String { "ssh " + draft.alias }
+    public var command: String { adapter.command(for: draft) }
     public var authorizationKey: AccessAuthorizationKey? {
         identity.map { AccessAuthorizationKey(deviceID: adapter.deviceID, serverID: $0.serverID, account: draft.account) }
     }

@@ -145,7 +145,7 @@ struct ProcessExecutor: ProcessExecuting {
         state.terminateIfRequested()
 
         let timeoutTask = Task {
-            try? await Task.sleep(nanoseconds: UInt64(max(0, request.limits.timeout) * 1_000_000_000))
+            do { try await Task.sleep(nanoseconds: UInt64(max(0, request.limits.timeout) * 1_000_000_000)) } catch { return }
             state.requestTermination(reason: .timedOut)
         }
 
