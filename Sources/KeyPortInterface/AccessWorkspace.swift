@@ -15,10 +15,13 @@ public struct ConfiguredAccessPath: Identifiable, Equatable {
     public var verification: PathVerification
     public var reachability: PathReachability
     public var checkedAt: Date?
+    public var terminalCommand: String?
+    public var isDefaultConnection: Bool?
     public init(id: String, deviceID: String, serverID: String, account: String, address: String, port: Int = 22,
-                verification: PathVerification = .pending, reachability: PathReachability = .unknown, checkedAt: Date? = nil) {
+                verification: PathVerification = .pending, reachability: PathReachability = .unknown, checkedAt: Date? = nil, terminalCommand: String? = nil, isDefaultConnection: Bool? = nil) {
         self.id = id; self.deviceID = deviceID; self.serverID = serverID; self.account = account
         self.address = address; self.port = port; self.verification = verification; self.reachability = reachability; self.checkedAt = checkedAt
+        self.terminalCommand = terminalCommand; self.isDefaultConnection = isDefaultConnection
     }
     public var endpoint: String { "\(address.contains(":") ? "[\(address)]" : address):\(port)" }
     public var authorizationKey: AccessAuthorizationKey { .init(deviceID: deviceID, serverID: serverID, account: account) }

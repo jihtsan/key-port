@@ -66,6 +66,7 @@ import KeyPortInterface
               store.state.trusts.contains(where: { $0.serverID == observed.serverID && $0.address == observed.address && $0.port == observed.port && $0.key.fingerprint == identity.fingerprint }),
               validationInput.validationMessage(in: store.aliases) == nil, AccessPilotStore.safeConfigValue(input.account),
               input.account.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == ".") }) else { throw AccessFlowFailure.authentication }
+        try store.installation.validateAlias(input.alias)
         var draft = input; draft.password = ""
         let selectedKey: SSHKeyRecord
         if draft.existingKey && !draft.privateKeyPath.isEmpty {
@@ -129,8 +130,8 @@ import KeyPortInterface
         guard try await ssh.testPublicKey(server: route, key: key) else { throw AccessFlowFailure.verification }
         try check(token)
         guard let connection = store.state.connections.first(where: { $0.id == connectionID }) else { throw AccessPilotError.storage }
-        handoffCommand = try store.command(for: connection)
         try store.checked(connectionID, success: true)
+        handoffCommand = try store.command(for: connection)
     }
     func recordFailure(_ failure: AccessFlowFailure) throws {
         if let connectionID { try store.checked(connectionID, success: false, unreachable: failure == .unreachable) }
@@ -167,4 +168,8 @@ import KeyPortInterface
 // SSHServiceError messages are locally classified strings, never raw server stderr.
 extension SSHServiceError: AccessFlowFailureDetailProviding {
     var safeAccessFailureDetail: String { errorDescription ?? "SSH 操作未完成。" }
+}
+
+extension SSHConfigService.AliasInstallation.Failure: AccessFlowFailureDetailProviding {
+    var safeAccessFailureDetail: String { message }
 }

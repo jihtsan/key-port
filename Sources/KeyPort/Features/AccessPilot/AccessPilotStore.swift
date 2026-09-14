@@ -31,16 +31,19 @@ import KeyPortInterface
         var trusts: [Trust] = []
         var connections: [Connection] = []
         var authorizations: [String: String] = [:]
+        var defaultPaths: [String: String]? = nil
     }
     let paths: KeyPortPaths
+    let installation: SSHConfigService.AliasInstallation
     let workspace: AccessWorkspace
     private(set) var state: State
     private let lockFD: Int32
     private var stateURL: URL { paths.applicationSupport.appendingPathComponent("access-pilot-v1.json") }
 
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/KeyPort/AccessPilot")) throws {
-        paths = KeyPortPaths(home: home)
+    init(home: URL? = nil, userHome: URL? = nil) throws {
+        paths = KeyPortPaths(home: home ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/KeyPort/AccessPilot"))
+        installation = .init(home: userHome ?? home ?? FileManager.default.homeDirectoryForCurrentUser)
         try paths.prepareDirectories()
         let lockURL = paths.applicationSupport.appendingPathComponent("access-pilot.lock")
         lockFD = Darwin.open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
@@ -52,7 +55,13 @@ import KeyPortInterface
                 state = try JSONDecoder().decode(State.self, from: Data(contentsOf: url))
                 guard state.version == 1 else { throw AccessPilotError.storage }
             } else { state = State() }
-            workspace = AccessWorkspace(snapshot: Self.snapshot(state), isSimulation: false)
+            if state.defaultPaths == nil {
+                state.defaultPaths = [:]
+                for connection in state.connections where state.defaultPaths?[connection.serverID] == nil {
+                    state.defaultPaths?[connection.serverID] = connection.id
+                }
+            }
+            workspace = AccessWorkspace(snapshot: Self.snapshot(state, configDirectory: paths.keyPortDirectory), isSimulation: false)
         } catch { Darwin.close(lockFD); throw error }
     }
     deinit { Darwin.close(lockFD) }
@@ -71,6 +80,7 @@ import KeyPortInterface
     }
     func save(draft: AccessFormDraft, serverID: String, key: SSHKeyRecord) throws -> String {
         guard aliases.validationMessage(for: draft.alias, editingEntryID: serverID) == nil else { throw AccessPilotError.aliasConflict }
+        try installation.validateAlias(draft.alias)
         var next = state
         // A new address remains a separate path; editing display metadata never creates another node.
         let existing = next.connections.first { $0.serverID == serverID && $0.account == draft.account && $0.address == draft.address && $0.port == Int(draft.port) }
@@ -81,6 +91,7 @@ import KeyPortInterface
             next.connections[i].alias = draft.alias; next.connections[i].description = draft.description
         }
         next.connections.append(connection)
+        if next.defaultPaths?[serverID] == nil { next.defaultPaths?[serverID] = connection.id }
         try commit(next); workspace.select(.path(connection.id)); return connection.id
     }
     func record(_ status: AccessAuthorizationStatus, serverID: String, account: String, keyID: String) throws {
@@ -96,41 +107,66 @@ import KeyPortInterface
         next.connections[index].checkedAt = Date()
         try commit(next)
     }
-    func command(for connection: Connection) throws -> String {
-        let config = try writeConfiguration(for: connection)
-        return "/usr/bin/ssh -F \(Self.shellQuote(config.path)) \(Self.shellQuote(connection.alias))"
+    func isDefault(_ connection: Connection) -> Bool { state.defaultPaths?[connection.serverID] == connection.id }
+    func synchronizeAliases() throws {
+        try export(state)
+        try cleanPathConfigurations()
+        for connection in state.connections where connection.verification == "verified" { _ = try writeConfiguration(for: connection) }
     }
-    /// Each saved path owns a config: a selected edge must never silently use another address.
+    func setDefault(_ id: String) throws {
+        guard let connection = state.connections.first(where: { $0.id == id }), connection.verification == "verified" else { throw AccessPilotError.configuration }
+        var next = state; next.defaultPaths?[connection.serverID] = id; try commit(next)
+        try synchronizeAliases()
+    }
+    func rename(serverID: String, alias: String) throws {
+        guard AliasDirectory.isValidNewAlias(alias), aliases.validationMessage(for: alias, editingEntryID: serverID) == nil else { throw AccessPilotError.aliasConflict }
+        var next = state
+        for i in next.connections.indices where next.connections[i].serverID == serverID { next.connections[i].alias = alias }
+        try commit(next)
+        try synchronizeAliases()
+    }
+    func remove(_ id: String) throws {
+        var next = state
+        guard let connection = next.connections.first(where: { $0.id == id }) else { return }
+        next.connections.removeAll { $0.id == id }
+        // Never silently move the short alias to a different endpoint after deletion.
+        if next.defaultPaths?[connection.serverID] == id { next.defaultPaths?.removeValue(forKey: connection.serverID) }
+        try commit(next)
+        try synchronizeAliases()
+    }
+    private func cleanPathConfigurations() throws {
+        for url in try FileManager.default.contentsOfDirectory(at: paths.keyPortDirectory, includingPropertiesForKeys: nil)
+            where url.lastPathComponent.hasPrefix("path-") && url.pathExtension == "conf" {
+            let id = String(url.deletingPathExtension().lastPathComponent.dropFirst(5))
+            if UUID(uuidString: id) != nil, !state.connections.contains(where: { $0.id == id && $0.verification == "verified" }) {
+                let backup = paths.keyPortDirectory.appendingPathComponent("retired-" + UUID().uuidString)
+                try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                try FileManager.default.moveItem(at: url, to: backup.appendingPathComponent(url.lastPathComponent))
+            }
+        }
+    }
+    func command(for connection: Connection) throws -> String {
+        guard let current = state.connections.first(where: { $0.id == connection.id }), current.verification == "verified" else { throw AccessPilotError.configuration }
+        try synchronizeAliases()
+        if isDefault(current) { return "ssh " + current.alias }
+        let config = try writeConfiguration(for: current)
+        return "/usr/bin/ssh -F \(Self.shellQuote(config.path)) \(Self.shellQuote(current.alias))"
+    }
+    private func entry(_ connection: Connection, state: State) throws -> SSHConfigEntry {
+        guard UUID(uuidString: connection.id) != nil,
+              let key = state.keys.first(where: { $0.id == connection.keyID }), let privatePath = key.privateKeyPath else { throw AccessPilotError.configuration }
+        return SSHConfigEntry(server: ServerConnection(name: connection.description, host: connection.address,
+            port: connection.port, username: connection.account, alias: connection.alias), identityPath: privatePath)
+    }
+    private func export(_ value: State) throws {
+        let connections = value.connections.filter { value.defaultPaths?[$0.serverID] == $0.id && $0.verification == "verified" }
+        let entries = try connections.map { try entry($0, state: value) }
+        try installation.install(entries: entries, knownHosts: paths.knownHosts)
+    }
+    /// A selected nondefault edge always uses its own explicit configuration.
     func writeConfiguration(for connection: Connection) throws -> URL {
-        guard UUID(uuidString: connection.id) != nil, (1...65535).contains(connection.port),
-              let key = state.keys.first(where: { $0.id == connection.keyID }), let privatePath = key.privateKeyPath,
-              AliasDirectory.isValidNewAlias(connection.alias), Self.safeConfigValue(connection.address),
-              Self.safeConfigValue(connection.account), Self.safeConfigValue(privatePath),
-              Self.safeConfigValue(paths.knownHosts.path) else { throw AccessPilotError.configuration }
         let config = paths.keyPortDirectory.appendingPathComponent("path-\(connection.id).conf")
-        let text = """
-        Host \(connection.alias)
-            HostName "\(connection.address)"
-            Port \(connection.port)
-            User "\(connection.account)"
-            IdentityFile "\(privatePath)"
-            UserKnownHostsFile "\(paths.knownHosts.path)"
-            GlobalKnownHostsFile /dev/null
-            StrictHostKeyChecking yes
-            HostKeyAlgorithms ssh-ed25519
-            IdentitiesOnly yes
-            IdentityAgent none
-            PreferredAuthentications publickey
-            PasswordAuthentication no
-            KbdInteractiveAuthentication no
-            ControlMaster no
-            ControlPath none
-            ClearAllForwardings yes
-            ForwardAgent no
-            ConnectTimeout 5
-            ConnectionAttempts 1
-
-        """
+        let text = try SSHConfigGenerator.directConfig(entries: [entry(connection, state: state)], knownHostsPath: paths.knownHosts.path)
         try write(Data(text.utf8), to: config)
         return config
     }
@@ -139,24 +175,44 @@ import KeyPortInterface
     }
     static func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     private func commit(_ next: State) throws {
-        // Trust metadata is authoritative; regenerate known_hosts before any subsequent SSH request.
-        try write(try JSONEncoder().encode(next), to: stateURL)
+        let old = state
+        do {
+            let lines = Set(next.trusts.map(\.key.knownHostsLine)).sorted().joined(separator: "\n") + "\n"
+            try write(Data(lines.utf8), to: paths.knownHosts)
+            try export(next)
+            try write(try JSONEncoder().encode(next), to: stateURL)
+        } catch {
+            // Keep saved facts and derived configuration aligned on ordinary write failures.
+            let lines = Set(old.trusts.map(\.key.knownHostsLine)).sorted().joined(separator: "\n") + "\n"
+            try write(Data(lines.utf8), to: paths.knownHosts)
+            try export(old)
+            throw error
+        }
         state = next
-        let lines = Set(next.trusts.map(\.key.knownHostsLine)).sorted().joined(separator: "\n") + "\n"
-        try write(Data(lines.utf8), to: paths.knownHosts)
-        workspace.replaceSnapshot(Self.snapshot(next))
+        workspace.replaceSnapshot(Self.snapshot(next, configDirectory: paths.keyPortDirectory))
     }
     private func write(_ data: Data, to url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            let existing = try Data(contentsOf: url)
+            if existing == data { return }
+            if url == stateURL {
+                let backup = paths.applicationSupport.appendingPathComponent("access-pilot-backup-" + UUID().uuidString + ".json")
+                try existing.write(to: backup, options: .withoutOverwriting)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+            }
+        }
         try data.write(to: url, options: [.atomic, .completeFileProtectionUnlessOpen])
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     private static func authorizationID(_ server: String, _ account: String, _ key: String) -> String { "\(server)|\(account)|\(key)" }
-    private static func snapshot(_ state: State) -> AccessWorkspaceSnapshot {
+    private static func snapshot(_ state: State, configDirectory: URL) -> AccessWorkspaceSnapshot {
         var seen = Set<String>()
         let servers = state.connections.filter { seen.insert($0.serverID).inserted }.map { ServerNaming(id: $0.serverID, alias: $0.alias, description: $0.description) }
         let paths = state.connections.map { ConfiguredAccessPath(id: $0.id, deviceID: state.deviceID, serverID: $0.serverID, account: $0.account, address: $0.address, port: $0.port,
             verification: $0.verification == "verified" ? .verified : $0.verification == "failed" ? .failed : .pending,
-            reachability: $0.reachability == "reachable" ? .reachable : $0.reachability == "unreachable" ? .unreachable : .unknown, checkedAt: $0.checkedAt) }
+            reachability: $0.reachability == "reachable" ? .reachable : $0.reachability == "unreachable" ? .unreachable : .unknown, checkedAt: $0.checkedAt,
+            terminalCommand: $0.verification != "verified" ? nil : state.defaultPaths?[$0.serverID] == $0.id ? "ssh " + $0.alias : "/usr/bin/ssh -F " + shellQuote(configDirectory.appendingPathComponent("path-\($0.id).conf").path) + " " + shellQuote($0.alias),
+            isDefaultConnection: state.defaultPaths?[$0.serverID] == $0.id) }
         var authorizations: [AccessAuthorizationKey: AccessAuthorizationStatus] = [:]
         for connection in state.connections {
             let status = state.authorizations[authorizationID(connection.serverID, connection.account, connection.keyID)]

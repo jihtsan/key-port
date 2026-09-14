@@ -87,6 +87,10 @@ struct ServerContextView: View {
             Text(path.account + "@" + path.endpoint).font(InterfaceStyle.technical(12)).textSelection(.enabled).lineLimit(3)
             Text(path.verification.rawValue).foregroundStyle(path.verification.color)
             Text(path.reachability.rawValue).foregroundStyle(.secondary)
+            if let isDefault = path.isDefaultConnection {
+                Text(isDefault ? "默认连接 · 普通终端使用服务器别名" : "指定路径 · 命令固定此地址，不切换默认连接").font(.system(size: 11)).foregroundStyle(.secondary)
+                if let command = path.terminalCommand { Text(command).font(InterfaceStyle.technical(11)).textSelection(.enabled).help(command) }
+            }
             Text("检测：" + path.checkedLabel).font(.system(size: 11)).foregroundStyle(.secondary)
         }.padding(compact ? 0 : 16).frame(maxWidth: .infinity, alignment: .leading)
             .background(compact ? .clear : InterfaceStyle.color(0xF8F9FB), in: RoundedRectangle(cornerRadius: 8))
