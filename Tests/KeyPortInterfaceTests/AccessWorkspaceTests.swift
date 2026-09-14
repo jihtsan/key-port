@@ -86,7 +86,7 @@ import XCTest
         XCTAssertEqual(a.serverCenter("router"), b.serverCenter("router"))
         XCTAssertEqual(Set(all.paths.map { a.laneCenter($0).y }).count, 3)
         XCTAssertEqual(Set(all.paths.map { a.endpoint($0).y }).count, 3)
-        XCTAssertEqual(a.fittedScale(in: CGSize(width: 824, height: 764)), 1)
+        XCTAssertEqual(a.fittedScale(in: CGSize(width: 824, height: 944)), 1)
         XCTAssertLessThan(a.fittedScale(in: CGSize(width: 604, height: 600)), 1)
     }
     func testTwoPathsToSameServerNeverShareLabelOrEndpoint() {
@@ -116,6 +116,35 @@ import XCTest
         for count in 0...3 {
             input.configuredPaths = Array(allPaths.prefix(count))
             XCTAssertFalse(DirectGraphLayout(projection: input.graph).isCollapsed("router"))
+        }
+    }
+
+    func testPrimaryActionPreservesAuthorizationAndAddressRecovery() {
+        var input = snapshot(); let workspace = AccessWorkspace(snapshot: input)
+        XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[0]), .openTerminal)
+        XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[1]), .checkAddress)
+        XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[2]), .authorize)
+        input.authorizations[input.configuredPaths[0].authorizationKey] = .unknown
+        workspace.replaceSnapshot(input)
+        XCTAssertEqual(workspace.primaryAction(for: input.configuredPaths[0]), .authorize)
+        let draft = workspace.accessDraft(for: input.configuredPaths[1])!
+        XCTAssertEqual(draft.alias, "home-router"); XCTAssertEqual(draft.editingEntryID, "router")
+        XCTAssertEqual(draft.address, "2001:db8::1"); XCTAssertEqual(draft.account, "root")
+        XCTAssertTrue(draft.password.isEmpty)
+        var submitted = draft; submitted.existingKey = true
+        let directory = AliasDirectory(entries: [.init(alias: "home-router", source: .managed, ownerID: "router"), .init(alias: "home-router", source: .sshConfiguration, ownerID: "router")])
+        XCTAssertNil(submitted.validationMessage(in: directory))
+        submitted.editingEntryID = nil
+        XCTAssertNotNil(submitted.validationMessage(in: directory))
+    }
+    func testFitIncludesGraphAndReservesToolbarSpaceInNarrowWindow() {
+        var input = snapshot()
+        for i in 0..<10 { input.servers.append(.init(id: "extra-\(i)", alias: "extra-\(i)")) }
+        let layout = DirectGraphLayout(projection: input.graph)
+        for size in [CGSize(width: 604, height: 684), CGSize(width: 824, height: 764)] {
+            let scale = layout.fittedScale(in: size)
+            XCTAssertLessThanOrEqual(layout.width * scale, size.width + 0.01)
+            XCTAssertLessThanOrEqual(layout.height * scale, size.height - 180 + 0.01)
         }
     }
 

@@ -48,7 +48,7 @@ struct FixtureWorkspacePreview: View {
                 }
             }.menuStyle(.borderlessButton).fixedSize().accessibilityLabel("工作区示例场景").help("当前示例：" + scenario.rawValue))
         }) { draft, close in AnyView(FixtureAccessPreview(draft: draft, aliasDirectory: AliasDirectory(entries:
-            [.init(alias: "home-router", source: .sshConfiguration)] + workspace.graph.servers.map {
+            [.init(alias: "home-router", source: .sshConfiguration, ownerID: "router")] + workspace.graph.servers.map {
                 .init(alias: $0.alias, source: .managed, ownerID: $0.id)
             }), onClose: close)) }
     }

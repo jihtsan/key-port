@@ -19,14 +19,13 @@ struct GraphPathView: View {
             Image(systemName: "arrowtriangle.right.fill").font(.system(size: 8)).foregroundStyle(path.verification.color)
                 .position(x: end.x - 4, y: end.y).accessibilityHidden(true)
             Button(action: select) {
-                VStack(spacing: 3) {
-                    Text("直连 · " + path.account).font(.system(size: 11, weight: .medium))
-                    Text(path.endpoint).font(InterfaceStyle.technical(10)).lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(path.account + " · " + path.endpoint).font(InterfaceStyle.technical(11)).lineLimit(1)
                     Text(path.verification.rawValue).font(.system(size: 11)).lineLimit(1)
                 }.foregroundStyle(path.verification.color).padding(6).frame(width: 228)
                     .background(InterfaceStyle.color(selected ? 0xEAF2FF : 0xFAFBFD), in: RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? InterfaceStyle.blue : .clear))
-            }.buttonStyle(.plain).position(layout.laneCenter(path)).accessibilityLabel(accessibilityText)
+            }.buttonStyle(.plain).position(x: layout.laneCenter(path).x, y: layout.laneCenter(path).y - 24).accessibilityLabel(accessibilityText)
         }
     }
 }
@@ -47,7 +46,7 @@ struct GraphServerView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(server.alias).font(InterfaceStyle.technical(15, medium: true)).lineLimit(1).help(server.alias)
                 if let description = server.visibleDescription { Text(description).font(.system(size: 11)).lineLimit(1).help(description) }
-                Text(statusText).font(.system(size: 11)).foregroundStyle(paths.first?.verification.color ?? Color.secondary)
+                Text(statusText).font(.system(size: 11)).foregroundStyle(paths.count == 1 ? paths[0].verification.color : Color.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(16).frame(width: 232, height: 100)
                 .background(background, in: RoundedRectangle(cornerRadius: 10))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(selected ? InterfaceStyle.blue : InterfaceStyle.color(0xDBE2EC)))

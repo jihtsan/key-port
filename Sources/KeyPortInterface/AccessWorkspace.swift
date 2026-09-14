@@ -118,3 +118,28 @@ public enum WorkspacePresentation { case list, graph }
         select(choices[(index + 1) % choices.count])
     }
 }
+
+
+public enum PathPrimaryAction: Equatable {
+    case authorize, checkAddress, openTerminal
+    var title: String {
+        switch self { case .authorize: return "配置免密"; case .checkAddress: return "检查地址"; case .openTerminal: return "在终端打开" }
+    }
+    var symbol: String {
+        switch self { case .authorize: return "key"; case .checkAddress: return "slider.horizontal.3"; case .openTerminal: return "terminal" }
+    }
+}
+
+extension AccessWorkspace {
+    public func primaryAction(for path: ConfiguredAccessPath) -> PathPrimaryAction {
+        if path.reachability == .unreachable { return .checkAddress }
+        return snapshot.authorization(for: path) == .installed ? .openTerminal : .authorize
+    }
+    public func accessDraft(for path: ConfiguredAccessPath) -> AccessFormDraft? {
+        guard let server = graph.servers.first(where: { $0.id == path.serverID }), graph.paths.contains(where: { $0.id == path.id }) else { return nil }
+        var draft = AccessFormDraft()
+        draft.editingEntryID = server.id; draft.alias = server.alias; draft.description = server.description
+        draft.address = path.address; draft.port = String(path.port); draft.account = path.account
+        return draft
+    }
+}

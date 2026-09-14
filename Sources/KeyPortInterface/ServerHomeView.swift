@@ -3,6 +3,7 @@ import SwiftUI
 public struct ServerHomeView: View {
     @ObservedObject private var workspace: AccessWorkspace
     @State private var showsForm = false
+    @State private var formDraft: AccessFormDraft?
     @State private var retainedDraft: AccessFormDraft?
     @State private var notice: String?
     private let accessFlow: (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView
@@ -15,18 +16,18 @@ public struct ServerHomeView: View {
         HStack(spacing: 0) {
             sidebar.frame(width: 200)
             if workspace.presentation == .graph {
-                AccessGraphView(workspace: workspace, previewControls: previewControls, onAdd: { showsForm = true }, onAction: previewNotice)
+                AccessGraphView(workspace: workspace, previewControls: previewControls, onAdd: { beginAdd() }, onAction: previewNotice, onConfigure: configure)
             } else {
                 serverList.frame(width: 320)
                 VStack(spacing: 0) {
                     HStack {
                         Text("服务器详情").foregroundStyle(.secondary); Spacer(); previewControls()
                     }.padding(.horizontal, 24).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
-                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { showsForm = true })
+                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
-        .sheet(isPresented: $showsForm) { accessFlow(retainedDraft ?? exampleDraft, { retainedDraft = $0; showsForm = false }) }
+        .sheet(isPresented: $showsForm) { accessFlow(formDraft ?? exampleDraft, { if $0.editingEntryID == nil { retainedDraft = $0 }; showsForm = false }) }
         .alert("隔离预览", isPresented: Binding(get: { notice != nil && !showsForm }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
@@ -65,7 +66,7 @@ public struct ServerHomeView: View {
             HStack(spacing: 12) {
                 Text("服务器").font(.system(size: 15, weight: .medium)); Text("\(workspace.graph.servers.count)").foregroundStyle(.secondary)
                 Spacer(minLength: 0)
-                Button { showsForm = true } label: { Image(systemName: "plus") }.buttonStyle(.plain).accessibilityLabel("添加服务器").keyboardShortcut("n", modifiers: .command)
+                Button { beginAdd() } label: { Image(systemName: "plus") }.buttonStyle(.plain).accessibilityLabel("添加服务器").keyboardShortcut("n", modifiers: .command)
                 WorkspaceViewSwitch(workspace: workspace, compact: true)
             }.padding(.horizontal, 18).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
             VStack(alignment: .leading, spacing: 10) {
@@ -80,7 +81,7 @@ public struct ServerHomeView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(server.alias).font(InterfaceStyle.technical(15, medium: true)).lineLimit(1).help(server.alias)
                                         if let description = server.visibleDescription { Text(description).font(.system(size: 12)).lineLimit(1).help(description) }
-                                        Text(workspace.paths(for: server.id).isEmpty ? "暂无配置路径" : "\(workspace.paths(for: server.id).count) 条直连路径 · " + (workspace.paths(for: server.id).first?.verification.rawValue ?? ""))
+                                        Text(workspace.paths(for: server.id).isEmpty ? "暂无配置路径" : workspace.paths(for: server.id).verificationSummary)
                                             .font(.system(size: 10)).opacity(0.75)
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                 }.padding(12).frame(height: workspace.selectedServer?.id == server.id ? 84 : 74)
@@ -95,10 +96,12 @@ public struct ServerHomeView: View {
                 }
                 Spacer(minLength: 0)
             }.padding(12)
-            Button { showsForm = true } label: { Label("添加或导入服务器", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(height: 54) }
+            Button { beginAdd() } label: { Label("添加或导入服务器", systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).frame(height: 54) }
                 .buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue).background(InterfaceStyle.color(0xF5F5F7))
         }.background(InterfaceStyle.color(0xFBFBFC))
     }
+    private func beginAdd() { formDraft = retainedDraft ?? exampleDraft; showsForm = true }
+    private func configure(_ draft: AccessFormDraft) { formDraft = draft; showsForm = true }
     private func previewNotice() { notice = "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" }
 }
 

@@ -35,7 +35,7 @@ struct DirectGraphLayout {
         line.addCurve(to: end, control1: CGPoint(x: 445, y: middle.y), control2: CGPoint(x: 476, y: end.y))
         return line
     }
-    func fittedScale(in size: CGSize) -> CGFloat { min(1, max(0.75, min(size.width / width, size.height / height))) }
+    func fittedScale(in size: CGSize) -> CGFloat { min(1, max(0.01, min(size.width / width, max(1, size.height - 180) / height))) }
 }
 
 struct AccessGraphView: View {
@@ -43,6 +43,7 @@ struct AccessGraphView: View {
     let previewControls: () -> AnyView
     let onAdd: () -> Void
     let onAction: () -> Void
+    let onConfigure: (AccessFormDraft) -> Void
     @State private var zoom: CGFloat = 1
     @State private var showsPlanning = false
     @State private var focusRequest = 0
@@ -58,7 +59,7 @@ struct AccessGraphView: View {
             }.padding(.horizontal, 20).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
             HStack(spacing: 0) {
                 canvas.frame(maxWidth: .infinity, maxHeight: .infinity)
-                ServerContextView(workspace: workspace, compact: true, onAction: onAction, onAdd: onAdd).frame(width: 296)
+                ServerContextView(workspace: workspace, compact: true, onAction: onAction, onAdd: onAdd, onConfigure: onConfigure).frame(width: 296)
             }
         }
         .sheet(isPresented: $showsPlanning) {
@@ -88,6 +89,8 @@ struct AccessGraphView: View {
                                 .scaleEffect(zoom, anchor: .topLeading)
                                 .frame(width: layout.width * zoom, height: layout.height * zoom, alignment: .topLeading)
                         }.scrollIndicators(.visible)
+                            .frame(height: max(1, geometry.size.height - 180))
+                            .padding(.top, 90)
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
