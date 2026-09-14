@@ -1,0 +1,30 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 添加服务器并配置免密 填写一次，随后自动验证、授权并检查免密登录。 服务器名称
+		3 text field (settable) Description: 服务器名称, Value: gl-mt3600
+		4 text 地址 / 端口
+		5 text field (settable) Description: 地址, Value: 192.168.8.1, Placeholder: IP 地址或主机名
+		6 text :
+		7 text field (settable) Description: 端口, Value: 22
+		8 text 登录账户
+		9 text field (settable) Description: 登录账户, Value: root
+		10 text 认证方式 使用本机现有 SSH 密钥 优先使用本机已有密钥认证；不需要填写登录密码。
+		11 button 改用登录密码
+		12 button 高级选项 · SSH 别名
+		13 text 首次连接会请求核对主机身份；之后的步骤自动继续。
+		14 button 验证并配置免密
+		15 button 取消
+		16 text 可点击演示 · 固定示例数据，无真实凭据与网络操作
+17 menu bar
+	18 KeyPort Design Preview
+	19 Edit
+	20 View
+	21 Window
+	22 Help
+
+Selected text: ```
+gl-mt3600
+```
+
+Note: Pay special attention to the content selected by the user. If the user asks a question or refers to the content they are looking at on-screen, they might be referring to the selected content (but they might be referring to something else that's visible, too).

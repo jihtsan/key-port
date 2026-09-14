@@ -5,6 +5,7 @@ let package = Package(
     name: "KeyPort",
     platforms: [.macOS(.v14)],
     products: [
+        .executable(name: "KeyPortDesignPreview", targets: ["KeyPortDesignPreview"]),
         .executable(name: "KeyPort", targets: ["KeyPort"]),
         .executable(name: "KeyPortAskPass", targets: ["KeyPortAskPass"]),
         .executable(name: "KeyPortSSHRelay", targets: ["KeyPortSSHRelay"]),
@@ -13,6 +14,9 @@ let package = Package(
         .library(name: "KeyPortCore", targets: ["KeyPortCore"]),
     ],
     targets: [
+        .target(name: "KeyPortInterface", resources: [.process("Resources")]),
+        .executableTarget(name: "KeyPortDesignPreview", dependencies: ["KeyPortInterface"]),
+        .testTarget(name: "KeyPortInterfaceTests", dependencies: ["KeyPortInterface"]),
         .target(name: "KeyPortCore"),
         .executableTarget(
             name: "KeyPort",
