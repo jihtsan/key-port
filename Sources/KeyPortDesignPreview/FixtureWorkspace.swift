@@ -50,6 +50,25 @@ struct FixtureWorkspacePreview: View {
         }) { draft, close in AnyView(FixtureAccessPreview(draft: draft, aliasDirectory: AliasDirectory(entries:
             [.init(alias: "home-router", source: .sshConfiguration, ownerID: "router")] + workspace.graph.servers.map {
                 .init(alias: $0.alias, source: .managed, ownerID: $0.id)
-            }), onClose: close)) }
+            }), onClose: close, onVerified: recordVerified)) }
     }
+    /// An explicitly completed simulation updates only the in-memory workspace.
+    private func recordVerified(_ draft: AccessFormDraft) {
+        var snapshot = workspace.snapshot
+        let serverID = draft.editingEntryID ?? UUID().uuidString
+        if let index = snapshot.servers.firstIndex(where: { $0.id == serverID }) {
+            snapshot.servers[index].alias = draft.alias; snapshot.servers[index].description = draft.description
+        } else { snapshot.servers.append(.init(id: serverID, alias: draft.alias, description: draft.description)) }
+        let candidates = snapshot.configuredPaths.filter { $0.serverID == serverID && $0.account == draft.account }
+        let original = workspace.selectedPath.flatMap { $0.serverID == serverID ? $0 : nil }
+            ?? (candidates.count == 1 ? candidates.first : candidates.first { $0.address == draft.address && String($0.port) == draft.port })
+        let path = ConfiguredAccessPath(id: original?.id ?? UUID().uuidString, deviceID: snapshot.deviceID,
+            serverID: serverID, account: draft.account, address: draft.address, port: Int(draft.port) ?? 22,
+            verification: .verified, reachability: .reachable, checkedAt: Date())
+        if let index = snapshot.configuredPaths.firstIndex(where: { $0.id == path.id }) { snapshot.configuredPaths[index] = path }
+        else { snapshot.configuredPaths.append(path) }
+        snapshot.authorizations[path.authorizationKey] = .installed
+        workspace.replaceSnapshot(snapshot); workspace.select(.path(path.id))
+    }
+
 }

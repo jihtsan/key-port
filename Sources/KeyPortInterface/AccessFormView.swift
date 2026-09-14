@@ -23,7 +23,7 @@ public struct AccessFormView: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("KeyPort  /  服务器访问").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8794A7)).frame(height: 18)
-            Text("添加服务器并配置免密").font(.system(size: 25, weight: .medium)).frame(height: 38)
+            Text(draft.editingEntryID == nil ? "添加服务器并配置免密" : "配置服务器免密访问").font(.system(size: 25, weight: .medium)).frame(height: 38)
             Text("别名用于 SSH 连接，描述帮助你识别服务器。").font(.system(size: 13)).foregroundStyle(InterfaceStyle.muted).frame(height: 20)
             VStack(alignment: .leading, spacing: 10) {
                 row("SSH 别名") {

@@ -38,7 +38,7 @@ struct ServerContextView: View {
                     Button("连接设置", action: onAction).buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
                         Text("最近活动").font(.system(size: 13, weight: .medium))
-                        Text(path.map { "\($0.verification.rawValue) · \($0.checkedLabel)" } ?? "尚无路径检测记录").foregroundStyle(.secondary)
+                        Text(path.map { "\($0.verification.rawValue) · \($0.checkedLabel)" } ?? (workspace.paths(for: server.id).isEmpty ? "尚无路径检测记录" : "选择具体路径查看检测记录")).foregroundStyle(.secondary)
                     }
                 } else if case .device = workspace.selection {
                     Text("访问来源").foregroundStyle(.secondary)
