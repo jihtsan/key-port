@@ -8,6 +8,7 @@ public struct AccessFormDraft: Equatable {
     public var port = "22"
     public var account = ""
     public var password = ""
+    public var privateKeyPath = ""
     public var existingKey = false
     public var alias = ""
     public init() {}

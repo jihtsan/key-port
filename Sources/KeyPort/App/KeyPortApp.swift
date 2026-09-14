@@ -11,9 +11,10 @@ extension Notification.Name {
 @main
 struct KeyPortApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var model: AppModel
+    @State private var model: AppModel?
 
     init() {
+        if AccessPilotRuntime.enabled { _model = State(initialValue: nil); return }
         let defaults = UserDefaults.standard
         if defaults.string(forKey: "KeyPort.deviceID") == nil {
             defaults.set(KeyPortNaming.newDeviceID(), forKey: "KeyPort.deviceID")
@@ -24,24 +25,27 @@ struct KeyPortApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("SSH KeyPort", id: "main") {
-            ContentView(model: model)
-                .frame(minWidth: 1180, minHeight: 700)
-                .task { await model.load() }
+        WindowGroup(AccessPilotRuntime.enabled ? "KeyPort · 真实连接验收" : "SSH KeyPort", id: "main") {
+            if let model {
+                ContentView(model: model)
+                    .frame(minWidth: 1180, minHeight: 700)
+                    .task { await model.load() }
+            } else {
+                AccessPilotRoot().frame(minWidth: 1100, minHeight: 740).preferredColorScheme(.light)
+            }
         }
-        .defaultSize(width: 1440, height: 900)
-        .commands { KeyPortCommands(model: model) }
+        .defaultSize(width: AccessPilotRuntime.enabled ? 1320 : 1440, height: AccessPilotRuntime.enabled ? 820 : 900)
+        .commands { if let model { KeyPortCommands(model: model) } }
 
-        MenuBarExtra {
-            KeyPortMenuBarView(model: model)
+        MenuBarExtra(isInserted: .constant(model != nil)) {
+            if let model { KeyPortMenuBarView(model: model) }
         } label: {
             menuBarIcon
         }
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(model: model)
-                .frame(width: 560, height: 420)
+            if let model { SettingsView(model: model).frame(width: 560, height: 420) }
         }
     }
 
@@ -88,17 +92,17 @@ struct KeyPortApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.jihtsan.KeyPort", category: "Windowing")
-    private let tunnelRegistry: TunnelRegistry
+    private var injectedTunnelRegistry: TunnelRegistry?
+    private var tunnelRegistry: TunnelRegistry { injectedTunnelRegistry ?? KeyPortRuntimeDependencies.production.tunnelRegistry }
     private var pathMonitor: NWPathMonitor?
     private var terminationRequested = false
 
     override init() {
-        self.tunnelRegistry = KeyPortRuntimeDependencies.production.tunnelRegistry
         super.init()
     }
 
     init(tunnelRegistry: TunnelRegistry) {
-        self.tunnelRegistry = tunnelRegistry
+        self.injectedTunnelRegistry = tunnelRegistry
         super.init()
     }
 
@@ -106,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         logger.info("Application finished launching")
-        startTunnelLifecycle()
+        if !AccessPilotRuntime.enabled { startTunnelLifecycle() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             guard NSApp.windows.isEmpty else {
                 self.logger.info("Primary SwiftUI window is visible")
@@ -119,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if AccessPilotRuntime.enabled { return .terminateNow }
         guard !terminationRequested else { return .terminateLater }
         terminationRequested = true
         Task { @MainActor [weak self] in

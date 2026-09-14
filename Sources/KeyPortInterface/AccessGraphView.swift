@@ -44,6 +44,7 @@ struct AccessGraphView: View {
     let onAdd: () -> Void
     let onAction: () -> Void
     let onConfigure: (AccessFormDraft) -> Void
+    var onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil
     @State private var zoom: CGFloat = 1
     @State private var showsPlanning = false
     @State private var focusRequest = 0
@@ -59,7 +60,7 @@ struct AccessGraphView: View {
             }.padding(.horizontal, 20).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
             HStack(spacing: 0) {
                 canvas.frame(maxWidth: .infinity, maxHeight: .infinity)
-                ServerContextView(workspace: workspace, compact: true, onAction: onAction, onAdd: onAdd, onConfigure: onConfigure).frame(width: 296)
+                ServerContextView(workspace: workspace, compact: true, onAction: onAction, onAdd: onAdd, onConfigure: onConfigure, onPathAction: onPathAction).frame(width: 296)
             }
         }
         .sheet(isPresented: $showsPlanning) {
@@ -96,14 +97,14 @@ struct AccessGraphView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("访问拓扑").font(.system(size: 20, weight: .medium))
-                                Text("已配置的直连路径 · 示例状态").font(.system(size: 12)).foregroundStyle(.secondary)
+                                Text(workspace.isSimulation ? "已配置的直连路径 · 示例状态" : "已配置的直连路径 · 最近检测结果").font(.system(size: 12)).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("跳板机规划") { showsPlanning = true }.buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }.padding(28).frame(maxWidth: .infinity).background(InterfaceStyle.color(0xFAFBFD))
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("实线：已验证   虚线：待验证或失败 · 示例时间 CST").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(workspace.isSimulation ? "实线：已验证   虚线：待验证或失败 · 示例时间 CST" : "实线：已验证   虚线：待验证或失败 · 检测时间 CST").font(.system(size: 10)).foregroundStyle(.secondary)
                         HStack(spacing: 10) {
                             Button("−") { zoom = max(0.25, zoom - 0.15) }.accessibilityLabel("缩小画布")
                             Text("\(Int((zoom * 100).rounded()))%").font(InterfaceStyle.technical(11)).frame(width: 42)

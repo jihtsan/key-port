@@ -1,0 +1,13 @@
+{
+  "source_commit": "128a6af4fae132b113d6998177d6212508d77fc9",
+  "binary_sha256": "b868d58d56b16ba87547714f2cbebeff13acef6f3e5cc6799cd55349ea865d85",
+  "gui": "Final build empty home verified. Earlier form viewed before final input-width adjustment. Final form capture blocked by ScreenCaptureKit -3811; user confirmation required. No user server supplied or contacted.",
+  "files": {
+    "full-regression-summary.log": "1a4895d77c9f99817edeb0ddf131eafb365b063bd13040d5a5859888230a14b3",
+    "home.txt": "71d8fb82025eaab222ca1400f8f74fc7f48c53614bbb7606b8738033285fc196",
+    "targeted-tests.log": "fc4f7b56c0d45fcef52951c9f6137eab09a45191570d409dc133c7a148a90f68",
+    "adapter-tests.log": "7c43fba759e2da02d2f0283363cd5e11a2cb32e1950edd736808d9e0b8ecabef",
+    "home.png": "82f977347e3a4690900c42e73ca070b7d3daaf1e8d8184814d1477094ae616ad",
+    "build.log": "026c82b3b249fd499b2b340bf8b15f03a2925d239721b8866266b531e7918f48"
+  }
+}

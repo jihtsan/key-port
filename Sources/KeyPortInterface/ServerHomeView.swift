@@ -5,29 +5,30 @@ public struct ServerHomeView: View {
     @State private var formSession: AccessFormSession?
     @State private var retainedDraft: AccessFormDraft?
     @State private var notice: String?
+    private let onPathAction: ((ConfiguredAccessPath, Bool) -> Void)?
     private let accessFlow: (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView
     private let previewControls: () -> AnyView
-    public init(workspace: AccessWorkspace, previewControls: @escaping () -> AnyView = { AnyView(EmptyView()) },
+    public init(workspace: AccessWorkspace, onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil, previewControls: @escaping () -> AnyView = { AnyView(EmptyView()) },
                 accessFlow: @escaping (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView) {
-        self.workspace = workspace; self.previewControls = previewControls; self.accessFlow = accessFlow
+        self.onPathAction = onPathAction; self.workspace = workspace; self.previewControls = previewControls; self.accessFlow = accessFlow
     }
     public var body: some View {
         HStack(spacing: 0) {
             sidebar.frame(width: 200)
             if workspace.presentation == .graph {
-                AccessGraphView(workspace: workspace, previewControls: previewControls, onAdd: { beginAdd() }, onAction: previewNotice, onConfigure: configure)
+                AccessGraphView(workspace: workspace, previewControls: previewControls, onAdd: { beginAdd() }, onAction: previewNotice, onConfigure: configure, onPathAction: onPathAction)
             } else {
                 serverList.frame(width: 320)
                 VStack(spacing: 0) {
                     HStack {
                         Text("服务器详情").foregroundStyle(.secondary); Spacer(); previewControls()
                     }.padding(.horizontal, 24).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
-                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure)
+                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure, onPathAction: onPathAction)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
         .sheet(item: $formSession) { session in accessFlow(session.draft, { if $0.editingEntryID == nil { retainedDraft = $0 }; formSession = nil }) }
-        .alert("隔离预览", isPresented: Binding(get: { notice != nil && formSession == nil }, set: { if !$0 { notice = nil } })) {
+        .alert(workspace.isSimulation ? "隔离预览" : "真实连接验收", isPresented: Binding(get: { notice != nil && formSession == nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
     }
@@ -46,9 +47,9 @@ public struct ServerHomeView: View {
                 navigation("活动记录", "waveform.path.ecg")
             }.padding(12).frame(height: 160, alignment: .top)
             Text("标签").font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 18).frame(height: 17)
-            Text("家庭网络").foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 38)
+            Text(workspace.isSimulation ? "家庭网络" : "暂无标签").foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 38)
             Spacer()
-            Label("管理信息已同步", systemImage: "icloud").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 36).help("设计示例，未连接 iCloud")
+            Label(workspace.isSimulation ? "管理信息已同步" : "仅存于此 Mac", systemImage: workspace.isSimulation ? "icloud" : "internaldrive").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 36).help("当前入口未连接 iCloud")
             Button { previewNotice() } label: { Label("设置", systemImage: "slider.horizontal.3") }.buttonStyle(.plain).padding(.horizontal, 16).frame(height: 38)
             Color.clear.frame(height: 60)
         }.frame(maxHeight: .infinity).background(InterfaceStyle.color(0xEDF0F2))
@@ -70,7 +71,7 @@ public struct ServerHomeView: View {
             }.padding(.horizontal, 18).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
             VStack(alignment: .leading, spacing: 10) {
                 WorkspaceSearch(workspace: workspace)
-                Text("已添加 · 示例状态").font(.system(size: 11)).foregroundStyle(.secondary).frame(height: 17)
+                Text(workspace.isSimulation ? "已添加 · 示例状态" : "已保存 · 最近检测结果").font(.system(size: 11)).foregroundStyle(.secondary).frame(height: 17)
                 ScrollView {
                     VStack(spacing: 4) {
                         ForEach(workspace.visibleGraph.servers) { server in
@@ -99,9 +100,9 @@ public struct ServerHomeView: View {
                 .buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue).background(InterfaceStyle.color(0xF5F5F7))
         }.background(InterfaceStyle.color(0xFBFBFC))
     }
-    private func beginAdd() { formSession = AccessFormSession(draft: retainedDraft ?? exampleDraft) }
+    private func beginAdd() { formSession = AccessFormSession(draft: retainedDraft ?? (workspace.isSimulation ? exampleDraft : AccessFormDraft())) }
     private func configure(_ draft: AccessFormDraft) { formSession = AccessFormSession(draft: draft) }
-    private func previewNotice() { notice = "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" }
+    private func previewNotice() { notice = workspace.isSimulation ? "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" : "此入口先验收服务器访问流程；此功能尚未接入。" }
 }
 
 struct WorkspaceViewSwitch: View {

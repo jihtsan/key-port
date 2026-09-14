@@ -13,6 +13,11 @@ CLOUDKIT_ENVIRONMENT="${KEYPORT_CLOUDKIT_ENVIRONMENT:-Development}"
 PROVISIONING_PROFILE="${KEYPORT_PROVISIONING_PROFILE:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$MODE" == "--access-pilot" ]]; then
+  "$ROOT_DIR/script/build_access_pilot.sh"
+  /usr/bin/open -n "$ROOT_DIR/dist/KeyPortAccessPilot.app"
+  exit 0
+fi
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"

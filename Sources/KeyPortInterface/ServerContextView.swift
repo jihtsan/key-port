@@ -6,6 +6,7 @@ struct ServerContextView: View {
     let onAction: () -> Void
     let onAdd: () -> Void
     let onConfigure: (AccessFormDraft) -> Void
+    var onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil
     private var path: ConfiguredAccessPath? { workspace.selectedPath ?? workspace.selectedServer.flatMap { server in
         let paths = workspace.paths(for: server.id); return paths.count == 1 ? paths.first : nil
     } }
@@ -35,7 +36,7 @@ struct ServerContextView: View {
                         Text("服务器保留为独立节点；没有推断账户、授权或连线。").font(.system(size: 11)).foregroundStyle(.secondary)
                         Button("配置免密", action: onAdd).buttonStyle(InterfaceButtonStyle(primary: true))
                     }
-                    Button("连接设置", action: onAction).buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
+                    Button("连接设置") { if let path, let draft = workspace.accessDraft(for: path) { onConfigure(draft) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
                         Text("最近活动").font(.system(size: 13, weight: .medium))
                         Text(path.map { "\($0.verification.rawValue) · \($0.checkedLabel)" } ?? (workspace.paths(for: server.id).isEmpty ? "尚无路径检测记录" : "选择具体路径查看检测记录")).foregroundStyle(.secondary)
@@ -49,7 +50,7 @@ struct ServerContextView: View {
                     Text("未选择对象").font(.system(size: 19, weight: .medium))
                     Text("点选节点查看服务器；点选连线或路径标签查看路径。").foregroundStyle(.secondary)
                 }
-                Text("示例数据 · 非实时状态").font(.system(size: 10)).foregroundStyle(InterfaceStyle.color(0x9AA4B3))
+                Text(workspace.isSimulation ? "示例数据 · 非实时状态" : "最近一次检测结果 · 非实时状态").font(.system(size: 10)).foregroundStyle(InterfaceStyle.color(0x9AA4B3))
                 if workspace.selection != nil {
                     Button("清除选择") { workspace.select(nil) }.buttonStyle(.plain).foregroundStyle(.secondary).font(.system(size: 11))
                 }
@@ -93,7 +94,7 @@ struct ServerContextView: View {
     private func primaryAction(_ path: ConfiguredAccessPath) -> some View {
         let action = workspace.primaryAction(for: path)
         return Button {
-            if action == .openTerminal { onAction() }
+            if action == .openTerminal { if let onPathAction { onPathAction(path, false) } else { onAction() } }
             else if let draft = workspace.accessDraft(for: path) { onConfigure(draft) }
         } label: {
             Label(action.title, systemImage: action.symbol).frame(maxWidth: compact ? .infinity : nil, alignment: .leading)
@@ -102,12 +103,12 @@ struct ServerContextView: View {
     @ViewBuilder private func actions(_ path: ConfiguredAccessPath) -> some View {
         if compact {
             primaryAction(path)
-            Button("测试路径", action: onAction).buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
+            Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
         } else {
             HStack(spacing: 10) {
                 primaryAction(path)
-                Button("测试路径", action: onAction).buttonStyle(InterfaceButtonStyle())
-                Button("管理免密授权", action: onAction).buttonStyle(InterfaceButtonStyle())
+                Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
+                Button("管理免密授权") { if let draft = workspace.accessDraft(for: path) { onConfigure(draft) } }.buttonStyle(InterfaceButtonStyle())
             }
         }
     }
@@ -127,9 +128,9 @@ struct ServerContextView: View {
     }
     private func authorizationText(_ path: ConfiguredAccessPath) -> String {
         switch workspace.snapshot.authorization(for: path) {
-        case .installed: return "本机公钥已授权 · 示例"
-        case .absent: return "此账户尚未授权 · 示例"
-        case .unknown: return "账户授权状态待核对 · 示例"
+        case .installed: return "本机公钥已授权" + (workspace.isSimulation ? " · 示例" : "")
+        case .absent: return "此账户尚未授权" + (workspace.isSimulation ? " · 示例" : "")
+        case .unknown: return "账户授权状态待核对" + (workspace.isSimulation ? " · 示例" : "")
         }
     }
     private func authorizationColor(_ path: ConfiguredAccessPath) -> Color {

@@ -20,7 +20,7 @@ let package = Package(
         .target(name: "KeyPortCore"),
         .executableTarget(
             name: "KeyPort",
-            dependencies: ["KeyPortCore"],
+            dependencies: ["KeyPortCore", "KeyPortInterface"],
             resources: [.copy("Resources")],
             linkerSettings: [
                 .linkedFramework("AppKit"),

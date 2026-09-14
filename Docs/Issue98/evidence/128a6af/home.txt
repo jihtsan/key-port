@@ -1,0 +1,36 @@
+Window: "KeyPort · 真实连接验收", App: KeyPort 真实连接验收.
+0 standard window KeyPort · 真实连接验收, ID: main-AppWindow-1, Secondary Actions: Raise
+	1 container
+		2 text 服务器 0
+		3 button Description: 添加服务器, ID: plus
+		4 button 列表
+		5 button 拓扑
+		6 text 服务器详情 真实连接验收 · 仅此 Mac
+		7 image Description: 密码, ID: key
+		8 text KeyPort
+		9 image Description: 搜索, ID: magnifyingglass
+		10 text field (settable) 搜索别名或描述
+		11 text 已保存 · 最近检测结果 工作空间
+		12 button 服务器
+		13 button 我的设备
+		14 button 活动记录
+		15 text 标签 暂无标签 仅存于此 Mac
+		16 button 设置
+		17 scroll area
+			18 text 还没有服务器
+		19 button 添加或导入服务器
+		20 scroll area
+			21 text 未选择对象 点选节点查看服务器；点选连线或路径标签查看路径。 最近一次检测结果 · 非实时状态
+	22 close button
+	23 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	24 minimize button
+	25 text KeyPort · 真实连接验收
+26 menu bar
+	27 KeyPort 真实连接验收
+	28 File
+	29 Edit
+	30 View
+	31 Window
+	32 Help
+
+The focused UI element is 0 standard window KeyPort · 真实连接验收, ID: main-AppWindow-1, Secondary Actions: Raise
