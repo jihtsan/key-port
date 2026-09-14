@@ -89,6 +89,7 @@ public struct ServerHomeView: View {
                                 }.padding(12).frame(height: workspace.selectedServer?.id == server.id ? 84 : 74)
                                     .foregroundStyle(workspace.selectedServer?.id == server.id ? .white : InterfaceStyle.ink)
                                     .background(workspace.selectedServer?.id == server.id ? InterfaceStyle.blue : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                    .contentShape(Rectangle())
                             }.buttonStyle(.plain).accessibilityLabel("服务器 " + server.alias + (server.visibleDescription.map { "，" + $0 } ?? ""))
                         }
                         if workspace.visibleGraph.servers.isEmpty {
