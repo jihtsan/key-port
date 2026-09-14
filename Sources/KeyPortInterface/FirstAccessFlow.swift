@@ -57,6 +57,7 @@ public enum FirstAccessState: Equatable {
     @Published public private(set) var authorization: AccessAuthorizationStatus = .absent
     @Published public private(set) var handoff: AccessHandoff = .idle
     @Published public private(set) var formNotice: String?
+    public let aliasDirectory: AliasDirectory
     private let adapter: any FirstAccessAdapter
     private var identity: AccessHostIdentity?
     private var authorizationRecords: [AccessAuthorizationKey: AccessAuthorizationStatus] = [:]
@@ -64,19 +65,19 @@ public enum FirstAccessState: Equatable {
     private var generation = UUID()
     private var task: Task<Void, Never>?
     public var isSimulation: Bool { adapter.isSimulation }
-    public var command: String { "ssh " + draft.resolvedAlias }
+    public var command: String { "ssh " + draft.alias }
     public var authorizationKey: AccessAuthorizationKey? {
         identity.map { AccessAuthorizationKey(deviceID: adapter.deviceID, serverID: $0.serverID, account: draft.account) }
     }
 
-    public init(draft: AccessFormDraft, adapter: any FirstAccessAdapter) {
+    public init(draft: AccessFormDraft, adapter: any FirstAccessAdapter, aliasDirectory: AliasDirectory = .init()) {
         var safeDraft = draft; safeDraft.password = ""
-        self.draft = safeDraft; self.adapter = adapter
+        self.draft = safeDraft; self.adapter = adapter; self.aliasDirectory = aliasDirectory
     }
     public func submit(_ input: AccessFormDraft) {
-        guard state == .form, input.validationMessage == nil else { return }
+        guard state == .form, input.validationMessage(in: aliasDirectory) == nil else { return }
         invalidate()
-        draft = input; draft.alias = input.resolvedAlias; draft.password = ""; credential = input.password
+        draft = input; draft.password = ""; credential = input.password
         authorization = .absent
         identity = nil; handoff = .idle; formNotice = nil
         state = .checkingHost
@@ -180,6 +181,10 @@ public enum FirstAccessState: Equatable {
                 handoff = copy ? .copyFailed : .terminalUnavailable
             }
         }
+    }
+    public func retainForm(_ input: AccessFormDraft) {
+        guard state == .form else { return }
+        draft = input; draft.password = ""
     }
     public func close() { invalidate() }
     private func invalidate() {

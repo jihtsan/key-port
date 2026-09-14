@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor final class FirstAccessFlowTests: XCTestCase {
     private func draft(key: Bool = true) -> AccessFormDraft {
-        var value = AccessFormDraft(); value.name = "router"; value.address = "192.0.2.1"
+        var value = AccessFormDraft(); value.description = "家里的主路由器"; value.address = "192.0.2.1"
         value.account = "root"; value.existingKey = key; value.password = key ? "" : "fixture-only"
         value.alias = "router-test"; return value
     }
@@ -28,6 +28,7 @@ import XCTest
         XCTAssertEqual(flow.state, .form); XCTAssertEqual(flow.draft.password, "")
         XCTAssertEqual(flow.draft.alias, "router-test"); XCTAssertEqual(flow.draft.address, "192.0.2.1")
         XCTAssertEqual(adapter.logins, 0)
+        XCTAssertEqual(flow.draft.description, "家里的主路由器")
     }
     func testFailuresNeverBecomeSuccessAndNoAuthorizationBeforeLogin() async {
         for failure in [AccessFlowFailure.unreachable, .authentication, .authorization, .verification, .authorizationUnknown] {
@@ -131,18 +132,55 @@ import XCTest
         flow.submit(draft()); await settle()
         XCTAssertEqual(flow.state, .failed(.authorizationUnknown)); XCTAssertEqual(adapter.installs, 0)
     }
-    func testChineseNameResolvesOneTargetForSuccessAndBothHandoffs() async {
-        var input = draft(); input.name = "我的服务器"; input.alias = ""
+    func testConfirmedAliasIsOneTargetForSuccessAndBothHandoffs() async {
+        var input = draft(); input.description = "我的服务器"; input.alias = "Confirmed_Router"
         let adapter = TestAccessAdapter()
         let flow = FirstAccessFlow(draft: input, adapter: adapter)
         flow.submit(input); await settle()
         XCTAssertEqual(flow.state, .success)
-        XCTAssertFalse(flow.draft.alias.isEmpty)
+        XCTAssertEqual(flow.draft.alias, "Confirmed_Router")
         XCTAssertEqual(flow.command, "ssh " + flow.draft.alias)
         flow.performHandoff(); await settle()
         flow.performHandoff(copy: true); await settle()
         XCTAssertEqual(adapter.commands, [flow.command, flow.command])
         XCTAssertEqual(flow.handoff, .copied)
+    }
+    func testFlowCannotBypassAliasDirectoryOrEmptyAlias() async {
+        let adapter = TestAccessAdapter()
+        let directory = AliasDirectory(entries: [.init(alias: "router-test", source: .sshConfiguration)])
+        let flow = FirstAccessFlow(draft: draft(), adapter: adapter, aliasDirectory: directory)
+        flow.submit(draft()); await settle()
+        XCTAssertEqual(flow.state, .form); XCTAssertEqual(adapter.logins, 0)
+        var input = draft(); input.alias = ""; input.description = "中文不能生成别名"
+        flow.submit(input); await settle()
+        XCTAssertEqual(flow.state, .form); XCTAssertEqual(adapter.logins, 0)
+    }
+    func testDescriptionAndAddressEditRetainsAliasIdentityAndAuthorization() async {
+        let adapter = TestAccessAdapter(); adapter.failure = .verification
+        let flow = FirstAccessFlow(draft: draft(), adapter: adapter)
+        flow.submit(draft()); await settle()
+        let key = flow.authorizationKey; let command = flow.command
+        flow.edit(); var edited = flow.draft
+        edited.description = "更改后的中文说明"; edited.address = "2001:db8::2"
+        adapter.failure = nil; flow.submit(edited); await settle()
+        XCTAssertEqual(flow.state, .success); XCTAssertEqual(flow.authorizationKey, key)
+        XCTAssertEqual(flow.command, command); XCTAssertEqual(adapter.installs, 1)
+        XCTAssertEqual(flow.draft.description, edited.description)
+    }
+    func testCancelledFormKeepsEvenInvalidNonsecretInputWithoutKeepingPassword() {
+        let flow = FirstAccessFlow(draft: draft(), adapter: TestAccessAdapter())
+        var input = draft(key: false); input.alias = "我的服务器"; input.description = "修改过的中文说明"
+        flow.retainForm(input); flow.close()
+        XCTAssertEqual(flow.draft.alias, input.alias); XCTAssertEqual(flow.draft.description, input.description)
+        XCTAssertEqual(flow.draft.password, ""); XCTAssertEqual(flow.state, .form)
+    }
+    func testEditingOwnStoredAliasDoesNotBlockAccessOrRenameLegacyAlias() async {
+        let adapter = TestAccessAdapter()
+        let directory = AliasDirectory(entries: [.init(alias: "legacy.host", source: .managed, ownerID: "legacy")])
+        var input = draft(); input.alias = "legacy.host"; input.editingEntryID = "legacy"
+        let flow = FirstAccessFlow(draft: input, adapter: adapter, aliasDirectory: directory)
+        flow.submit(input); await settle()
+        XCTAssertEqual(flow.state, .success); XCTAssertEqual(flow.command, "ssh legacy.host")
     }
     func testCloseRejectsLateHandoff() async {
         let adapter = TestAccessAdapter(); let flow = FirstAccessFlow(draft: draft(), adapter: adapter)

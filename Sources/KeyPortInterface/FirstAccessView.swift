@@ -4,15 +4,15 @@ public struct FirstAccessView<Controls: View>: View {
     @ObservedObject private var flow: FirstAccessFlow
     @State private var firstForm = true
     private let initialDraft: AccessFormDraft
-    private let onClose: () -> Void
+    private let onClose: (AccessFormDraft) -> Void
     private let controls: () -> Controls
-    public init(flow: FirstAccessFlow, initialDraft: AccessFormDraft, onClose: @escaping () -> Void, @ViewBuilder controls: @escaping () -> Controls) {
+    public init(flow: FirstAccessFlow, initialDraft: AccessFormDraft, onClose: @escaping (AccessFormDraft) -> Void, @ViewBuilder controls: @escaping () -> Controls) {
         self.flow = flow; self.initialDraft = initialDraft; self.onClose = onClose; self.controls = controls
     }
     public var body: some View {
         Group {
             if flow.state == .form {
-                AccessFormView(draft: firstForm ? initialDraft : flow.draft, fixture: flow.isSimulation, recoveryNotice: flow.formNotice, onCancel: finish, onSubmit: {
+                AccessFormView(draft: firstForm ? initialDraft : flow.draft, fixture: flow.isSimulation, directory: flow.aliasDirectory, recoveryNotice: flow.formNotice, onCancel: { flow.retainForm($0); finish() }, onSubmit: {
                     firstForm = false; flow.submit($0)
                 })
                 .overlay(alignment: .bottomTrailing) { controls().padding(.trailing, 32).padding(.bottom, 34) }
@@ -67,7 +67,7 @@ public struct FirstAccessView<Controls: View>: View {
         case .failed(.authentication): return "服务器可以到达，尚未完成本次免密配置。"
         case .failed, .cancelled: return authorizationText
         case .confirmHost: return "只有首次连接或身份需要确认时才出现；不匹配时停止。"
-        default: return "\(flow.draft.account) @ \(flow.draft.name) · 请保持服务器网络连接。"
+        default: return "\(flow.draft.account) @ \(flow.draft.alias) · 请保持服务器网络连接。"
         }
     }
     private var authorizationText: String {
@@ -134,7 +134,7 @@ public struct FirstAccessView<Controls: View>: View {
             Text(failureExplanation(failure)).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x74859E)).frame(height: 20)
             Text(failure == .identityMismatch ? "请通过可信渠道核对主机身份；此处不能忽略或自动继续。" : "检查后修改表单或重新验证；已有授权会先核对。")
                 .font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x4C6688)).frame(height: 21)
-            Text("名称、地址与账户保留。密码已清空，不落盘保存。").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
+            Text("别名、描述、地址与账户保留。密码已清空，不落盘保存。").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
             Text(authorizationText).font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
         }
     }
@@ -158,10 +158,14 @@ public struct FirstAccessView<Controls: View>: View {
     private var successContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "checkmark").font(.system(size: 26)).foregroundStyle(InterfaceStyle.color(0x258456)).frame(width: 30, height: 30)
-            Text(flow.draft.name).font(InterfaceStyle.technical(22, medium: true)).lineLimit(1).frame(height: 33).help(flow.draft.name)
+            Text(flow.draft.alias).font(InterfaceStyle.technical(22, medium: true)).lineLimit(1).frame(height: 33).help(flow.draft.alias)
+            if !flow.draft.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(flow.draft.description).font(.system(size: 14)).foregroundStyle(InterfaceStyle.muted)
+                    .lineLimit(2).help(flow.draft.description)
+            }
             Text("\(flow.draft.account) · 此 Mac · 免密登录验证成功" + (flow.isSimulation ? "（模拟）" : "")).font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x258456)).frame(height: 21)
             Text(flow.command).font(InterfaceStyle.technical(17)).foregroundStyle(InterfaceStyle.color(0x536C8D)).frame(height: 26).textSelection(.enabled)
-            Text(flow.isSimulation ? "隔离预览结果；未写入服务器详情、拓扑或 SSH 配置。" : "免密验证已完成。")
+            Text("SSH 命令使用别名；修改描述不改变连接配置。")
                 .font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
             if flow.handoff != .idle {
                 VStack(alignment: .leading, spacing: 10) {
@@ -210,5 +214,5 @@ public struct FirstAccessView<Controls: View>: View {
             }
         }
     }
-    private func finish() { flow.close(); onClose() }
+    private func finish() { flow.close(); onClose(flow.draft) }
 }

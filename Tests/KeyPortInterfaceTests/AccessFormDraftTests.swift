@@ -2,7 +2,7 @@ import XCTest
 @testable import KeyPortInterface
 final class AccessFormDraftTests: XCTestCase {
     func testExistingKeyDoesNotRequirePassword() {
-        var draft = AccessFormDraft(); draft.name = "router"; draft.address = "192.0.2.1"; draft.account = "root"
+        var draft = AccessFormDraft(); draft.alias = "router"; draft.address = "192.0.2.1"; draft.account = "root"
         XCTAssertNotNil(draft.validationMessage)
         draft.existingKey = true
         XCTAssertNil(draft.validationMessage)
@@ -11,8 +11,8 @@ final class AccessFormDraftTests: XCTestCase {
         draft.address = "-oProxyCommand=bad"; XCTAssertNotNil(draft.validationMessage)
     }
     func testPasswordAndAliasValidation() {
-        var draft = AccessFormDraft(); draft.name = "My Router"; draft.address = "router.example"; draft.account = "root"; draft.password = "fixture"
-        XCTAssertNil(draft.validationMessage); XCTAssertEqual(draft.suggestedAlias, "my-router")
+        var draft = AccessFormDraft(); draft.alias = "my-router"; draft.address = "router.example"; draft.account = "root"; draft.password = "fixture"
+        XCTAssertNil(draft.validationMessage)
         draft.alias = "invalid *"; XCTAssertNotNil(draft.validationMessage)
         draft.alias = "router-1"; XCTAssertNil(draft.validationMessage)
     }
@@ -29,7 +29,7 @@ extension AccessFormDraftTests {
     }
 
     func testInvalidSubmissionPreservesInputsAndSuccessClearsOnlyPasswordWithoutNewError() {
-        var draft = AccessFormDraft(); draft.name = "router"; draft.address = "!!!"; draft.account = "root"; draft.password = "fixture-only"
+        var draft = AccessFormDraft(); draft.alias = "router"; draft.address = "!!!"; draft.account = "root"; draft.password = "fixture-only"
         let original = draft
         var state = AccessFormSubmissionState()
         XCTAssertNil(state.prepare(&draft)); XCTAssertNotNil(state.error); XCTAssertEqual(draft, original)
@@ -46,21 +46,53 @@ extension AccessFormDraftTests {
 }
 
 extension AccessFormDraftTests {
-    func testAutomaticAliasHandlesNonASCIIAndSymbolNamesStably() {
-        var aliases: Set<String> = []
-        for name in ["我的服务器", "另一台服务器", "🔑", "!!!", "---"] {
-            var draft = AccessFormDraft(); draft.name = name; draft.address = "192.0.2.1"
-            draft.account = "root"; draft.existingKey = true
-            let alias = draft.resolvedAlias
-            XCTAssertFalse(alias.isEmpty)
-            XCTAssertFalse(alias.hasPrefix("-"))
-            XCTAssertTrue(aliases.insert(alias).inserted)
-            draft.address = "2001:db8::1"
-            XCTAssertEqual(draft.resolvedAlias, alias)
-            draft.alias = alias
-            XCTAssertNil(draft.validationMessage)
-            draft.alias = "custom-router"
-            XCTAssertEqual(draft.resolvedAlias, "custom-router")
+    func testNewAliasSyntaxIsExplicitAndNeverGeneratedFromDescription() {
+        var draft = AccessFormDraft(); draft.address = "192.0.2.1"; draft.account = "root"; draft.existingKey = true
+        draft.description = "我的服务器 🔑"
+        for invalid in ["", " ", "我的服务器", "🔑", "!!!", "-router", "_router", "1router", "router.local", "router*", "router?", "router test", " router", "router\n", "röuter"] {
+            draft.alias = invalid
+            XCTAssertNotNil(draft.validationMessage, invalid)
+            XCTAssertEqual(draft.alias, invalid)
         }
+        for valid in ["a", "Router", "home-router_2", "r1", "a-"] {
+            draft.alias = valid; XCTAssertNil(draft.validationMessage, valid)
+            draft.description += "新描述"; draft.address = "2001:db8::1"
+            XCTAssertEqual(draft.alias, valid)
+        }
+    }
+    func testBothDirectorySourcesAndEditingOnlyOwnEntry() {
+        let directory = AliasDirectory(entries: [
+            .init(alias: "home-router", source: .managed, ownerID: "router"),
+            .init(alias: "home-router", source: .sshConfiguration, ownerID: "router"),
+            .init(alias: "external-host", source: .sshConfiguration),
+            .init(alias: "old.host", source: .managed, ownerID: "legacy")
+        ])
+        XCTAssertNotNil(directory.validationMessage(for: "HOME-router"))
+        XCTAssertNotNil(directory.validationMessage(for: "External-Host"))
+        XCTAssertNil(directory.validationMessage(for: "home-router", editingEntryID: "router"))
+        XCTAssertNotNil(directory.validationMessage(for: "external-host", editingEntryID: "router"))
+        XCTAssertNil(directory.validationMessage(for: "old.host", editingEntryID: "legacy"))
+        XCTAssertNotNil(directory.validationMessage(for: "old.host"))
+        XCTAssertNotNil(directory.validationMessage(for: "OLD.host", editingEntryID: "legacy"))
+        XCTAssertNotNil(directory.validationMessage(for: "another.old", editingEntryID: "legacy"))
+        XCTAssertNotNil(AliasDirectory(entries: directory.entries + [.init(alias: "home-router", source: .sshConfiguration)])
+            .validationMessage(for: "home-router", editingEntryID: "router"))
+        var draft = AccessFormDraft(); draft.alias = "external-host"; draft.description = "中文说明"
+        draft.address = "192.0.2.1"; draft.account = "root"; draft.password = "fixture-only"
+        let original = draft; var submission = AccessFormSubmissionState()
+        XCTAssertNil(submission.prepare(&draft, directory: directory)); XCTAssertEqual(draft, original)
+    }
+    func testLegacyMappingIsLosslessAndSearchUsesBothFields() {
+        for (name, alias) in [("我的服务器", "legacy.host"), ("🔑", "123-old"), ("", "Mixed_CASE"), ("空别名保留待处理", "")] {
+            let mapped = ServerNaming.legacy(id: "existing", displayName: name, existingAlias: alias)
+            XCTAssertEqual(mapped.description, name); XCTAssertEqual(mapped.alias, alias)
+            XCTAssertEqual(mapped.id, "existing")
+        }
+        let naming = ServerNaming(id: "router", alias: "home-router", description: "家里的主路由器")
+        XCTAssertTrue(naming.matches("HOME")); XCTAssertTrue(naming.matches("主路由")); XCTAssertFalse(naming.matches("not-present"))
+        XCTAssertNil(ServerNaming(id: "empty", alias: "empty").visibleDescription)
+        XCTAssertNil(ServerNaming(id: "blank", alias: "blank", description: "  \n").visibleDescription)
+        let long = String(repeating: "中文说明", count: 100)
+        XCTAssertEqual(ServerNaming(id: "long", alias: "long", description: long).visibleDescription, long)
     }
 }
