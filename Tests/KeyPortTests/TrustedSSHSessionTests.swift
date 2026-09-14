@@ -71,12 +71,14 @@ final class TrustedSSHSessionTests: XCTestCase {
         XCTAssertEqual(executor.requests.count, 1, "establish 只做一次闭集 authenticationProbe")
         XCTAssertEqual(request.executable, "/usr/bin/ssh")
         XCTAssertEqual(request.arguments, [
+            "-F", "/dev/null", "-o", "ControlMaster=no", "-o", "ControlPath=none",
+            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "HostKeyAlgorithms=ssh-ed25519",
             "-T", "-p", "22",
             "-o", "ConnectTimeout=5",
             "-o", "ConnectionAttempts=1",
             "-o", "LogLevel=ERROR",
             "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\(makePaths().knownHosts.path)",
+            "-o", "UserKnownHostsFile=\"\(makePaths().knownHosts.path)\"",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "IdentitiesOnly=yes",
         ] + SSHAuthenticationPolicy.publicKeyOnlyArguments + [

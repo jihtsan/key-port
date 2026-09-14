@@ -13,11 +13,6 @@ CLOUDKIT_ENVIRONMENT="${KEYPORT_CLOUDKIT_ENVIRONMENT:-Development}"
 PROVISIONING_PROFILE="${KEYPORT_PROVISIONING_PROFILE:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ "$MODE" == "--access-pilot" ]]; then
-  "$ROOT_DIR/script/build_access_pilot.sh"
-  /usr/bin/open -n "$ROOT_DIR/dist/KeyPortAccessPilot.app"
-  exit 0
-fi
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -25,8 +20,6 @@ APP_MACOS="$APP_CONTENTS/MacOS"
 APP_HELPERS="$APP_CONTENTS/Helpers"
 APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
-APP_TUNNEL_BROKER="$APP_HELPERS/KeyPortTunnelBroker"
-APP_SSH_RELAY="$APP_HELPERS/KeyPortSSHRelay"
 RESOURCE_BUNDLE_NAME="KeyPort_KeyPort.bundle"
 RESOURCE_BUNDLE_SOURCE=""
 INFO_PLIST="$APP_CONTENTS/Info.plist"
@@ -54,8 +47,6 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 cd "$ROOT_DIR"
 swift build --product KeyPort
 swift build --product KeyPortAskPass
-swift build --product KeyPortSSHRelay
-swift build --product KeyPortTunnelBroker
 BUILD_DIR="$(swift build --show-bin-path)"
 RESOURCE_BUNDLE_SOURCE="$BUILD_DIR/$RESOURCE_BUNDLE_NAME"
 
@@ -63,13 +54,12 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_DIR/KeyPort" "$APP_BINARY"
 cp "$BUILD_DIR/KeyPortAskPass" "$APP_HELPERS/KeyPortAskPass"
-cp "$BUILD_DIR/KeyPortSSHRelay" "$APP_SSH_RELAY"
-cp "$BUILD_DIR/KeyPortTunnelBroker" "$APP_TUNNEL_BROKER"
 if [[ ! -d "$RESOURCE_BUNDLE_SOURCE" ]]; then
   echo "SwiftPM resource bundle is missing: $RESOURCE_BUNDLE_SOURCE" >&2
   exit 2
 fi
 cp -R "$RESOURCE_BUNDLE_SOURCE" "$APP_RESOURCES/"
+cp -R "$BUILD_DIR/KeyPort_KeyPortInterface.bundle" "$APP_RESOURCES/"
 if [[ ! -f "$APP_ICON_SOURCE" ]]; then
   echo "App icon is missing: $APP_ICON_SOURCE" >&2
   exit 2
@@ -81,15 +71,7 @@ if [[ ! -d "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME/Contents/Resources" ]]; then
   echo "Packaged SwiftPM resource bundle is incomplete: $APP_RESOURCES/$RESOURCE_BUNDLE_NAME" >&2
   exit 2
 fi
-chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass" "$APP_SSH_RELAY" "$APP_TUNNEL_BROKER"
-if [[ ! -x "$APP_SSH_RELAY" ]]; then
-  echo "SSH relay helper is missing or not executable: $APP_SSH_RELAY" >&2
-  exit 2
-fi
-if [[ ! -x "$APP_TUNNEL_BROKER" ]]; then
-  echo "Tunnel broker helper is missing or not executable: $APP_TUNNEL_BROKER" >&2
-  exit 2
-fi
+chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -101,9 +83,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>SSH KeyPort</string>
+  <string>KeyPort</string>
   <key>CFBundleDisplayName</key>
-  <string>SSH KeyPort</string>
+  <string>KeyPort</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
@@ -135,8 +117,6 @@ if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   # Ad-hoc signing is useful for local UI and SSH workflow checks, but cannot
   # activate CloudKit or iCloud Keychain.
   codesign --force --sign - "$APP_HELPERS/KeyPortAskPass" >/dev/null
-  codesign --force --sign - "$APP_SSH_RELAY" >/dev/null
-  codesign --force --sign - "$APP_TUNNEL_BROKER" >/dev/null
   codesign --force --sign - "$APP_BUNDLE" >/dev/null
   codesign --verify --deep --strict "$APP_BUNDLE"
   echo "Signed ad-hoc (iCloud disabled)"
@@ -293,8 +273,6 @@ else
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$ENTITLEMENTS_FILE"
 
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_HELPERS/KeyPortAskPass" >/dev/null
-  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_SSH_RELAY" >/dev/null
-  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_TUNNEL_BROKER" >/dev/null
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" \
     --entitlements "$ENTITLEMENTS_FILE" "$APP_BUNDLE" >/dev/null
   SIGNED_TEAM_ID="$(codesign -dvv "$APP_BUNDLE" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
@@ -324,7 +302,11 @@ else
 fi
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  if [[ -n "${KEYPORT_WORKSPACE_HOME:-}" ]]; then
+    /usr/bin/open -n "$APP_BUNDLE" --env "KEYPORT_WORKSPACE_HOME=$KEYPORT_WORKSPACE_HOME"
+  else
+    /usr/bin/open -n "$APP_BUNDLE"
+  fi
 }
 
 case "$MODE" in

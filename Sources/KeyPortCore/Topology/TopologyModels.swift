@@ -170,6 +170,7 @@ public struct WorkspaceDeviceProfile: Identifiable, Codable, Hashable, Sendable 
     public var id: String
     public var nodeID: UUID
     public var name: String
+    public var modifiedAt: Date?
     public var registeredAt: Date
     public var lastActiveAt: Date
     public var isCurrent: Bool
@@ -180,6 +181,7 @@ public struct WorkspaceDeviceProfile: Identifiable, Codable, Hashable, Sendable 
         id: String,
         nodeID: UUID,
         name: String,
+        modifiedAt: Date? = nil,
         registeredAt: Date = .now,
         lastActiveAt: Date = .now,
         isCurrent: Bool = false,
@@ -189,6 +191,7 @@ public struct WorkspaceDeviceProfile: Identifiable, Codable, Hashable, Sendable 
         self.id = id
         self.nodeID = nodeID
         self.name = name
+        self.modifiedAt = modifiedAt
         self.registeredAt = registeredAt
         self.lastActiveAt = lastActiveAt
         self.isCurrent = isCurrent

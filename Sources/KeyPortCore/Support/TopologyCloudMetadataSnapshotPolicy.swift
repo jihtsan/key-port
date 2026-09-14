@@ -169,7 +169,7 @@ public enum TopologyCloudMetadataSnapshotPolicy {
         _ candidate: WorkspaceDeviceProfile,
         over existing: WorkspaceDeviceProfile
     ) -> WorkspaceDeviceProfile {
-        var value = candidate.registeredAt >= existing.registeredAt ? candidate : existing
+        var value = (candidate.modifiedAt ?? candidate.registeredAt) >= (existing.modifiedAt ?? existing.registeredAt) ? candidate : existing
         value.isCurrent = false
         value.isRevoked = candidate.isRevoked || existing.isRevoked
         return value

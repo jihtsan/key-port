@@ -145,8 +145,8 @@ final class ConnectionHistoryPrivacyTests: XCTestCase {
         }
         XCTAssertEqual(
             coreWLANFiles,
-            ["SystemNetworkHintProvider.swift"],
-            "CoreWLAN must stay confined to the injectable hint provider"
+            [],
+            "The active application no longer reads CoreWLAN"
         )
     }
 }

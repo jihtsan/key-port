@@ -97,7 +97,7 @@ protocol ProcessExecuting: Sendable {
 }
 
 /// 可取消、有超时与输出上限的进程执行器。
-/// 与 legacy `ProcessRunner` 相比：支持 Task cancellation、墙钟超时、
+/// 支持 Task cancellation、墙钟超时、
 /// stdout/stderr 字节上限，终止时先 SIGTERM、宽限（默认 2 秒）后 SIGKILL，
 /// 并返回结构化结果而不是裸字符串。
 struct ProcessExecutor: ProcessExecuting {
@@ -136,7 +136,7 @@ struct ProcessExecutor: ProcessExecuting {
         }
 
         if let input = request.standardInput, let inputPipe {
-            // stdin 写入失败（子进程提前关闭）不影响主流程，与 legacy 行为一致。
+            // stdin 写入失败（子进程提前关闭）不影响主流程，由执行结果表达。
             try? inputPipe.fileHandleForWriting.write(contentsOf: input)
             try? inputPipe.fileHandleForWriting.close()
         }

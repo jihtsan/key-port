@@ -23,7 +23,7 @@ final class SSHKnownHostsPathTests: XCTestCase {
         let server = ServerConnection(name: "trust fixture", host: address, username: account, alias: "trust-fixture", confirmedHostKeys: [host])
         let key = SSHKeyRecord(id: "unused", deviceID: "fixture", kind: .ed25519, publicKey: "", fingerprint: "unused",
             privateKeyPath: "/dev/null", isInAgent: false, origin: .generated, isLocallyAvailable: false)
-        let service = OpenSSHService(runner: ProcessRunner(executor: TrustOnlyExecutor()), paths: paths, askPassPath: "/usr/bin/false", isolatedConfiguration: true)
+        let service = OpenSSHService(runner: ProcessRunner(executor: TrustOnlyExecutor()), paths: paths, askPassPath: "/usr/bin/false")
         // false means SSH reached credential rejection. A trust/configuration failure throws.
         let result = try await service.testPublicKey(server: server, key: key)
         XCTAssertFalse(result)

@@ -34,7 +34,11 @@ struct ServerContextView: View {
                     } else {
                         Text("暂无配置的访问路径").foregroundStyle(.secondary)
                         Text("服务器保留为独立节点；没有推断账户、授权或连线。").font(.system(size: 11)).foregroundStyle(.secondary)
-                        Button("配置免密", action: onAdd).buttonStyle(InterfaceButtonStyle(primary: true))
+                        Button("配置免密") {
+                            var draft = AccessFormDraft(); draft.editingEntryID = server.id
+                            draft.alias = server.alias; draft.description = server.description
+                            onConfigure(draft)
+                        }.buttonStyle(InterfaceButtonStyle(primary: true))
                     }
                     Button("连接设置") { if let path, let draft = workspace.accessDraft(for: path) { onConfigure(draft) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
