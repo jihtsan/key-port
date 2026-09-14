@@ -27,7 +27,7 @@ public struct AccessFormDraft: Equatable {
         return nil
     }
     /// Syntax validation only. No DNS lookup, network probe, or identity claim.
-    static func isValidHost(_ host: String) -> Bool {
+    public static func isValidHost(_ host: String) -> Bool {
         guard !host.isEmpty, host.utf8.count <= 253, host.allSatisfy({ $0.isASCII && !$0.isWhitespace }) else { return false }
         var literal = host
         if literal.hasPrefix("[") || literal.hasSuffix("]") {

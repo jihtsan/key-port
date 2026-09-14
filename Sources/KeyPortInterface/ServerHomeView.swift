@@ -5,12 +5,14 @@ public struct ServerHomeView: View {
     @State private var formSession: AccessFormSession?
     @State private var retainedDraft: AccessFormDraft?
     @State private var notice: String?
+    private let onNavigate: ((String) -> Void)?
+    private let syncTitle: String
     private let onPathAction: ((ConfiguredAccessPath, Bool) -> Void)?
     private let accessFlow: (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView
     private let previewControls: () -> AnyView
-    public init(workspace: AccessWorkspace, onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil, previewControls: @escaping () -> AnyView = { AnyView(EmptyView()) },
+    public init(workspace: AccessWorkspace, onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil, onNavigate: ((String) -> Void)? = nil, syncTitle: String = "仅存于此 Mac", previewControls: @escaping () -> AnyView = { AnyView(EmptyView()) },
                 accessFlow: @escaping (AccessFormDraft, @escaping (AccessFormDraft) -> Void) -> AnyView) {
-        self.onPathAction = onPathAction; self.workspace = workspace; self.previewControls = previewControls; self.accessFlow = accessFlow
+        self.onNavigate = onNavigate; self.syncTitle = syncTitle; self.onPathAction = onPathAction; self.workspace = workspace; self.previewControls = previewControls; self.accessFlow = accessFlow
     }
     public var body: some View {
         HStack(spacing: 0) {
@@ -23,12 +25,12 @@ public struct ServerHomeView: View {
                     HStack {
                         Text("服务器详情").foregroundStyle(.secondary); Spacer(); previewControls()
                     }.padding(.horizontal, 24).frame(height: 56).background(InterfaceStyle.color(0xF5F5F7))
-                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure, onPathAction: onPathAction)
+                    ServerContextView(workspace: workspace, compact: false, onAction: previewNotice, onAdd: { beginAdd() }, onConfigure: configure, onManageAuthorization: { if let onNavigate { onNavigate("我的设备") } else { previewNotice() } }, onPathAction: onPathAction)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
         .sheet(item: $formSession) { session in accessFlow(session.draft, { if $0.editingEntryID == nil { retainedDraft = $0 }; formSession = nil }) }
-        .alert(workspace.isSimulation ? "隔离预览" : "真实连接验收", isPresented: Binding(get: { notice != nil && formSession == nil }, set: { if !$0 { notice = nil } })) {
+        .alert(workspace.isSimulation ? "隔离预览" : "KeyPort", isPresented: Binding(get: { notice != nil && formSession == nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
     }
@@ -49,13 +51,13 @@ public struct ServerHomeView: View {
             Text("标签").font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 18).frame(height: 17)
             Text(workspace.isSimulation ? "家庭网络" : "暂无标签").foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 38)
             Spacer()
-            Label(workspace.isSimulation ? "管理信息已同步" : "仅存于此 Mac", systemImage: workspace.isSimulation ? "icloud" : "internaldrive").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 36).help("当前入口未连接 iCloud")
-            Button { previewNotice() } label: { Label("设置", systemImage: "slider.horizontal.3") }.buttonStyle(.plain).padding(.horizontal, 16).frame(height: 38)
+            Label(workspace.isSimulation ? "管理信息已同步" : syncTitle, systemImage: workspace.isSimulation ? "icloud" : "internaldrive").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 16).frame(height: 36)
+            Button { if let onNavigate { onNavigate("设置") } else { previewNotice() } } label: { Label("设置", systemImage: "slider.horizontal.3") }.buttonStyle(.plain).padding(.horizontal, 16).frame(height: 38)
             Color.clear.frame(height: 60)
         }.frame(maxHeight: .infinity).background(InterfaceStyle.color(0xEDF0F2))
     }
     private func navigation(_ name: String, _ symbol: String, selected: Bool = false) -> some View {
-        Button { if !selected { previewNotice() } } label: {
+        Button { if !selected { if let onNavigate { onNavigate(name) } else { previewNotice() } } } label: {
             Label(name, systemImage: symbol).font(.system(size: 13, weight: selected ? .medium : .regular)).frame(maxWidth: .infinity, alignment: .leading).padding(10).frame(height: 38)
                 .foregroundStyle(selected ? InterfaceStyle.color(0x155ABB) : InterfaceStyle.color(0x373B43))
                 .background(selected ? InterfaceStyle.color(0xDCE7F8) : .clear, in: RoundedRectangle(cornerRadius: 7))
@@ -102,7 +104,7 @@ public struct ServerHomeView: View {
     }
     private func beginAdd() { formSession = AccessFormSession(draft: retainedDraft ?? (workspace.isSimulation ? exampleDraft : AccessFormDraft())) }
     private func configure(_ draft: AccessFormDraft) { formSession = AccessFormSession(draft: draft) }
-    private func previewNotice() { notice = workspace.isSimulation ? "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" : "此入口先验收服务器访问流程；此功能尚未接入。" }
+    private func previewNotice() { notice = workspace.isSimulation ? "隔离示例：未连接真实服务器，也不会打开终端或更改本机配置。" : "请先选择具体路径，再查看或修改连接设置。" }
 }
 
 struct WorkspaceViewSwitch: View {

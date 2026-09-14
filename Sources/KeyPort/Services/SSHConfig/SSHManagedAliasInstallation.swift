@@ -2,10 +2,9 @@ import Foundation
 import Darwin
 import KeyPortCore
 
-extension SSHConfigService {
-    /// Separate ownership from the legacy workspace's ~/.ssh/keyport/config.
-    /// Synchronous transaction used by the main-actor acceptance store and isolated tests.
-    struct AliasInstallation {
+    /// Owns the unified workspace SSH Include and configuration transaction.
+    /// Synchronous transaction used by the main-actor workspace store and isolated tests.
+struct ManagedAliasInstallation {
         let home: URL
         var directory: URL { home.appendingPathComponent(".ssh/keyport-access") }
         var managed: URL { directory.appendingPathComponent("config") }
@@ -228,4 +227,3 @@ extension SSHConfigService {
             if directoryFD >= 0 { _ = fsync(directoryFD); Darwin.close(directoryFD) }
         }
     }
-}

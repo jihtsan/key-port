@@ -16,12 +16,13 @@ public struct ConfiguredAccessPath: Identifiable, Equatable {
     public var reachability: PathReachability
     public var checkedAt: Date?
     public var terminalCommand: String?
+    public var sshAlias: String?
     public var isDefaultConnection: Bool?
     public init(id: String, deviceID: String, serverID: String, account: String, address: String, port: Int = 22,
-                verification: PathVerification = .pending, reachability: PathReachability = .unknown, checkedAt: Date? = nil, terminalCommand: String? = nil, isDefaultConnection: Bool? = nil) {
+                verification: PathVerification = .pending, reachability: PathReachability = .unknown, checkedAt: Date? = nil, terminalCommand: String? = nil, isDefaultConnection: Bool? = nil, sshAlias: String? = nil) {
         self.id = id; self.deviceID = deviceID; self.serverID = serverID; self.account = account
         self.address = address; self.port = port; self.verification = verification; self.reachability = reachability; self.checkedAt = checkedAt
-        self.terminalCommand = terminalCommand; self.isDefaultConnection = isDefaultConnection
+        self.terminalCommand = terminalCommand; self.isDefaultConnection = isDefaultConnection; self.sshAlias = sshAlias
     }
     public var endpoint: String { "\(address.contains(":") ? "[\(address)]" : address):\(port)" }
     public var authorizationKey: AccessAuthorizationKey { .init(deviceID: deviceID, serverID: serverID, account: account) }
@@ -138,12 +139,14 @@ public enum PathPrimaryAction: Equatable {
 extension AccessWorkspace {
     public func primaryAction(for path: ConfiguredAccessPath) -> PathPrimaryAction {
         if path.reachability == .unreachable { return .checkAddress }
-        return snapshot.authorization(for: path) == .installed ? .openTerminal : .authorize
+        if snapshot.authorization(for: path) == .installed { return path.verification == .verified ? .openTerminal : .checkAddress }
+        return .authorize
     }
     public func accessDraft(for path: ConfiguredAccessPath) -> AccessFormDraft? {
         guard let server = graph.servers.first(where: { $0.id == path.serverID }), graph.paths.contains(where: { $0.id == path.id }) else { return nil }
         var draft = AccessFormDraft()
-        draft.editingEntryID = server.id; draft.alias = server.alias; draft.description = server.description
+        draft.editingEntryID = server.id; draft.alias = path.sshAlias ?? server.alias; draft.description = server.description
+        draft.existingKey = snapshot.authorization(for: path) == .installed
         draft.address = path.address; draft.port = String(path.port); draft.account = path.account
         return draft
     }

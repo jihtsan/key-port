@@ -9,7 +9,6 @@ enum SSHServiceError: LocalizedError {
     case missingPassword
     case passwordAuthenticationRejected
     case authorizationWrittenAwaitingVerification
-    case identityRouteUnavailable
     case operationFailed(String)
 
     var errorDescription: String? {
@@ -17,10 +16,9 @@ enum SSHServiceError: LocalizedError {
         case .hostKeyNotConfirmed: "身份验证前，请先确认服务器主机密钥。"
         case .hostKeyChanged: "主机密钥已变更，身份验证被阻止。"
         case .missingPrivateKey: "所选密钥没有可用的本地私钥。"
-        case .missingPassword: "Keychain 中未存储服务器密码。"
+        case .missingPassword: "本次操作未提供服务器密码。"
         case .passwordAuthenticationRejected: "服务器拒绝了密码登录。"
         case .authorizationWrittenAwaitingVerification: "公钥已写入，但免密复检失败。"
-        case .identityRouteUnavailable: "该身份的 SSH 路由被 v6 兼容层关闭（存在待解决冲突或无可用地址）。"
         case .operationFailed(let message): message
         }
     }
@@ -30,31 +28,24 @@ actor OpenSSHService {
     private let runner: ProcessRunner
     private let paths: KeyPortPaths
     private let askPassPath: String
-    private let transportAdapter: SSHTransportAdapter
-    private let isolatedConfiguration: Bool
 
     init(
         runner: ProcessRunner,
         paths: KeyPortPaths = KeyPortPaths(),
-        askPassPath: String,
-        transportAdapter: SSHTransportAdapter = SSHTransportAdapter(),
-        isolatedConfiguration: Bool = false
+        askPassPath: String
     ) {
         self.runner = runner
         self.paths = paths
         self.askPassPath = askPassPath
-        self.transportAdapter = transportAdapter
-        self.isolatedConfiguration = isolatedConfiguration
     }
 
     func testPublicKey(
         server: ServerConnection,
-        key: SSHKeyRecord,
-        transport: SSHConnectionTransport = .direct
+        key: SSHKeyRecord
     ) async throws -> Bool {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
         guard let identity = key.privateKeyPath else { throw SSHServiceError.missingPrivateKey }
-        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: transport) + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
+        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server) + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
             "-i", identity,
             "\(server.username)@\(server.host)",
             "exit",
@@ -66,8 +57,7 @@ actor OpenSSHService {
 
     func testPassword(
         server: ServerConnection,
-        passwordData: Data,
-        transport: SSHConnectionTransport = .direct
+        passwordData: Data
     ) async throws -> Bool {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
         let broker = try passwordBroker(passwordData: passwordData)
@@ -75,7 +65,7 @@ actor OpenSSHService {
         broker.startWriter()
         let result = try await runner.run(
             "/usr/bin/ssh",
-            arguments: commonArguments(server: server, transport: transport) + SSHAuthenticationPolicy.passwordOnlyArguments + [
+            arguments: commonArguments(server: server) + SSHAuthenticationPolicy.passwordOnlyArguments + [
                 "\(server.username)@\(server.host)",
                 "exit",
             ],
@@ -86,54 +76,10 @@ actor OpenSSHService {
         throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
     }
 
-    func inspectMachineWithPassword(
-        server: ServerConnection,
-        passwordData: Data,
-        transport: SSHConnectionTransport = .direct
-    ) async throws -> RemoteMachineConfiguration? {
-        let broker = try passwordBroker(passwordData: passwordData)
-        defer { broker.cleanup() }
-        broker.startWriter()
-        let result = try await runner.run(
-            "/usr/bin/ssh",
-            arguments: commonArguments(server: server, transport: transport) + SSHAuthenticationPolicy.passwordOnlyArguments + [
-                "\(server.username)@\(server.host)",
-                "sh", "-s",
-            ],
-            input: Data(machineConfigurationScript.utf8),
-            environment: askPassEnvironment(broker: broker)
-        )
-        if result.succeeded { return RemoteMachineConfigurationParser.parse(result.stdout) }
-        if authenticationWasRejected(result.stderr) { return nil }
-        throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
-    }
-
-    func inspectMachineWithPublicKey(
-        server: ServerConnection,
-        key: SSHKeyRecord,
-        transport: SSHConnectionTransport = .direct
-    ) async throws -> RemoteMachineConfiguration? {
-        guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
-        guard let identity = key.privateKeyPath else { throw SSHServiceError.missingPrivateKey }
-        let result = try await runner.run(
-            "/usr/bin/ssh",
-            arguments: commonArguments(server: server, transport: transport) + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
-                "-i", identity,
-                "\(server.username)@\(server.host)",
-                "sh", "-s",
-            ],
-            input: Data(machineConfigurationScript.utf8)
-        )
-        if result.succeeded { return RemoteMachineConfigurationParser.parse(result.stdout) }
-        if authenticationWasRejected(result.stderr) { return nil }
-        throw SSHServiceError.operationFailed(classifyAuthenticationError(result.stderr))
-    }
-
     func installPublicKey(
         server: ServerConnection,
         key: SSHKeyRecord,
-        passwordData: Data,
-        transport: SSHConnectionTransport = .direct
+        passwordData: Data
     ) async throws {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
         guard let parsed = PublicKeyParser.parse(key.publicKey) else {
@@ -145,7 +91,7 @@ actor OpenSSHService {
         let broker = try passwordBroker(passwordData: passwordData)
         defer { broker.cleanup() }
         broker.startWriter()
-        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: transport) + SSHAuthenticationPolicy.passwordOnlyArguments + [
+        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server) + SSHAuthenticationPolicy.passwordOnlyArguments + [
             "\(server.username)@\(server.host)",
             "sh", "-s",
         ], input: Data(script.utf8), environment: askPassEnvironment(broker: broker))
@@ -157,79 +103,21 @@ actor OpenSSHService {
         }
     }
 
-    func revokePublicKey(
-        server: ServerConnection,
-        fingerprint: String,
-        publicKeyBlob: String,
-        identityPath: String,
-        transport: SSHConnectionTransport = .direct
-    ) async throws {
-        guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
-        let script = revocationScript(keyBlob: publicKeyBlob)
-        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: transport) + [
-            "-o", "BatchMode=yes", "-i", identityPath,
-            "\(server.username)@\(server.host)", "sh", "-s",
-        ], input: Data(script.utf8))
-        guard result.succeeded else { throw SSHServiceError.operationFailed("无法撤销远程授权。") }
-        _ = fingerprint
-    }
-
-    func readAuthorizedKeys(
-        server: ServerConnection,
-        identityPath: String,
-        transport: SSHConnectionTransport = .direct
-    ) async throws -> [AuthorizedKeyLine] {
-        guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
-        let script = SSHRemoteCommandScripts.readAuthorizedKeys
-        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: transport) + [
-            "-o", "BatchMode=yes", "-i", identityPath,
-            "\(server.username)@\(server.host)", "sh", "-s",
-        ], input: Data(script.utf8))
-        guard result.succeeded else { throw SSHServiceError.operationFailed("无法读取远程 authorized_keys 文件。") }
-        return AuthorizedKeysParser.parse(result.stdout)
-    }
-
     /// Reconcile after an interrupted enrollment without assuming rejection means no key exists.
     func containsPublicKey(server: ServerConnection, key: SSHKeyRecord, passwordData: Data) async throws -> Bool {
         guard !server.confirmedHostKeys.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
         let broker = try passwordBroker(passwordData: passwordData)
         broker.startWriter()
         defer { broker.cleanup() }
-        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server, transport: .direct)
+        let result = try await runner.run("/usr/bin/ssh", arguments: commonArguments(server: server)
             + SSHAuthenticationPolicy.passwordOnlyArguments + ["\(server.username)@\(server.host)", "sh", "-s"],
             input: Data(SSHRemoteCommandScripts.readAuthorizedKeys.utf8), environment: askPassEnvironment(broker: broker))
         guard result.succeeded else { throw SSHServiceError.operationFailed("无法核对远端公钥授权。") }
         return result.stdout.split(separator: "\n").contains { PublicKeyParser.parse(String($0))?.fingerprint == key.fingerprint }
     }
 
-    private func commonArguments(
-        server: ServerConnection,
-        transport: SSHConnectionTransport
-    ) throws -> [String] {
-        let transport = try transportAdapter.configuration(for: transport)
-        let knownHostsPath = paths.knownHosts.path
-        guard !knownHostsPath.contains(where: { $0.isNewline || $0 == "\0" }) else {
-            throw SSHServiceError.operationFailed("主机身份记录路径无效，无法开始 SSH 验证。")
-        }
-        // argv boundaries do not quote OpenSSH's -o configuration-value grammar.
-        // UserKnownHostsFile is a list: an unquoted space silently creates another path.
-        let quotedKnownHosts = knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "%", with: "%%")
-        return (isolatedConfiguration ? ["-F", "/dev/null", "-o", "ControlMaster=no", "-o", "ControlPath=none",
-            "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "HostKeyAlgorithms=ssh-ed25519"] : []) + [
-            "-T", "-p", String(server.port),
-            "-o", "ConnectTimeout=5",
-            "-o", "ConnectionAttempts=1",
-            "-o", "LogLevel=ERROR",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\"\(quotedKnownHosts)\"",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "IdentitiesOnly=yes",
-        ] + transport.openSSHArguments
-    }
-
-    private var machineConfigurationScript: String {
-        SSHRemoteCommandScripts.machineInspection
+    private func commonArguments(server: ServerConnection) throws -> [String] {
+        try OpenSSHPolicy.arguments(server: server, knownHostsPath: paths.knownHosts.path)
     }
 
     private func passwordBroker(passwordData: Data) throws -> PasswordFIFO {
@@ -250,10 +138,6 @@ actor OpenSSHService {
 
     private func enrollmentScript(encodedLine: String, keyBlob: String) -> String {
         SSHRemoteCommandScripts.installAuthorizedKey(encodedLine: encodedLine, keyBlob: keyBlob)
-    }
-
-    private func revocationScript(keyBlob: String) -> String {
-        SSHRemoteCommandScripts.revokeAuthorizedKey(keyBlob: keyBlob)
     }
 
     private func classifyAuthenticationError(_ stderr: String) -> String {

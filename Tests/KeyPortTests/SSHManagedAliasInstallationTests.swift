@@ -4,11 +4,11 @@ import KeyPortCore
 @testable import KeyPort
 
 final class SSHManagedAliasInstallationTests: XCTestCase {
-    private func fixture(_ content: String = "") throws -> SSHConfigService.AliasInstallation {
+    private func fixture(_ content: String = "") throws -> ManagedAliasInstallation {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("KeyPort alias space \(UUID().uuidString)")
         try FileManager.default.createDirectory(at: home.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: home) }
-        let installation = SSHConfigService.AliasInstallation(home: home)
+        let installation = ManagedAliasInstallation(home: home)
         try Data(content.utf8).write(to: installation.userConfig)
         try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: installation.userConfig.path)
         return installation
@@ -16,7 +16,7 @@ final class SSHManagedAliasInstallationTests: XCTestCase {
     private func entry(_ alias: String = "tencent-cloud", host: String = "example.test") -> SSHConfigEntry {
         .init(server: .init(name: "测试", host: host, port: 2222, username: "ubuntu", alias: alias), identityPath: "/tmp/key with spaces")
     }
-    private func install(_ installation: SSHConfigService.AliasInstallation, entries: [SSHConfigEntry]? = nil) throws {
+    private func install(_ installation: ManagedAliasInstallation, entries: [SSHConfigEntry]? = nil) throws {
         try installation.install(entries: entries ?? [entry()], knownHosts: installation.home.appendingPathComponent("known hosts"))
     }
     func testRoundTripOrderPermissionsAndIdempotence() throws {
@@ -114,7 +114,7 @@ final class SSHManagedAliasInstallationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: i.directory.appendingPathComponent("transaction.json").path))
         // Represents the user preserving/resolving the concurrent change before a later launch.
         try originalUser.write(to: config)
-        let restarted = SSHConfigService.AliasInstallation(home: i.home)
+        let restarted = ManagedAliasInstallation(home: i.home)
         try install(restarted)
         XCTAssertEqual(try Data(contentsOf: i.managed), originalManaged)
         XCTAssertEqual(try Data(contentsOf: config), originalUser)

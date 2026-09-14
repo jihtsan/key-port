@@ -137,7 +137,7 @@ struct TrustedSSHSession: Sendable {
         return TrustedSSHCommandResult(stdout: result.stdout, stderr: result.stderr, ending: result.ending)
     }
 
-    /// 组装一次可信执行的完整请求。参数与 legacy `commonArguments` 语义一致；
+    /// 组装一次可信执行的完整请求。与首次访问使用同一严格配置策略；
     /// 只含路由与密钥定位，绝不含密码或其他秘密。
     static func request(
         route: ServerConnection,
@@ -145,18 +145,9 @@ struct TrustedSSHSession: Sendable {
         knownHostsPath: String,
         command: SSHRemoteCommand,
         limits: ProcessExecutionLimits
-    ) -> ProcessExecutionRequest {
+    ) throws -> ProcessExecutionRequest {
         let spec = command.spec
-        let arguments = [
-            "-T", "-p", String(route.port),
-            "-o", "ConnectTimeout=5",
-            "-o", "ConnectionAttempts=1",
-            "-o", "LogLevel=ERROR",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\(knownHostsPath)",
-            "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "IdentitiesOnly=yes",
-        ] + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
+        let arguments = try OpenSSHPolicy.arguments(server: route, knownHostsPath: knownHostsPath) + SSHAuthenticationPolicy.publicKeyOnlyArguments + [
             "-i", identityPath,
             "\(route.username)@\(route.host)",
         ] + spec.remoteArguments

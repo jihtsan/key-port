@@ -6,6 +6,7 @@ struct ServerContextView: View {
     let onAction: () -> Void
     let onAdd: () -> Void
     let onConfigure: (AccessFormDraft) -> Void
+    var onManageAuthorization: (() -> Void)? = nil
     var onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil
     private var path: ConfiguredAccessPath? { workspace.selectedPath ?? workspace.selectedServer.flatMap { server in
         let paths = workspace.paths(for: server.id); return paths.count == 1 ? paths.first : nil
@@ -34,7 +35,11 @@ struct ServerContextView: View {
                     } else {
                         Text("暂无配置的访问路径").foregroundStyle(.secondary)
                         Text("服务器保留为独立节点；没有推断账户、授权或连线。").font(.system(size: 11)).foregroundStyle(.secondary)
-                        Button("配置免密", action: onAdd).buttonStyle(InterfaceButtonStyle(primary: true))
+                        Button("配置免密") {
+                            var draft = AccessFormDraft(); draft.editingEntryID = server.id
+                            draft.alias = server.alias; draft.description = server.description
+                            onConfigure(draft)
+                        }.buttonStyle(InterfaceButtonStyle(primary: true))
                     }
                     Button("连接设置") { if let path, let draft = workspace.accessDraft(for: path) { onConfigure(draft) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
@@ -112,7 +117,7 @@ struct ServerContextView: View {
             HStack(spacing: 10) {
                 primaryAction(path)
                 Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
-                Button("管理免密授权") { if let draft = workspace.accessDraft(for: path) { onConfigure(draft) } }.buttonStyle(InterfaceButtonStyle())
+                Button("管理免密授权") { if let onManageAuthorization { onManageAuthorization() } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
             }
         }
     }
