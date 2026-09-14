@@ -1,0 +1,42 @@
+Build complete! (27.76秒)
+Test Suite 'Selected tests' started at 2026-09-14 15:13:42.495.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' started at 2026-09-14 15:13:42.497.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 15:13:42.497.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:13:42.497.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:13:42.579.
+Test Suite 'KeyPortTests.xctest' started at 2026-09-14 15:13:42.580.
+Test Suite 'AccessPilotTests' started at 2026-09-14 15:13:42.580.
+Test Suite 'AccessPilotTests' passed at 2026-09-14 15:13:42.796.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.215 (0.216) seconds
+Test Suite 'SSHKnownHostsPathTests' started at 2026-09-14 15:13:42.796.
+Test Case '-[KeyPortTests.SSHKnownHostsPathTests testKnownHostInDirectoryContainingSpacesPassesStrictVerification]' started.
+Test Case '-[KeyPortTests.SSHKnownHostsPathTests testKnownHostInDirectoryContainingSpacesPassesStrictVerification]' passed (1.208 seconds).
+Test Suite 'SSHKnownHostsPathTests' passed at 2026-09-14 15:13:44.004.
+	 Executed 1 test, with 0 failures (0 unexpected) in 1.208 (1.208) seconds
+Test Suite 'KeyPortTests.xctest' passed at 2026-09-14 15:13:44.004.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 1.423 (1.424) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:13:44.004.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 1.423 (1.426) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:13:44.093.
+Test Suite 'KeyPortInterfaceTests.xctest' started at 2026-09-14 15:13:44.094.
+Test Suite 'AccessFormDraftTests' started at 2026-09-14 15:13:44.094.
+Test Suite 'AccessFormDraftTests' passed at 2026-09-14 15:13:44.097.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'AccessWorkspaceTests' started at 2026-09-14 15:13:44.097.
+Test Suite 'AccessWorkspaceTests' passed at 2026-09-14 15:13:44.102.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'FirstAccessFlowTests' started at 2026-09-14 15:13:44.102.
+Test Suite 'FirstAccessFlowTests' passed at 2026-09-14 15:13:44.173.
+	 Executed 19 tests, with 0 failures (0 unexpected) in 0.069 (0.071) seconds
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 15:13:44.173.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.076 (0.079) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:13:44.173.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 0.076 (0.080) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:13:44.261.
+Test Suite 'KeyPortCoreTests.xctest' started at 2026-09-14 15:13:44.262.
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 15:13:44.263.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:13:44.263.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

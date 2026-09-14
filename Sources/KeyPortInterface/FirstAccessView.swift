@@ -64,7 +64,7 @@ public struct FirstAccessView<Controls: View>: View {
     private var subtitle: String {
         switch flow.state {
         case .success: return "此 Mac 已通过 \(flow.draft.account) 账户的免密登录验证。" + (flow.isSimulation ? "（模拟）" : "")
-        case .failed(.authentication): return "服务器可以到达，尚未完成本次免密配置。"
+        case .failed(.authentication): return "尚未完成登录验证与本次免密配置。"
         case .failed, .cancelled: return authorizationText
         case .confirmHost: return "只有首次连接或身份需要确认时才出现；不匹配时停止。"
         default: return "\(flow.draft.account) @ \(flow.draft.alias) · 请保持服务器网络连接。"
@@ -121,7 +121,7 @@ public struct FirstAccessView<Controls: View>: View {
         switch failure {
         case .unreachable: return "连接地址不可达"
         case .identityMismatch: return "服务器身份不匹配，已停止"
-        case .authentication: return "账户验证未通过"
+        case .authentication: return flow.failureDetail == nil ? "账户验证未通过" : "登录验证未完成"
         case .authorization: return "设备授权未完成"
         case .verification: return "公钥已授权，免密验证未通过"
         case .authorizationUnknown: return "授权结果待核对"
@@ -131,7 +131,7 @@ public struct FirstAccessView<Controls: View>: View {
         VStack(alignment: .leading, spacing: 14) {
             Image(systemName: "exclamationmark.circle").font(.system(size: 26)).foregroundStyle(InterfaceStyle.color(0xB66A26)).frame(width: 28, height: 28)
             Text(failure == .authentication ? "第 1 步 · 登录验证失败" : failureTitle(failure)).font(.system(size: 20, weight: .medium)).foregroundStyle(InterfaceStyle.color(0x9C622D)).frame(height: 30)
-            Text(failureExplanation(failure)).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x74859E)).frame(height: 20)
+            Text(flow.failureDetail ?? failureExplanation(failure)).font(.system(size: 13)).foregroundStyle(InterfaceStyle.color(0x74859E)).frame(height: 20)
             Text(failure == .identityMismatch ? "请通过可信渠道核对主机身份；此处不能忽略或自动继续。" : "检查后修改表单或重新验证；已有授权会先核对。")
                 .font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x4C6688)).frame(height: 21)
             Text("别名、描述、地址与账户保留。密码已清空，不落盘保存。").font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
@@ -201,7 +201,7 @@ public struct FirstAccessView<Controls: View>: View {
                     Button((flow.handoff == .copied ? "已复制" : "复制命令") + (flow.isSimulation ? "（演示）" : "")) { flow.performHandoff(copy: true) }.buttonStyle(InterfaceButtonStyle(height: 38))
                 }
             case .failed(let failure):
-                Button(failure == .authentication ? "修改账户或密码" : "返回修改") { flow.edit() }.buttonStyle(InterfaceButtonStyle(primary: true, width: 137, height: 38)).keyboardShortcut(.cancelAction)
+                Button(failure == .authentication && flow.failureDetail == nil ? "修改账户或密码" : "返回修改") { flow.edit() }.buttonStyle(InterfaceButtonStyle(primary: true, width: 137, height: 38)).keyboardShortcut(.cancelAction)
                 if failure != .identityMismatch {
                     Button("重新验证") { flow.retry() }.buttonStyle(InterfaceButtonStyle(width: 112, height: 38)).keyboardShortcut(.defaultAction)
                 }

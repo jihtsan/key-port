@@ -1,0 +1,31 @@
+Build complete! (3.53秒)
+Test Suite 'Selected tests' started at 2026-09-14 15:12:16.283.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' started at 2026-09-14 15:12:16.286.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 15:12:16.286.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:12:16.286.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:12:16.347.
+Test Suite 'KeyPortTests.xctest' started at 2026-09-14 15:12:16.348.
+Test Suite 'SSHKnownHostsPathTests' started at 2026-09-14 15:12:16.348.
+Test Case '-[KeyPortTests.SSHKnownHostsPathTests testKnownHostInDirectoryContainingSpacesPassesStrictVerification]' started.
+/Users/joo00der/.codex/worktrees/issue98/key-port/Sources/KeyPort/Services/SSH/SSHService.swift:64: error: -[KeyPortTests.SSHKnownHostsPathTests testKnownHostInDirectoryContainingSpacesPassesStrictVerification] : failed: caught error: "operationFailed("主机密钥验证失败，SSH 操作已被阻止。")"
+Test Case '-[KeyPortTests.SSHKnownHostsPathTests testKnownHostInDirectoryContainingSpacesPassesStrictVerification]' failed (1.131 seconds).
+Test Suite 'SSHKnownHostsPathTests' failed at 2026-09-14 15:12:17.479.
+	 Executed 1 test, with 1 failure (1 unexpected) in 1.131 (1.131) seconds
+Test Suite 'KeyPortTests.xctest' failed at 2026-09-14 15:12:17.479.
+	 Executed 1 test, with 1 failure (1 unexpected) in 1.131 (1.131) seconds
+Test Suite 'Selected tests' failed at 2026-09-14 15:12:17.479.
+	 Executed 1 test, with 1 failure (1 unexpected) in 1.131 (1.132) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:12:17.558.
+Test Suite 'KeyPortInterfaceTests.xctest' started at 2026-09-14 15:12:17.560.
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 15:12:17.560.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:12:17.560.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+Test Suite 'Selected tests' started at 2026-09-14 15:12:17.640.
+Test Suite 'KeyPortCoreTests.xctest' started at 2026-09-14 15:12:17.641.
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 15:12:17.641.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 15:12:17.641.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds

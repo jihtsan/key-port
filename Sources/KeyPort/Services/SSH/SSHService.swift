@@ -207,6 +207,14 @@ actor OpenSSHService {
         transport: SSHConnectionTransport
     ) throws -> [String] {
         let transport = try transportAdapter.configuration(for: transport)
+        let knownHostsPath = paths.knownHosts.path
+        guard !knownHostsPath.contains(where: { $0.isNewline || $0 == "\0" }) else {
+            throw SSHServiceError.operationFailed("主机身份记录路径无效，无法开始 SSH 验证。")
+        }
+        // argv boundaries do not quote OpenSSH's -o configuration-value grammar.
+        // UserKnownHostsFile is a list: an unquoted space silently creates another path.
+        let quotedKnownHosts = knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "%", with: "%%")
         return (isolatedConfiguration ? ["-F", "/dev/null", "-o", "ControlMaster=no", "-o", "ControlPath=none",
             "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "HostKeyAlgorithms=ssh-ed25519"] : []) + [
             "-T", "-p", String(server.port),
@@ -214,7 +222,7 @@ actor OpenSSHService {
             "-o", "ConnectionAttempts=1",
             "-o", "LogLevel=ERROR",
             "-o", "StrictHostKeyChecking=yes",
-            "-o", "UserKnownHostsFile=\(paths.knownHosts.path)",
+            "-o", "UserKnownHostsFile=\"\(quotedKnownHosts)\"",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "IdentitiesOnly=yes",
         ] + transport.openSSHArguments

@@ -182,6 +182,19 @@ import XCTest
         flow.submit(input); await settle()
         XCTAssertEqual(flow.state, .success); XCTAssertEqual(flow.command, "ssh legacy.host")
     }
+    func testOnlyClassifiedDetailsAreDisplayedAndRetryClearsThem() async {
+        let adapter = TestAccessAdapter(); adapter.loginError = SafeFixtureFailure()
+        let flow = FirstAccessFlow(draft: draft(), adapter: adapter)
+        flow.submit(draft()); await settle()
+        XCTAssertEqual(flow.state, .failed(.authentication))
+        XCTAssertEqual(flow.failureDetail, "主机密钥验证失败，SSH 操作已被阻止。")
+        XCTAssertEqual(adapter.installs, 0)
+        flow.edit(); XCTAssertNil(flow.failureDetail)
+        adapter.loginError = NSError(domain: "untrusted-remote-output", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "raw-secret-like-output"])
+        flow.submit(draft()); await settle()
+        XCTAssertNil(flow.failureDetail)
+    }
     func testCloseRejectsLateHandoff() async {
         let adapter = TestAccessAdapter(); let flow = FirstAccessFlow(draft: draft(), adapter: adapter)
         flow.submit(draft()); await settle(); adapter.holdHandoff = true
@@ -196,6 +209,7 @@ import XCTest
     var serverID = "server-1"
     var needsConfirmation = false
     var statusUnknown = false
+    var loginError: Error?
     var failure: AccessFlowFailure?
     var hold: AccessFlowStep?
     var holdHandoff = false
@@ -211,6 +225,7 @@ import XCTest
     func confirmHost(_ identity: AccessHostIdentity) async throws { confirmations += 1 }
     func login(draft: AccessFormDraft, identity: AccessHostIdentity) async throws {
         logins += 1; if hold == .login { await pause() }
+        if let loginError { throw loginError }
         if failure == .authentication { throw failure! }
     }
     func authorizationStatus(for key: AccessAuthorizationKey) async throws -> AccessAuthorizationStatus {
@@ -237,4 +252,8 @@ import XCTest
     func cancel() {} // intentionally ignores cancellation to exercise late callbacks
     private func pause() async { await withCheckedContinuation { continuation = $0 } }
     func release() { let saved = continuation; continuation = nil; saved?.resume() }
+}
+
+private struct SafeFixtureFailure: AccessFlowFailureDetailProviding {
+    var safeAccessFailureDetail: String { "主机密钥验证失败，SSH 操作已被阻止。" }
 }
