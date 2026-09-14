@@ -33,7 +33,7 @@ App：`dist/KeyPortAccessPilot.app`；bundle ID：`com.jihtsan.KeyPort.AccessPil
 - 后续增加重试别名归属与本机 `ssh -G` 配置解析测试；最终定向覆盖 10 项 AccessPilot、10 项 ProcessExecutor 与 37 项 Interface 测试。末次适配器/关闭回写修正后再次运行 10 项 AccessPilot 测试。
 - 新测试覆盖：密码首次授权/持久化、错误密码、已存在远端公钥、同节点新增地址、指纹变更阻断、失败重试别名、独占锁/损坏文件、配置注入保护、本机 OpenSSH 配置解析、取消/超时映射。
 - 适配器测试注入受控 ProcessExecuting 结果，不冒充真实远端 SSH；ProcessExecutor、AskPass 与 SSHRelay 检查执行真实本机进程。
-- 原生 App 已启动，查看空白首页与 SSH 表单。截图、构建/测试记录见 evidence 目录；不包含用户凭据。
+- 原生 App 已启动：最终源码 128a6af 的空白首页已查看并保存截图；此前已查看 SSH 表单与 SecureField。最终表单复核时 Computer Use 报 ScreenCaptureKit -3811，无法确认表单最终前台状态，此项留待用户确认。截图、构建/测试记录见 evidence/128a6af；不包含用户凭据。
 
 ## 用户填写后的验收顺序
 

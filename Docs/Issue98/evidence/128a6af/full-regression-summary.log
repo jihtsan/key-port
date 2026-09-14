@@ -1,0 +1,196 @@
+Test Suite 'All tests' started at 2026-09-14 14:36:02.572.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' started at 2026-09-14 14:36:02.573.
+Test Suite 'LocalTargetProbeTests' started at 2026-09-14 14:36:02.573.
+Test Suite 'LocalTargetProbeTests' passed at 2026-09-14 14:36:02.618.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.044 (0.044) seconds
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 14:36:02.618.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.044 (0.044) seconds
+Test Suite 'All tests' passed at 2026-09-14 14:36:02.618.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.044 (0.045) seconds
+Test Suite 'All tests' started at 2026-09-14 14:36:02.985.
+Test Suite 'KeyPortTests.xctest' started at 2026-09-14 14:36:02.986.
+Test Suite 'AccessPilotTests' started at 2026-09-14 14:36:02.986.
+Test Suite 'AccessPilotTests' passed at 2026-09-14 14:36:03.144.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.157 (0.158) seconds
+Test Suite 'AppDelegateLifecycleTests' started at 2026-09-14 14:36:03.144.
+Test Suite 'AppDelegateLifecycleTests' passed at 2026-09-14 14:36:03.222.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.078 (0.078) seconds
+Test Suite 'CloudV2SyncServiceTests' started at 2026-09-14 14:36:03.222.
+Test Suite 'CloudV2SyncServiceTests' passed at 2026-09-14 14:36:03.395.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.172 (0.173) seconds
+Test Suite 'CodeSigningInfoTests' started at 2026-09-14 14:36:03.395.
+Test Suite 'CodeSigningInfoTests' passed at 2026-09-14 14:36:03.395.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'ConnectionHistoryFileStoreTests' started at 2026-09-14 14:36:03.395.
+Test Suite 'ConnectionHistoryFileStoreTests' passed at 2026-09-14 14:36:03.414.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.018 (0.019) seconds
+Test Suite 'HostV6AuthorityFileStoreTests' started at 2026-09-14 14:36:03.414.
+Test Suite 'HostV6AuthorityFileStoreTests' passed at 2026-09-14 14:36:05.232.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 1.817 (1.818) seconds
+Test Suite 'HostV6MutationWorkflowTests' started at 2026-09-14 14:36:05.232.
+Test Suite 'HostV6MutationWorkflowTests' passed at 2026-09-14 14:36:08.247.
+	 Executed 38 tests, with 0 failures (0 unexpected) in 3.010 (3.014) seconds
+Test Suite 'HostV6ShadowStagingStoreTests' started at 2026-09-14 14:36:08.247.
+Test Suite 'HostV6ShadowStagingStoreTests' passed at 2026-09-14 14:36:08.391.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.144 (0.145) seconds
+Test Suite 'KeyPortMenuBarViewTests' started at 2026-09-14 14:36:08.391.
+Test Suite 'KeyPortMenuBarViewTests' passed at 2026-09-14 14:36:08.392.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'KeychainServiceTests' started at 2026-09-14 14:36:08.392.
+Test Suite 'KeychainServiceTests' passed at 2026-09-14 14:36:08.400.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.008 (0.008) seconds
+Test Suite 'ListenerDiscoveryAdapterTests' started at 2026-09-14 14:36:08.400.
+Test Suite 'ListenerDiscoveryAdapterTests' passed at 2026-09-14 14:36:08.403.
+	 Executed 5 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'ListenerDiscoveryAppModelTests' started at 2026-09-14 14:36:08.403.
+Test Suite 'ListenerDiscoveryAppModelTests' passed at 2026-09-14 14:36:08.429.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+Test Suite 'NavigationIntegrationTests' started at 2026-09-14 14:36:08.429.
+Test Suite 'NavigationIntegrationTests' passed at 2026-09-14 14:36:08.432.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'PasswordlessPrimaryActionTests' started at 2026-09-14 14:36:08.432.
+Test Suite 'PasswordlessPrimaryActionTests' passed at 2026-09-14 14:36:08.448.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.015 (0.016) seconds
+Test Suite 'ProcessExecutorTests' started at 2026-09-14 14:36:08.448.
+Test Suite 'ProcessExecutorTests' passed at 2026-09-14 14:36:11.857.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 3.408 (3.410) seconds
+Test Suite 'SSHCommandPresentationTests' started at 2026-09-14 14:36:11.857.
+Test Suite 'SSHCommandPresentationTests' passed at 2026-09-14 14:36:11.859.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.001 (0.002) seconds
+Test Suite 'SSHConfigServiceTests' started at 2026-09-14 14:36:11.859.
+Test Suite 'SSHConfigServiceTests' passed at 2026-09-14 14:36:11.880.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.021 (0.021) seconds
+Test Suite 'SSHRouteProviderTests' started at 2026-09-14 14:36:11.880.
+Test Suite 'SSHRouteProviderTests' passed at 2026-09-14 14:36:11.891.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.010 (0.011) seconds
+Test Suite 'SSHTransportAdapterTests' started at 2026-09-14 14:36:11.891.
+Test Suite 'SSHTransportAdapterTests' passed at 2026-09-14 14:36:11.891.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'ServerAccessFormTests' started at 2026-09-14 14:36:11.891.
+Test Suite 'ServerAccessFormTests' passed at 2026-09-14 14:36:11.892.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+Test Suite 'ServerWorkspaceProjectionTests' started at 2026-09-14 14:36:11.892.
+Test Suite 'ServerWorkspaceProjectionTests' passed at 2026-09-14 14:36:11.968.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.076 (0.076) seconds
+Test Suite 'TopologyStoreTests' started at 2026-09-14 14:36:11.969.
+Test Suite 'TopologyStoreTests' passed at 2026-09-14 14:36:11.976.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 0.008 (0.008) seconds
+Test Suite 'TrustedSSHSessionTests' started at 2026-09-14 14:36:11.976.
+Test Suite 'TrustedSSHSessionTests' passed at 2026-09-14 14:36:11.980.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.003 (0.004) seconds
+Test Suite 'TunnelBrokerLauncherTests' started at 2026-09-14 14:36:11.980.
+Test Suite 'TunnelBrokerLauncherTests' passed at 2026-09-14 14:36:17.066.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 5.085 (5.086) seconds
+Test Suite 'TunnelInfrastructureTests' started at 2026-09-14 14:36:17.066.
+Test Suite 'TunnelInfrastructureTests' passed at 2026-09-14 14:36:17.106.
+	 Executed 8 tests, with 0 failures (0 unexpected) in 0.039 (0.040) seconds
+Test Suite 'TunnelRegistryTests' started at 2026-09-14 14:36:17.106.
+Test Suite 'TunnelRegistryTests' passed at 2026-09-14 14:36:17.276.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.168 (0.171) seconds
+Test Suite 'UnifiedTopologyAppModelTests' started at 2026-09-14 14:36:17.276.
+Test Suite 'UnifiedTopologyAppModelTests' passed at 2026-09-14 14:36:18.209.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.932 (0.933) seconds
+Test Suite 'KeyPortTests.xctest' passed at 2026-09-14 14:36:18.209.
+	 Executed 201 tests, with 0 failures (0 unexpected) in 15.203 (15.224) seconds
+Test Suite 'All tests' passed at 2026-09-14 14:36:18.210.
+	 Executed 201 tests, with 0 failures (0 unexpected) in 15.203 (15.225) seconds
+Test Suite 'All tests' started at 2026-09-14 14:36:18.302.
+Test Suite 'KeyPortInterfaceTests.xctest' started at 2026-09-14 14:36:18.303.
+Test Suite 'AccessFormDraftTests' started at 2026-09-14 14:36:18.303.
+Test Suite 'AccessFormDraftTests' passed at 2026-09-14 14:36:18.306.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'AccessWorkspaceTests' started at 2026-09-14 14:36:18.306.
+Test Suite 'AccessWorkspaceTests' passed at 2026-09-14 14:36:18.312.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.005 (0.005) seconds
+Test Suite 'FirstAccessFlowTests' started at 2026-09-14 14:36:18.312.
+Test Suite 'FirstAccessFlowTests' passed at 2026-09-14 14:36:18.372.
+	 Executed 18 tests, with 0 failures (0 unexpected) in 0.059 (0.060) seconds
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 14:36:18.372.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 0.066 (0.069) seconds
+Test Suite 'All tests' passed at 2026-09-14 14:36:18.372.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 0.066 (0.070) seconds
+Test Suite 'All tests' started at 2026-09-14 14:36:18.460.
+Test Suite 'KeyPortCoreTests.xctest' started at 2026-09-14 14:36:18.461.
+Test Suite 'AddressSelectionCoordinatorTests' started at 2026-09-14 14:36:18.461.
+Test Suite 'AddressSelectionCoordinatorTests' passed at 2026-09-14 14:36:19.113.
+	 Executed 32 tests, with 0 failures (0 unexpected) in 0.648 (0.652) seconds
+Test Suite 'ConnectionHistoryCoreTests' started at 2026-09-14 14:36:19.113.
+Test Suite 'ConnectionHistoryCoreTests' passed at 2026-09-14 14:36:19.171.
+	 Executed 14 tests, with 0 failures (0 unexpected) in 0.057 (0.058) seconds
+Test Suite 'ConnectionHistoryPrivacyTests' started at 2026-09-14 14:36:19.171.
+Test Suite 'ConnectionHistoryPrivacyTests' passed at 2026-09-14 14:36:19.398.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.226 (0.227) seconds
+Test Suite 'ConnectionHistoryStoreTests' started at 2026-09-14 14:36:19.398.
+Test Suite 'ConnectionHistoryStoreTests' passed at 2026-09-14 14:36:25.771.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 6.372 (6.373) seconds
+Test Suite 'DiscoveryCoordinatorTests' started at 2026-09-14 14:36:25.771.
+Test Suite 'DiscoveryCoordinatorTests' passed at 2026-09-14 14:36:25.773.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'HostV6AuthorityTests' started at 2026-09-14 14:36:25.773.
+Test Suite 'HostV6AuthorityTests' passed at 2026-09-14 14:36:26.081.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.307 (0.308) seconds
+Test Suite 'HostV6CloudSyncTests' started at 2026-09-14 14:36:26.081.
+Test Suite 'HostV6CloudSyncTests' passed at 2026-09-14 14:36:26.353.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.271 (0.271) seconds
+Test Suite 'HostV6ContractTests' started at 2026-09-14 14:36:26.353.
+Test Suite 'HostV6ContractTests' passed at 2026-09-14 14:36:26.363.
+	 Executed 17 tests, with 0 failures (0 unexpected) in 0.009 (0.010) seconds
+Test Suite 'HostV6GraphTests' started at 2026-09-14 14:36:26.363.
+Test Suite 'HostV6GraphTests' passed at 2026-09-14 14:36:26.379.
+	 Executed 26 tests, with 0 failures (0 unexpected) in 0.014 (0.016) seconds
+Test Suite 'HostV6ShadowMigrationTests' started at 2026-09-14 14:36:26.379.
+Test Suite 'HostV6ShadowMigrationTests' passed at 2026-09-14 14:37:09.431.
+	 Executed 22 tests, with 0 failures (0 unexpected) in 43.050 (43.052) seconds
+Test Suite 'ListenerDiscoveryTests' started at 2026-09-14 14:37:09.431.
+Test Suite 'ListenerDiscoveryTests' passed at 2026-09-14 14:37:09.436.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'NetworkHintTests' started at 2026-09-14 14:37:09.436.
+Test Suite 'NetworkHintTests' passed at 2026-09-14 14:37:09.439.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'NodeAssociationTests' started at 2026-09-14 14:37:09.439.
+Test Suite 'NodeAssociationTests' passed at 2026-09-14 14:37:09.449.
+	 Executed 23 tests, with 0 failures (0 unexpected) in 0.009 (0.011) seconds
+Test Suite 'SSHAuthorizationWorkflowTests' started at 2026-09-14 14:37:09.449.
+Test Suite 'SSHAuthorizationWorkflowTests' passed at 2026-09-14 14:37:09.454.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.004 (0.005) seconds
+Test Suite 'SSHCompatProjectionTests' started at 2026-09-14 14:37:09.454.
+Test Suite 'SSHCompatProjectionTests' passed at 2026-09-14 14:37:09.462.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.007 (0.008) seconds
+Test Suite 'SSHConnectionPlanningTests' started at 2026-09-14 14:37:09.462.
+Test Suite 'SSHConnectionPlanningTests' passed at 2026-09-14 14:37:09.485.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.022 (0.023) seconds
+Test Suite 'SSHPreconnectRelayTests' started at 2026-09-14 14:37:09.485.
+Test Suite 'SSHPreconnectRelayTests' passed at 2026-09-14 14:37:09.486.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'SSHRemoteCommandTests' started at 2026-09-14 14:37:09.486.
+Test Suite 'SSHRemoteCommandTests' passed at 2026-09-14 14:37:09.489.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'SSHRouteSemanticDiffTests' started at 2026-09-14 14:37:09.489.
+Test Suite 'SSHRouteSemanticDiffTests' passed at 2026-09-14 14:37:10.315.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.826 (0.826) seconds
+Test Suite 'ServiceAccessTests' started at 2026-09-14 14:37:10.315.
+Test Suite 'ServiceAccessTests' passed at 2026-09-14 14:37:10.334.
+	 Executed 17 tests, with 0 failures (0 unexpected) in 0.017 (0.019) seconds
+Test Suite 'ServiceEndpointFormatterTests' started at 2026-09-14 14:37:10.334.
+Test Suite 'ServiceEndpointFormatterTests' passed at 2026-09-14 14:37:10.336.
+	 Executed 13 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'TailscaleTopologyTests' started at 2026-09-14 14:37:10.336.
+Test Suite 'TailscaleTopologyTests' passed at 2026-09-14 14:37:10.342.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+Test Suite 'TopologyGraphProjectorTests' started at 2026-09-14 14:37:10.342.
+Test Suite 'TopologyGraphProjectorTests' passed at 2026-09-14 14:37:10.349.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.006 (0.006) seconds
+Test Suite 'UnifiedTopologyTests' started at 2026-09-14 14:37:10.349.
+Test Suite 'UnifiedTopologyTests' passed at 2026-09-14 14:37:10.355.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.006 (0.006) seconds
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 14:37:10.355.
+	 Executed 312 tests, with 0 failures (0 unexpected) in 51.870 (51.894) seconds
+Test Suite 'All tests' passed at 2026-09-14 14:37:10.355.
+	 Executed 312 tests, with 0 failures (0 unexpected) in 51.870 (51.895) seconds
+KeyPortCoreChecks: all assertions passed
+SSH relay IPv4: ordered preconnect fallback, bidirectional bytes, and no postconnect fallback passed
+SSH relay bounded failure: timeout/budget diagnostic stayed stable
+SSH relay IPv6: preconnect and byte forwarding passed
+System OpenSSH: auth, host-key policy, and session lifecycle remained outside the helper
+SSH relay fixture passed
+KeyPortAskPassChecks: protected FIFO consumed once

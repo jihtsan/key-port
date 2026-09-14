@@ -1,0 +1,172 @@
+Building for debugging...
+[Computing dependencies]
+[Pre-planning 1 / 501]
+[Planning deferred tasks]
+[4 / 26] KeyPortTunnelBrokerTests-product
+[4 / 24] KeyPortInterface
+[9 / 29] KeyPortInterface
+[16 / 35] KeyPortInterface
+[16 / 36] KeyPort
+[19 / 38] KeyPort
+[19 / 38] KeyPortInterface
+[24 / 34] KeyPortInterfaceTests-product
+[26 / 35] KeyPort
+[31 / 39] KeyPort
+[34 / 40] KeyPortTests-product
+[36 / 42] KeyPortTests-product
+[42 / 44] KeyPortTests-product
+[46 / 46] KeyPortDesignPreview-product
+Build complete! (8.09秒)
+Test Suite 'Selected tests' started at 2026-09-14 14:38:38.911.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' started at 2026-09-14 14:38:38.914.
+Test Suite 'KeyPortTunnelBrokerTests.xctest' passed at 2026-09-14 14:38:38.914.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 14:38:38.914.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+Test Suite 'Selected tests' started at 2026-09-14 14:38:39.001.
+Test Suite 'KeyPortTests.xctest' started at 2026-09-14 14:38:39.002.
+Test Suite 'AccessPilotTests' started at 2026-09-14 14:38:39.002.
+Test Case '-[KeyPortTests.AccessPilotTests testBoundedRunnerMapsCancellationAndTimeoutToFailure]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testBoundedRunnerMapsCancellationAndTimeoutToFailure]' passed (0.003 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testChangedHostStopsBeforeAuthentication]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testChangedHostStopsBeforeAuthentication]' passed (0.018 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testConfigurationRejectsExpansionAndInjection]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testConfigurationRejectsExpansionAndInjection]' passed (0.000 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testEnrollmentReconcilesInstallsVerifiesAndPersistsWithoutPassword]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testEnrollmentReconcilesInstallsVerifiesAndPersistsWithoutPassword]' passed (0.047 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testExclusiveStoreAndCorruptionDoNotSilentlyResetData]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testExclusiveStoreAndCorruptionDoNotSilentlyResetData]' passed (0.003 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testExistingRemoteKeyIsNotReinstalledEvenWhenLoginWithItFails]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testExistingRemoteKeyIsNotReinstalledEvenWhenLoginWithItFails]' passed (0.025 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testNewAddressKeepsNodeAndSkipsInstallationWhenKeyWorks]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testNewAddressKeepsNodeAndSkipsInstallationWhenKeyWorks]' passed (0.046 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testPasswordRetryUsesOwnedAliasAfterFirstFailure]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testPasswordRetryUsesOwnedAliasAfterFirstFailure]' passed (0.030 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testWrittenConfigurationIsAcceptedByLocalOpenSSH]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testWrittenConfigurationIsAcceptedByLocalOpenSSH]' passed (0.023 seconds).
+Test Case '-[KeyPortTests.AccessPilotTests testWrongPasswordDoesNotAuthorizeOrLeakSecretToDisk]' started.
+Test Case '-[KeyPortTests.AccessPilotTests testWrongPasswordDoesNotAuthorizeOrLeakSecretToDisk]' passed (0.019 seconds).
+Test Suite 'AccessPilotTests' passed at 2026-09-14 14:38:39.218.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 0.214 (0.216) seconds
+Test Suite 'ProcessExecutorTests' started at 2026-09-14 14:38:39.218.
+Test Case '-[KeyPortTests.ProcessExecutorTests testCombinedOutputLimitTerminatesWhenNeitherStreamIsIndividuallyOverLimit]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testCombinedOutputLimitTerminatesWhenNeitherStreamIsIndividuallyOverLimit]' passed (0.013 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testEnvironmentIsMergedWithoutLeakingIntoResult]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testEnvironmentIsMergedWithoutLeakingIntoResult]' passed (0.005 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testExitStatusAndSeparatedOutputAreCaptured]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testExitStatusAndSeparatedOutputAreCaptured]' passed (0.005 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testLaunchFailureThrows]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testLaunchFailureThrows]' passed (0.001 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testStandardInputIsDelivered]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testStandardInputIsDelivered]' passed (0.003 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testStderrLimitTerminates]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testStderrLimitTerminates]' passed (0.014 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testStdoutLimitTerminatesAndKeepsBoundedPrefix]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testStdoutLimitTerminatesAndKeepsBoundedPrefix]' passed (0.006 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testStubbornProcessIsKilledAfterTwoSecondGrace]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testStubbornProcessIsKilledAfterTwoSecondGrace]' passed (2.678 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testTaskCancellationTerminatesProcessPromptly]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testTaskCancellationTerminatesProcessPromptly]' passed (0.325 seconds).
+Test Case '-[KeyPortTests.ProcessExecutorTests testTimeoutTerminatesCooperativeProcessWithTERM]' started.
+Test Case '-[KeyPortTests.ProcessExecutorTests testTimeoutTerminatesCooperativeProcessWithTERM]' passed (0.316 seconds).
+Test Suite 'ProcessExecutorTests' passed at 2026-09-14 14:38:42.585.
+	 Executed 10 tests, with 0 failures (0 unexpected) in 3.365 (3.366) seconds
+Test Suite 'KeyPortTests.xctest' passed at 2026-09-14 14:38:42.585.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 3.580 (3.582) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 14:38:42.585.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 3.580 (3.583) seconds
+Test Suite 'Selected tests' started at 2026-09-14 14:38:42.680.
+Test Suite 'KeyPortInterfaceTests.xctest' started at 2026-09-14 14:38:42.681.
+Test Suite 'AccessFormDraftTests' started at 2026-09-14 14:38:42.681.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testBothDirectorySourcesAndEditingOnlyOwnEntry]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testBothDirectorySourcesAndEditingOnlyOwnEntry]' passed (0.001 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testExistingKeyDoesNotRequirePassword]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testExistingKeyDoesNotRequirePassword]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testHostSyntaxAcceptsIPFamiliesAndDNSWithoutNetworkAccess]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testHostSyntaxAcceptsIPFamiliesAndDNSWithoutNetworkAccess]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testInvalidSubmissionPreservesInputsAndSuccessClearsOnlyPasswordWithoutNewError]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testInvalidSubmissionPreservesInputsAndSuccessClearsOnlyPasswordWithoutNewError]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testLegacyMappingIsLosslessAndSearchUsesBothFields]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testLegacyMappingIsLosslessAndSearchUsesBothFields]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testNewAliasSyntaxIsExplicitAndNeverGeneratedFromDescription]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testNewAliasSyntaxIsExplicitAndNeverGeneratedFromDescription]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testPasswordAndAliasValidation]' started.
+Test Case '-[KeyPortInterfaceTests.AccessFormDraftTests testPasswordAndAliasValidation]' passed (0.000 seconds).
+Test Suite 'AccessFormDraftTests' passed at 2026-09-14 14:38:42.684.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Test Suite 'AccessWorkspaceTests' started at 2026-09-14 14:38:42.684.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testAuthorizationIsAccountScopedAndIndependentOfAddressEvidence]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testAuthorizationIsAccountScopedAndIndependentOfAddressEvidence]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testConfiguredPathsAreDirectedAndDoNotMultiplyServerNodes]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testConfiguredPathsAreDirectedAndDoNotMultiplyServerNodes]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testDenseGroupRetainsPathsAndMixedStatusWhenCollapsed]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testDenseGroupRetainsPathsAndMixedStatusWhenCollapsed]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testFitIncludesGraphAndReservesToolbarSpaceInNarrowWindow]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testFitIncludesGraphAndReservesToolbarSpaceInNarrowWindow]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testGraphGeometryChangesPathsWithoutDuplicatingOrMovingServerNodes]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testGraphGeometryChangesPathsWithoutDuplicatingOrMovingServerNodes]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testKeyboardTraversalIncludesPathsAndDeviceWithNoDuplicateNodes]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testKeyboardTraversalIncludesPathsAndDeviceWithNoDuplicateNodes]' passed (0.001 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testListAndGraphShareExactSelectionAndSearchAcrossSwitches]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testListAndGraphShareExactSelectionAndSearchAcrossSwitches]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testPrimaryActionPreservesAuthorizationAndAddressRecovery]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testPrimaryActionPreservesAuthorizationAndAddressRecovery]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testProjectionRejectsUnresolvableAndForeignPathsAndDeduplicatesIDs]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testProjectionRejectsUnresolvableAndForeignPathsAndDeduplicatesIDs]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testSearchDoesNotDiscardHiddenSelectionAndExplicitLocateSelectsMatch]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testSearchDoesNotDiscardHiddenSelectionAndExplicitLocateSelectsMatch]' passed (0.001 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testSnapshotRefreshPreservesStableIDsButClearsDeletedObjects]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testSnapshotRefreshPreservesStableIDsButClearsDeletedObjects]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testTwoPathsToSameServerNeverShareLabelOrEndpoint]' started.
+Test Case '-[KeyPortInterfaceTests.AccessWorkspaceTests testTwoPathsToSameServerNeverShareLabelOrEndpoint]' passed (0.000 seconds).
+Test Suite 'AccessWorkspaceTests' passed at 2026-09-14 14:38:42.688.
+	 Executed 12 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Test Suite 'FirstAccessFlowTests' started at 2026-09-14 14:38:42.688.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testAuthorizationKeysIgnoreAddressButSeparateAccountDeviceAndServer]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testAuthorizationKeysIgnoreAddressButSeparateAccountDeviceAndServer]' passed (0.006 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCancellationAtEveryStepIgnoresLateCallback]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCancellationAtEveryStepIgnoresLateCallback]' passed (0.006 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCancelledFormKeepsEvenInvalidNonsecretInputWithoutKeepingPassword]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCancelledFormKeepsEvenInvalidNonsecretInputWithoutKeepingPassword]' passed (0.000 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCloseRejectsLateHandoff]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testCloseRejectsLateHandoff]' passed (0.004 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testConfirmationIsConditionalAndMismatchCannotAdvance]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testConfirmationIsConditionalAndMismatchCannotAdvance]' passed (0.005 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testConfirmedAliasIsOneTargetForSuccessAndBothHandoffs]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testConfirmedAliasIsOneTargetForSuccessAndBothHandoffs]' passed (0.004 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testDescriptionAndAddressEditRetainsAliasIdentityAndAuthorization]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testDescriptionAndAddressEditRetainsAliasIdentityAndAuthorization]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testEditingOwnStoredAliasDoesNotBlockAccessOrRenameLegacyAlias]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testEditingOwnStoredAliasDoesNotBlockAccessOrRenameLegacyAlias]' passed (0.001 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testEditingToDifferentServerDoesNotReusePartialAuthorizationDisplay]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testEditingToDifferentServerDoesNotReusePartialAuthorizationDisplay]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testFailuresNeverBecomeSuccessAndNoAuthorizationBeforeLogin]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testFailuresNeverBecomeSuccessAndNoAuthorizationBeforeLogin]' passed (0.006 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testFlowCannotBypassAliasDirectoryOrEmptyAlias]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testFlowCannotBypassAliasDirectoryOrEmptyAlias]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testHandoffWaitsForActualAdapterCompletionAndSupportsRecovery]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testHandoffWaitsForActualAdapterCompletionAndSupportsRecovery]' passed (0.008 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testHostCancellationPreservesNonsecretFieldsAndClearsPassword]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testHostCancellationPreservesNonsecretFieldsAndClearsPassword]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testLateInstallationThenRetryDoesNotDuplicate]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testLateInstallationThenRetryDoesNotDuplicate]' passed (0.004 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testPartialSuccessRetryReconcilesAndDoesNotReinstall]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testPartialSuccessRetryReconcilesAndDoesNotReinstall]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testPasswordRetryReturnsToFormWithoutImplicitCredentialReuse]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testPasswordRetryReturnsToFormWithoutImplicitCredentialReuse]' passed (0.003 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testUnknownInstallOutcomeReconcilesBeforeRetry]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testUnknownInstallOutcomeReconcilesBeforeRetry]' passed (0.002 seconds).
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testUnknownStatusStopsBeforeInstall]' started.
+Test Case '-[KeyPortInterfaceTests.FirstAccessFlowTests testUnknownStatusStopsBeforeInstall]' passed (0.001 seconds).
+Test Suite 'FirstAccessFlowTests' passed at 2026-09-14 14:38:42.751.
+	 Executed 18 tests, with 0 failures (0 unexpected) in 0.061 (0.063) seconds
+Test Suite 'KeyPortInterfaceTests.xctest' passed at 2026-09-14 14:38:42.751.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 0.067 (0.070) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 14:38:42.751.
+	 Executed 37 tests, with 0 failures (0 unexpected) in 0.067 (0.071) seconds
+Test Suite 'Selected tests' started at 2026-09-14 14:38:42.835.
+Test Suite 'KeyPortCoreTests.xctest' started at 2026-09-14 14:38:42.836.
+Test Suite 'KeyPortCoreTests.xctest' passed at 2026-09-14 14:38:42.836.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-09-14 14:38:42.836.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
