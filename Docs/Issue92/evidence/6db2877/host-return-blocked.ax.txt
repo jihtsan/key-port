@@ -1,0 +1,16 @@
+Window: "", App: KeyPort Design Preview.
+0 sheet Secondary Actions: Raise
+	1 container
+		2 text KeyPort  /  服务器访问 确认服务器身份 只有首次连接或身份需要确认时才出现；不匹配时停止。 首次连接：确认服务器身份 192.168.8.1:22  ·  ED25519 SHA256:DEMO-ONLY-NOT-A-REAL-HOST-FINGERPRINT 指纹为演示占位，非真实服务器指纹。 实际使用时须核对完整主机指纹。只有首次连接或身份需要确认时才出现；不匹配时停止。
+		3 button 已核对，继续
+		4 button 取消
+		5 text 隔离模拟 · 无真实凭据与网络操作
+		6 menu button 模拟场景
+7 menu bar
+	8 KeyPort Design Preview
+	9 Edit
+	10 View
+	11 Window
+	12 Help
+
+The focused UI element is 0 sheet Secondary Actions: Raise

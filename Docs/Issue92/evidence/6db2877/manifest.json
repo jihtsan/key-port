@@ -1,0 +1,345 @@
+{
+  "source_commit": "6db2877ba99949b454c1bd1295fd03eaf9fdca6b",
+  "base_pr": 91,
+  "base_head": "cece27fab25ae3c0103e19f661f13e2b8de96f1c",
+  "app": "/Users/joo00der/.codex/worktrees/e053/key-port/dist/KeyPortDesignPreview.app",
+  "binary_sha256": "fc8ad91a4fa6f1ded8469c9f85bdf6a1e88af5f7b95c51df250c75e287275353",
+  "captured_at": "2026-09-13T14:38:25.279289+00:00",
+  "tool": "computer-use / node_repl / @oai/sky.get_app_state",
+  "image_processing": "Original JPEG bytes copied verbatim. No cropping, resampling, upscaling, retouching or conversion. Tool may scale/composite sheets; see acceptance.md.",
+  "captures": [
+    {
+      "name": "authorization-cancelled",
+      "image": "authorization-cancelled.jpg",
+      "ax": "authorization-cancelled.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "996c5a688fecc25e545c84bdbc19497d893faca6c61c457c1d513bf37bf271e2",
+      "ax_sha256": "126a62841f7eab83e39f7c56b667bfb4d5a8bc5db7e043c7d6c31e962008136c"
+    },
+    {
+      "name": "authorization",
+      "image": "authorization.jpg",
+      "ax": "authorization.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "d4a2e03d9c4166f5deb0056137f18cb8ecaf1b6c087de2d29a4f75e7945c4874",
+      "ax_sha256": "b35afcd666dd9cf34622b652ed567a25d0d8c2eb5cc25e6610e1e19faf6b0f79"
+    },
+    {
+      "name": "copy-failed",
+      "image": "copy-failed.jpg",
+      "ax": "copy-failed.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "02ac7f38c420b199fbbf05e35703dba8279b3e431626d9f65bc920384a83f750",
+      "ax_sha256": "2d9cb83cedd172b79c2114b2da4c7f0dd572d0bccc5650bfd2f24270af696612"
+    },
+    {
+      "name": "copy-feedback",
+      "image": "copy-feedback.jpg",
+      "ax": "copy-feedback.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "b0581e5f93e2b9f475d13fb622678f66ed1d0a539650df9a3e1105a7dda581c6",
+      "ax_sha256": "cfc2f759c4af9b3fdb4307e53219c4f40e728c8848227508d74f4dc761c1039c"
+    },
+    {
+      "name": "copy-recovered",
+      "image": "copy-recovered.jpg",
+      "ax": "copy-recovered.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "6a91cae6ac907b10a43a7fbe0968a84b756ea91867a61ebb2e2f3dc45ef5df3c",
+      "ax_sha256": "31c2ba2411d68011d69fe67638fdbf4cce529d61fdd17a16e0688e0056f96bd7"
+    },
+    {
+      "name": "existing-key-form",
+      "image": "existing-key-form.jpg",
+      "ax": "existing-key-form.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "b1c30d2f04a2e59adfb408ed62532ef252ca3d8fc486a927607e064743e10fb6",
+      "ax_sha256": "996ce8000db6bc6dddca01a525b4e561ba345b3d59c010283c866ecbe3dbf5e3"
+    },
+    {
+      "name": "failure-authorization-unknown",
+      "image": "failure-authorization-unknown.jpg",
+      "ax": "failure-authorization-unknown.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "4ff6edd1f53d4179782cafcaabf78b7dafd92e708203ae636eb9af7a4f8894df",
+      "ax_sha256": "d4716e5256f7a8e70547a1f06a78ff4500bb082bcd64f483b9eb4c20b0e27477"
+    },
+    {
+      "name": "failure-authorization",
+      "image": "failure-authorization.jpg",
+      "ax": "failure-authorization.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "03a82c7231c4a9b891985a4d0c105b70c2edb336854d08a9f4a0c4bfdb425c50",
+      "ax_sha256": "d22c1639b10ce08d53b1cfcc41db0b222b9e56d145d9291214cac6d5bdec009b"
+    },
+    {
+      "name": "failure-identity-mismatch",
+      "image": "failure-identity-mismatch.jpg",
+      "ax": "failure-identity-mismatch.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "05171fe145027eb0cd2f7815974f070b217280905611ed9b38ffc2725d75db7c",
+      "ax_sha256": "a3777d04d34cee0f378ec877c5a32d46d0d0240260d516a166f9d7cae1194865"
+    },
+    {
+      "name": "failure-login",
+      "image": "failure-login.jpg",
+      "ax": "failure-login.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "1ef203a4ce2548ac2ac8de228f1ff3a43fe4edcc6a436caee30f62b289023868",
+      "ax_sha256": "46556d1f43097ef4607c6bd7f5ae7c75b98626897b583a114059a95d091fef4f"
+    },
+    {
+      "name": "failure-unreachable",
+      "image": "failure-unreachable.jpg",
+      "ax": "failure-unreachable.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "a49b308e393274a5ca4524a081829f997161b1e1ee2140280d39a5d446837365",
+      "ax_sha256": "9bf4e8198aaf7e8b0af74c41d03d4ca464fd5f9fbdab150a5c7764af5ca70227"
+    },
+    {
+      "name": "failure-verification",
+      "image": "failure-verification.jpg",
+      "ax": "failure-verification.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "4611ae3e715eef62d727ddf5281be673709790d3e7cd89ee3f604edcb62f620b",
+      "ax_sha256": "d6902a071ee4436fe24b32d12e639ea748d5182b3fcd6699800dbaf292302bfc"
+    },
+    {
+      "name": "form-tab-address",
+      "image": "form-tab-address.jpg",
+      "ax": "form-tab-address.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "5b3f0096dc4d4715c6110059655d939c28e91cb2004daa9b879c369358a26443",
+      "ax_sha256": "22f42317001d6bf8831fdc214b45671e11cd75b94ff10ae3fcd66f0ee7ee3d94"
+    },
+    {
+      "name": "home",
+      "image": "home.jpg",
+      "ax": "home.ax.txt",
+      "width": 1237,
+      "height": 768,
+      "image_sha256": "279df182aa52469f33b4df6090f28151f5879dc4397a9e481c3922917fc899d2",
+      "ax_sha256": "ff2840ad40cb33070f0286b61dca8b0b27083cb527db6f31203e653dffbeb22a"
+    },
+    {
+      "name": "host-cancel-form",
+      "image": "host-cancel-form.jpg",
+      "ax": "host-cancel-form.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "3c8ea9baae0deaaf262b62b75aee674be9692c9f7e7c7baeefd4a4a40e6b8c84",
+      "ax_sha256": "bb55517e35c9707bf75d8337da1c35a9a3b0595a74f3b9ed71a70e8013da4a0f"
+    },
+    {
+      "name": "host-confirmation",
+      "image": "host-confirmation.jpg",
+      "ax": "host-confirmation.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "b3d2a2e8b57ade9b0cd90ce4ce68ba2184e5acc6c4e20a8e8f5692e7cd24f2e2",
+      "ax_sha256": "26cb0f25aca5d05ab1e30bfc2452796fbdf43b3870b0b28b1df531e353423fd5"
+    },
+    {
+      "name": "host-return-blocked",
+      "image": "host-return-blocked.jpg",
+      "ax": "host-return-blocked.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "286ac1d66108c9305e04de4be4ebcaa1ea73f2c7bb082f101f8076f0ff13333f",
+      "ax_sha256": "26cb0f25aca5d05ab1e30bfc2452796fbdf43b3870b0b28b1df531e353423fd5"
+    },
+    {
+      "name": "invalid-address",
+      "image": "invalid-address.jpg",
+      "ax": "invalid-address.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "894750c942acbb114cfb12af45bfe708a7a86794eeda3849fc6f8423d47e678a",
+      "ax_sha256": "8d5c60d4a4891b9d98051acca3d82c46a7ccc15782eafc57dd30f85c8cb4df9e"
+    },
+    {
+      "name": "login-cancel-form",
+      "image": "login-cancel-form.jpg",
+      "ax": "login-cancel-form.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "8a0542debfa0eb3ec8211cbe45c316b8dcdc05cda8c95d72432e6f277387a68c",
+      "ax_sha256": "996ce8000db6bc6dddca01a525b4e561ba345b3d59c010283c866ecbe3dbf5e3"
+    },
+    {
+      "name": "login",
+      "image": "login.jpg",
+      "ax": "login.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "9fc1d6be7a7303318093ac9e6f7600c5a03f40616bc1e442cf043831c6dfeb42",
+      "ax_sha256": "ae1704f70f7921c07f2af10e3ef1ecc5fd57059668606f5595b7a6382c11f114"
+    },
+    {
+      "name": "new-address-form",
+      "image": "new-address-form.jpg",
+      "ax": "new-address-form.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "8cd7d3a27831350fe07997aac212655a64b28bb333dc67e01285b44f75bea60a",
+      "ax_sha256": "873690ca5f331f9e256a9b68e04628df3437d2687c51042f410f3d42e1b68855"
+    },
+    {
+      "name": "new-address-login",
+      "image": "new-address-login.jpg",
+      "ax": "new-address-login.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "46c2b632ff93f593ed76d60196aa5484142133f407ab3e9277d9abcc6c52f53b",
+      "ax_sha256": "22744eeeed8ba1195e0acca5526ef7645fd0308b13f2dc1b947ae85fd1a7e28d"
+    },
+    {
+      "name": "new-address-skips-install",
+      "image": "new-address-skips-install.jpg",
+      "ax": "new-address-skips-install.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "8410bc2183add6e146c89b562eb07cf1fc9454402533874d4b6bb6ec8307f0bb",
+      "ax_sha256": "82c1df91c6cc89fe674c146402ea6eaded58a84867a1a2122e153d8f1a5f96fc"
+    },
+    {
+      "name": "partial-edit-preserves-form",
+      "image": "partial-edit-preserves-form.jpg",
+      "ax": "partial-edit-preserves-form.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "07353d34a851870d99e4e37b5dc508182ffabf1fed8f962b9fa110f2da2054d3",
+      "ax_sha256": "cb1ed344f376f089bb288c801316e50ade7999cfd9669a0edad947361b6a87a1"
+    },
+    {
+      "name": "password-mode-success",
+      "image": "password-mode-success.jpg",
+      "ax": "password-mode-success.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "31e8bb8e2f11b0d9db81bd99ed862ff354be6c36f3348f3d64491bfebbf1c500",
+      "ax_sha256": "c9f1b7ae51685f76fb16f599efe422178a1c5ad731b0e287f50c48ea41bb7523"
+    },
+    {
+      "name": "password-retry-cleared",
+      "image": "password-retry-cleared.jpg",
+      "ax": "password-retry-cleared.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "c9219d2a8d64d24aa4aa48b2603fd4fd16217f1e09fb17e4698e3574e57f0c56",
+      "ax_sha256": "af6cc0ad052abd3991f9dab4d32164ec8e3b12088585c940f7c34aa8bdddceab"
+    },
+    {
+      "name": "recovered-success",
+      "image": "recovered-success.jpg",
+      "ax": "recovered-success.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "095d1b09b48e1008069fd870fa9f77f3944a698bba1a1e7948474861df93ae57",
+      "ax_sha256": "c9f1b7ae51685f76fb16f599efe422178a1c5ad731b0e287f50c48ea41bb7523"
+    },
+    {
+      "name": "retry-skips-install",
+      "image": "retry-skips-install.jpg",
+      "ax": "retry-skips-install.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "a73222c0aa4d55fff4ad9f387e3fbe510fd32aad7da6f8bd97cd0f215817da9b",
+      "ax_sha256": "82c1df91c6cc89fe674c146402ea6eaded58a84867a1a2122e153d8f1a5f96fc"
+    },
+    {
+      "name": "returned-home",
+      "image": "returned-home.jpg",
+      "ax": "returned-home.ax.txt",
+      "width": 1237,
+      "height": 768,
+      "image_sha256": "eae7fb7cac39a49cc6f9921c22129ec31340d2424a35f7ad819695d71a1b659a",
+      "ax_sha256": "852a7c741ee448a7f7dd2cc2a54fa741faf2c4460f01f076e1202f50d0672d9e"
+    },
+    {
+      "name": "success",
+      "image": "success.jpg",
+      "ax": "success.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "4251a2a75589ffe4106d8a1efd65ae73f5ba171df398bbf3a9e6d89d1fa40b41",
+      "ax_sha256": "c9f1b7ae51685f76fb16f599efe422178a1c5ad731b0e287f50c48ea41bb7523"
+    },
+    {
+      "name": "terminal-feedback",
+      "image": "terminal-feedback.jpg",
+      "ax": "terminal-feedback.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "b4aa46fd96d5ffdf08d91aeb48723306c0c50f385cb98645e428a8e5c819e4e1",
+      "ax_sha256": "e8d1d4889d89cb4d28ddba399ef765a9c2d0ede75575920cff3b91c4f2e332e4"
+    },
+    {
+      "name": "terminal-pending",
+      "image": "terminal-pending.jpg",
+      "ax": "terminal-pending.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "fa5c9d8213e2642281f40650be9edb97fe0ccda21d29b979a29adb5621ffe3fa",
+      "ax_sha256": "12eadf353b21cf74ca31b024d055d18b0a268162a426104ae488a7663f924fc2"
+    },
+    {
+      "name": "terminal-unavailable",
+      "image": "terminal-unavailable.jpg",
+      "ax": "terminal-unavailable.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "bd92e0a7ce5bd1af69d1029306c3a666e5e4ca901f87fffb9e5b8b1120b7f847",
+      "ax_sha256": "8fba67d77e2695c7cb73b54a2b9412b4f0f1dd151449f6b156e801dd9f606007"
+    },
+    {
+      "name": "trusted-login",
+      "image": "trusted-login.jpg",
+      "ax": "trusted-login.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "e320a852931d476261184f894e317761d9996c4370e88348cd53c365d2838b63",
+      "ax_sha256": "ae1704f70f7921c07f2af10e3ef1ecc5fd57059668606f5595b7a6382c11f114"
+    },
+    {
+      "name": "unknown-retry-skips-install",
+      "image": "unknown-retry-skips-install.jpg",
+      "ax": "unknown-retry-skips-install.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "b2e327f4ee80a3380c4fc5a58804f6acad3f83526b4e241a22ac53650d56e692",
+      "ax_sha256": "c2fa6cabbc45b37a257c8876c6bf3cbcabb6c795516640c5385b53a853aad4ff"
+    },
+    {
+      "name": "verification-cancelled",
+      "image": "verification-cancelled.jpg",
+      "ax": "verification-cancelled.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "eb4516a2c7f2e4ceb6074e830c926c3de4bfaf893599ffd665c813260708fe5c",
+      "ax_sha256": "2cb4ebf1adf6ff1c018bd1d66f1a5b61c40381d3c8a557928acfd22506321a93"
+    },
+    {
+      "name": "verification",
+      "image": "verification.jpg",
+      "ax": "verification.ax.txt",
+      "width": 880,
+      "height": 740,
+      "image_sha256": "4986d4ef18c1f221132cdc1b155bd70a4108c7a0dd660ccb5f1815b8096bf490",
+      "ax_sha256": "82c1df91c6cc89fe674c146402ea6eaded58a84867a1a2122e153d8f1a5f96fc"
+    }
+  ]
+}

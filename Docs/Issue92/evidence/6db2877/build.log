@@ -1,0 +1,9 @@
+Building for debugging...
+[1 / 7]
+[2 / 8] KeyPortInterface
+[4 / 10] KeyPortInterface
+[7 / 10] KeyPortInterface
+[11 / 12] KeyPortDesignPreview-product
+Build complete! (2.71秒)
+/Users/joo00der/.codex/worktrees/e053/key-port/dist/KeyPortDesignPreview.app: replacing existing signature
+/Users/joo00der/.codex/worktrees/e053/key-port/dist/KeyPortDesignPreview.app

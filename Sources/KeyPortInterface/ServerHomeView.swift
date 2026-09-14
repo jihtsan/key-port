@@ -9,7 +9,8 @@ public struct ServerHomeView: View {
     @State private var showsForm = false
     @State private var notice: String?
     @State private var longName = false
-    public init() {}
+    private let accessFlow: (AccessFormDraft, @escaping () -> Void) -> AnyView
+    public init(accessFlow: @escaping (AccessFormDraft, @escaping () -> Void) -> AnyView) { self.accessFlow = accessFlow }
     private let names = ["gl-mt3600", "Mac Studio", "tencent-cloud"]
     private var displayName: String { longName && selected == "gl-mt3600" ? "gl-mt3600-home-network-long-server-name-acceptance" : selected }
     private var account: String { selected == "Mac Studio" ? "jooder" : "root" }
@@ -32,8 +33,7 @@ public struct ServerHomeView: View {
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }.background(.white).foregroundStyle(InterfaceStyle.ink).font(.system(size: 12))
         .sheet(isPresented: $showsForm) {
-            AccessFormView(draft: exampleDraft, fixture: true, onCancel: { showsForm = false }, onSubmit: { _ in notice = "表单校验通过。此预览未执行网络连接或授权。" })
-                .alert("隔离预览", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) { Button("好") { notice = nil } } message: { Text(notice ?? "") }
+            accessFlow(exampleDraft, { showsForm = false })
         }
         .alert("隔离预览", isPresented: Binding(get: { notice != nil && !showsForm }, set: { if !$0 { notice = nil } })) { Button("好") { notice = nil } } message: { Text(notice ?? "") }
     }

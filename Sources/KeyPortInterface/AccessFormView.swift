@@ -7,11 +7,13 @@ public struct AccessFormView: View {
     @State private var submissionState = AccessFormSubmissionState()
     private let onCancel: () -> Void
     private let onSubmit: (AccessFormDraft) -> Void
+    private let recoveryNotice: String?
     private let fixture: Bool
 
-    public init(draft: AccessFormDraft = .init(), fixture: Bool = false, onCancel: @escaping () -> Void, onSubmit: @escaping (AccessFormDraft) -> Void) {
+    public init(draft: AccessFormDraft = .init(), fixture: Bool = false, recoveryNotice: String? = nil, onCancel: @escaping () -> Void, onSubmit: @escaping (AccessFormDraft) -> Void) {
         _draft = State(initialValue: draft)
         self.fixture = fixture
+        self.recoveryNotice = recoveryNotice
         self.onCancel = onCancel
         self.onSubmit = onSubmit
     }
@@ -62,6 +64,7 @@ public struct AccessFormView: View {
                 } else {
                     Text("首次连接会请求核对主机身份；之后的步骤自动继续。").font(.system(size: 11)).foregroundStyle(InterfaceStyle.color(0x94A1B3)).frame(height: 17)
                 }
+                if let recoveryNotice { Text(recoveryNotice).font(.system(size: 11)).foregroundStyle(InterfaceStyle.muted) }
                 Spacer(minLength: 0)
             }.padding(24).frame(height: 464).frame(maxWidth: .infinity).background(InterfaceStyle.color(0xF7F9FC), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {

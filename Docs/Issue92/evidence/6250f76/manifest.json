@@ -1,0 +1,39 @@
+{
+  "source_commit": "6250f76bd8f7b37c50c212bcb9aa56ea4eb6ef72",
+  "binary_sha256": "21aab65a97517dc021ad002f118f1f1fe406431a1017e89c18c6a4493b9c9806",
+  "scope": "Targeted alias and cancellation regression evidence; 6db2877 is historical full-flow baseline, not current binary.",
+  "files": [
+    {
+      "file": "build.log",
+      "sha256": "cda8f174b48e5a18d7cf6507a09059ae1826a4904ec0ec76b02f14fb359fc305"
+    },
+    {
+      "file": "cancelled.ax.txt",
+      "sha256": "9587e924923a058b2d4ce482091a1c2594e5078ae6046b2225d4c438f6c3d082"
+    },
+    {
+      "file": "cancelled.jpg",
+      "sha256": "ebd71b46dab73161ca4d2d13c73df6569e84b04288508f243b6a3b3c31fd0333"
+    },
+    {
+      "file": "chinese-alias-form.ax.txt",
+      "sha256": "efa1a7a31d3994a195269360338f00063ea7469511b0b808576995c9438e0599"
+    },
+    {
+      "file": "chinese-alias-form.jpg",
+      "sha256": "710276355ef12b5998b039efc1fef70d9573c37b3f0d015aa7ad520612ed958b"
+    },
+    {
+      "file": "chinese-success.ax.txt",
+      "sha256": "f7da114b66aabee19c24c917323ac5444adf77d392408bef4ec97eb3d9c5cb87"
+    },
+    {
+      "file": "chinese-success.jpg",
+      "sha256": "0a8aac802adbe20e8b57ce0d5c0c4a32eb3c1b26b3a766ecf0a0d207211301cf"
+    },
+    {
+      "file": "tests.log",
+      "sha256": "156039c17f497f44b9c15c3a28c4ac4f3781a7a7203467aa8d83381b69ff7b00"
+    }
+  ]
+}
