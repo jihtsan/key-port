@@ -64,3 +64,9 @@ KEYPORT_WORKSPACE_HOME=/tmp/keyport-ui-check ./script/build_and_run.sh --verify
 当前正式访问流程使用显式直连；旧的服务、Tailscale 元数据及自动地址策略保留在拓扑中，不提供旧工作台入口。当前主机扫描要求 ED25519 host key；带口令私钥的交互解锁、真实双 Mac CloudKit、正式签名发布与公证不由本地测试证明。
 
 本次退出清单与验证记录见 [Issue #105 验收](Docs/Issue105/acceptance.md)。其他 [历史设计文档](Docs/README.md) 提供背景，当前运行行为以本文件和源码为准。
+
+### 添加 Tailscale 地址
+
+在服务器详情点击「添加地址」，或打开「添加或导入服务器」，在地址字段下选择「检测并导入 Tailscale 地址」。KeyPort 读取本机 Tailscale 客户端状态，显示设备的 MagicDNS、IPv4、IPv6 与本次检测到的在线状态；支持按设备名或地址搜索。点击「使用此地址」自动填入连接表单，再填写目标机器的 SSH 账户并完成原有验证流程。
+
+添加现有服务器地址会保留服务器、账户、别名和端口。检测本身不写入服务器配置；Tailscale 在线不等于 SSH 可达或已授权。未安装、未连接、读取失败时可修复客户端状态后重新检测。

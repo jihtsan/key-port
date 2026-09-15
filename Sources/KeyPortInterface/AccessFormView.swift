@@ -9,10 +9,12 @@ public struct AccessFormView: View {
     private let onCancel: (AccessFormDraft) -> Void
     private let onSubmit: (AccessFormDraft) -> Void
     private let recoveryNotice: String?
+    private let addressAccessory: ((Binding<AccessFormDraft>) -> AnyView)?
     private let fixture: Bool
 
-    public init(draft: AccessFormDraft = .init(), fixture: Bool = false, directory: AliasDirectory = .init(), recoveryNotice: String? = nil, onCancel: @escaping (AccessFormDraft) -> Void, onSubmit: @escaping (AccessFormDraft) -> Void) {
+    public init(draft: AccessFormDraft = .init(), fixture: Bool = false, directory: AliasDirectory = .init(), recoveryNotice: String? = nil, addressAccessory: ((Binding<AccessFormDraft>) -> AnyView)? = nil, onCancel: @escaping (AccessFormDraft) -> Void, onSubmit: @escaping (AccessFormDraft) -> Void) {
         _draft = State(initialValue: draft)
+        self.addressAccessory = addressAccessory
         self.fixture = fixture
         self.directory = directory
         self.recoveryNotice = recoveryNotice
@@ -45,6 +47,7 @@ public struct AccessFormView: View {
                         Spacer(minLength: 0)
                     }.modifier(InputSurface())
                 }
+                if let addressAccessory { addressAccessory($draft) }
                 row("登录账户") { field("登录账户", text: $draft.account) }
                 row(draft.existingKey ? "认证方式" : "登录密码") {
                     if draft.existingKey {
@@ -68,7 +71,7 @@ public struct AccessFormView: View {
                     .font(.system(size: 11)).foregroundStyle(InterfaceStyle.color(0x94A1B3)).frame(height: 17)
                 if let recoveryNotice { Text(recoveryNotice).font(.system(size: 11)).foregroundStyle(InterfaceStyle.muted) }
                 Spacer(minLength: 0)
-            }.padding(24).frame(height: 464).frame(maxWidth: .infinity).background(InterfaceStyle.color(0xF7F9FC), in: RoundedRectangle(cornerRadius: 10))
+            }.padding(24).frame(height: addressAccessory == nil ? 464 : 510).frame(maxWidth: .infinity).background(InterfaceStyle.color(0xF7F9FC), in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 12) {
                 Button("验证并配置免密") {
                     guard let submission = submissionState.prepare(&draft, directory: directory) else { return }
@@ -81,7 +84,7 @@ public struct AccessFormView: View {
             }.frame(height: 38)
             Text(fixture ? "可点击演示 · 固定示例数据，无真实凭据与网络操作" : "密码仅在本次操作中使用。")
                 .font(.system(size: 10)).foregroundStyle(InterfaceStyle.color(0x9AA5B5)).frame(height: 15)
-        }.padding(32).frame(width: 880, height: 740, alignment: .topLeading).foregroundStyle(InterfaceStyle.ink).background(.white)
+        }.padding(32).frame(width: 880, height: addressAccessory == nil ? 740 : 786, alignment: .topLeading).foregroundStyle(InterfaceStyle.ink).background(.white)
         .onDisappear { draft.password = "" }
         .onChange(of: draft) { _, _ in submissionState.edited() }
         .onChange(of: draft.alias) { _, _ in aliasEdited = true }

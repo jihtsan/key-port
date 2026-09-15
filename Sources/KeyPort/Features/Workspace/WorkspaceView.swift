@@ -96,7 +96,7 @@ private struct WorkspaceFlowView: View {
         _flow = StateObject(wrappedValue: FirstAccessFlow(draft: draft, adapter: adapter, aliasDirectory: store.aliases))
     }
     var body: some View {
-        FirstAccessView(flow: flow, initialDraft: draft, onClose: { close(flow.state == .success ? AccessFormDraft() : $0) }) { EmptyView() }
+        FirstAccessView(flow: flow, initialDraft: draft, addressAccessory: { AnyView(TailscaleAddressPicker(draft: $0)) }, onClose: { close(flow.state == .success ? AccessFormDraft() : $0) }) { EmptyView() }
             .onChange(of: flow.state) { _, state in
                 if case .failed(let failure) = state {
                     do { try adapter.recordFailure(failure) } catch { storageError = true }

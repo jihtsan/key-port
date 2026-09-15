@@ -5,14 +5,16 @@ public struct FirstAccessView<Controls: View>: View {
     @State private var firstForm = true
     private let initialDraft: AccessFormDraft
     private let onClose: (AccessFormDraft) -> Void
+    private let addressAccessory: ((Binding<AccessFormDraft>) -> AnyView)?
     private let controls: () -> Controls
-    public init(flow: FirstAccessFlow, initialDraft: AccessFormDraft, onClose: @escaping (AccessFormDraft) -> Void, @ViewBuilder controls: @escaping () -> Controls) {
+    public init(flow: FirstAccessFlow, initialDraft: AccessFormDraft, addressAccessory: ((Binding<AccessFormDraft>) -> AnyView)? = nil, onClose: @escaping (AccessFormDraft) -> Void, @ViewBuilder controls: @escaping () -> Controls) {
+        self.addressAccessory = addressAccessory
         self.flow = flow; self.initialDraft = initialDraft; self.onClose = onClose; self.controls = controls
     }
     public var body: some View {
         Group {
             if flow.state == .form {
-                AccessFormView(draft: firstForm ? initialDraft : flow.draft, fixture: flow.isSimulation, directory: flow.aliasDirectory, recoveryNotice: flow.formNotice, onCancel: { flow.retainForm($0); finish() }, onSubmit: {
+                AccessFormView(draft: firstForm ? initialDraft : flow.draft, fixture: flow.isSimulation, directory: flow.aliasDirectory, recoveryNotice: flow.formNotice, addressAccessory: addressAccessory, onCancel: { flow.retainForm($0); finish() }, onSubmit: {
                     firstForm = false; flow.submit($0)
                 })
                 .overlay(alignment: .bottomTrailing) { controls().padding(.trailing, 32).padding(.bottom, 34) }
