@@ -8,7 +8,7 @@ import Foundation
 public enum TopologyCloudMetadataSnapshotPolicy {
     public static func sanitized(_ snapshot: TopologySnapshot) -> TopologySnapshot {
         var result = snapshot
-        result.schemaVersion = TopologySnapshot.currentSchemaVersion
+        result.schemaVersion = max(snapshot.schemaVersion, TopologySnapshot.currentSchemaVersion)
         result.nodes = snapshot.nodes.sorted { $0.id.uuidString < $1.id.uuidString }
         result.profiles = snapshot.profiles.map { profile in
             var value = profile
@@ -213,9 +213,25 @@ public enum TopologyCloudMetadataSnapshotPolicy {
         _ candidate: SSHConnectionProfile,
         over existing: SSHConnectionProfile
     ) -> SSHConnectionProfile {
-        var winner = candidate.version != existing.version
-            ? (candidate.version > existing.version ? candidate : existing)
-            : (candidate.updatedAt >= existing.updatedAt ? candidate : existing)
+        var winner: SSHConnectionProfile
+        if (candidate.policyVersion ?? 0) != (existing.policyVersion ?? 0) {
+            // An older writer cannot downgrade a migrated policy, even with a larger edit counter.
+            winner = (candidate.policyVersion ?? 0) > (existing.policyVersion ?? 0) ? candidate : existing
+            winner.isDeleted = candidate.isDeleted || existing.isDeleted
+        } else if candidate.version != existing.version {
+            winner = candidate.version > existing.version ? candidate : existing
+        } else {
+            if candidate.updatedAt != existing.updatedAt { winner = candidate.updatedAt > existing.updatedAt ? candidate : existing }
+            else {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                let a = (try? encoder.encode(candidate)) ?? Data(), b = (try? encoder.encode(existing)) ?? Data()
+                winner = a.lexicographicallyPrecedes(b) ? existing : candidate
+            }
+            if candidate.policyVersion != nil {
+                winner.policyConflict = candidate.policyConflict == true || existing.policyConflict == true || candidate.candidateEndpointIDs != existing.candidateEndpointIDs || candidate.routePolicy != existing.routePolicy
+            }
+        }
+        for (id, endpoint) in candidate.legacyEndpointIDs.merging(existing.legacyEndpointIDs, uniquingKeysWith: { first, _ in first }) where winner.legacyEndpointIDs[id] == nil { winner.legacyEndpointIDs[id] = endpoint }
         winner.supersededProfileIDs = Array(Set(candidate.supersededProfileIDs + existing.supersededProfileIDs)).sorted { $0.uuidString < $1.uuidString }
         return winner
     }

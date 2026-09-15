@@ -7,7 +7,7 @@ final class SSHPolicyCompilerTests: XCTestCase {
         let parsed = PublicKeyParser.parse("ssh-ed25519 AQID fixture")!
         let endpoint = Endpoint(id: endpointID, nodeID: node, address: "192.0.2.1", port: 22, protocol: .ssh)
         let key = SSHKey(id: "key", deviceID: "local", kind: .ed25519, publicKey: "ssh-ed25519 AQID fixture", fingerprint: parsed.fingerprint, privateKeyPath: "/key", origin: .generated, isLocallyAvailable: true)
-        let p = SSHConnectionProfile(id: profileID, accountID: account, sshAlias: "fixture", routePolicy: .automatic(networkScope: nil), candidateEndpointIDs: [endpointID], policyVersion: 1)
+        let p = SSHConnectionProfile(id: profileID, accountID: account, sshAlias: "fixture", routePolicy: .automatic(networkScope: nil), candidateEndpointIDs: [endpointID], policyVersion: 1, transportPreference: .direct)
         var t = TopologySnapshot(nodes: [.init(id: node, name: "Fixture", roles: [.sshHost])], endpoints: [endpoint], sshAccounts: [.init(id: account, nodeID: node, username: "user")], sshConnectionProfiles: [p], sshKeys: [key])
         t.hostKeyTrusts = [.init(id: UUID(), endpointID: endpointID, algorithm: parsed.type, fingerprint: parsed.fingerprint, knownHostsLine: "192.0.2.1 ssh-ed25519 AQID")]
         t.authorizations = [.init(accountID: account, keyID: key.id, fingerprint: key.fingerprint, remoteComment: "", remoteState: .authorized)]

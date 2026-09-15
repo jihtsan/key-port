@@ -19,6 +19,7 @@ public struct ConfiguredAccessPath: Identifiable, Equatable {
     public var sshAlias: String?
     public var profileID: String?
     public var policyMode: String?
+    public var selectionSummary: String?
     public var isDefaultConnection: Bool?
     public init(id: String, deviceID: String, serverID: String, account: String, address: String, port: Int = 22,
                 verification: PathVerification = .pending, reachability: PathReachability = .unknown, checkedAt: Date? = nil, terminalCommand: String? = nil, isDefaultConnection: Bool? = nil, sshAlias: String? = nil, profileID: String? = nil, policyMode: String? = nil) {
@@ -140,7 +141,7 @@ public enum PathPrimaryAction: Equatable {
 
 extension AccessWorkspace {
     public func primaryAction(for path: ConfiguredAccessPath) -> PathPrimaryAction {
-        if path.policyMode != nil && path.terminalCommand != nil { return .openTerminal }
+        if path.terminalCommand != nil && snapshot.authorization(for: path) == .installed { return .openTerminal }
         if path.reachability == .unreachable { return .checkAddress }
         if snapshot.authorization(for: path) == .installed { return path.verification == .verified ? .openTerminal : .checkAddress }
         return .authorize

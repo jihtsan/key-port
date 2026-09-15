@@ -29,6 +29,33 @@ struct ManagedSSHPolicyInstallation {
         try data.write(to: url, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
     }
+    func prepareRoot() throws { try directory(home.appendingPathComponent(".ssh")); try directory(root) }
+    private func verifyVersion(_ executable: URL) throws {
+        let process = Process(), pipe = Pipe()
+        process.executableURL = executable; process.arguments = ["--version"]
+        process.standardInput = FileHandle.nullDevice; process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
+        try process.run()
+        let deadline = DispatchTime.now().uptimeNanoseconds + 2_000_000_000
+        while process.isRunning && DispatchTime.now().uptimeNanoseconds < deadline { usleep(1_000) }
+        if process.isRunning { kill(process.processIdentifier, SIGKILL); process.waitUntilExit(); throw WorkspaceError.configuration }
+        process.waitUntilExit()
+        let data = try pipe.fileHandleForReading.readToEnd() ?? Data()
+        guard process.terminationStatus == 0, String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) == SSHPreconnectRelayRuntime.versionString else { throw WorkspaceError.configuration }
+    }
+    /// Explicit repair preserves damaged generated dependencies for inspection.
+    /// User SSH Include/config conflicts are handled by ManagedAliasInstallation, never overwritten here.
+    func quarantineDependencies() throws {
+        try directory(home.appendingPathComponent(".ssh")); try directory(root)
+        let backup = root.appendingPathComponent("repair-" + UUID().uuidString)
+        try directory(backup)
+        for name in ["bin", "generations"] {
+            let source = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: source.path) {
+                try directory(source)
+                try FileManager.default.moveItem(at: source, to: backup.appendingPathComponent(name))
+            }
+        }
+    }
     func prepare(plans: [SSHPolicyExecutionPlan], directEntries: [SSHConfigEntry], knownHostsLines: [String]) throws -> Generation {
         try directory(home.appendingPathComponent(".ssh")); try directory(root)
         let generations = root.appendingPathComponent("generations")
@@ -44,6 +71,8 @@ struct ManagedSSHPolicyInstallation {
             let bin = root.appendingPathComponent("bin"); try directory(bin)
             let target = bin.appendingPathComponent("KeyPortSSHRelay-" + HostV6.CanonicalJSON.sha256(data))
             try immutable(data, at: target, mode: 0o700)
+            guard FileManager.default.isExecutableFile(atPath: target.path) else { throw WorkspaceError.configuration }
+            try verifyVersion(target)
             helper = target
         }
         let configurations = plans.filter { $0.profile.routePolicy.fixedEndpointID == nil }.map { plan in
@@ -55,6 +84,7 @@ struct ManagedSSHPolicyInstallation {
         try manifest.validate()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(manifest)
+        guard data.count <= SSHPreconnectRelayRuntime.maximumManifestBytes else { throw WorkspaceError.configuration }
         let hosts = Data((Set(knownHostsLines + plans.flatMap(\.knownHostsLines)).sorted().joined(separator: "\n") + "\n").utf8)
         let generation = generations.appendingPathComponent(HostV6.CanonicalJSON.sha256(data + hosts))
         try directory(generation)

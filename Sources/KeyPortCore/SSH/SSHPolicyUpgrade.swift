@@ -18,7 +18,12 @@ public enum SSHPolicyUpgrade {
         // Independent devices choose the same ID regardless of their local default path.
         var canonical = profiles.first!
         let ids = Set(profiles.map(\.id))
+        for p in profiles {
+            for (id, endpoint) in p.legacyEndpointIDs { canonical.legacyEndpointIDs[id] = endpoint }
+            if p.policyVersion == nil, let endpoint = p.routePolicy.fixedEndpointID { canonical.legacyEndpointIDs[p.id.uuidString] = endpoint }
+        }
         canonical.policyVersion = 1
+        canonical.policyConflict = false
         canonical.candidateEndpointIDs = endpointIDs
         canonical.routePolicy = automatic ? .automatic(networkScope: nil) : .fixed(endpointID: endpointIDs[0])
         canonical.transportPreference = .direct

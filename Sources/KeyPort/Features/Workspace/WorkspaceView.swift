@@ -33,6 +33,15 @@ private struct WorkspaceHome: View {
         ServerHomeView(workspace: store.workspace, onPathAction: act, onNavigate: { panel = $0 }, syncTitle: store.syncState.title, previewControls: {
             AnyView(WorkspaceControls(store: store, workspace: store.workspace, notice: $notice))
         }) { draft, close in AnyView(WorkspaceFlowView(store: store, draft: draft, close: close)) }
+        .safeAreaInset(edge: .bottom) {
+            if let message = store.installationNotice {
+                HStack {
+                    Label(message, systemImage: "exclamationmark.triangle").font(.callout)
+                    Spacer()
+                    Button("重试安装") { do { try store.synchronizeAliases() } catch { notice = error.localizedDescription } }
+                }.padding(12).background(.regularMaterial)
+            }
+        }
         .alert("连接结果", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("好") { notice = nil }
         } message: { Text(notice ?? "") }
@@ -41,12 +50,14 @@ private struct WorkspaceHome: View {
             else if panel == "连接策略", let c = store.state.connections.first(where: { $0.id == store.workspace.selectedPath?.id }) ?? store.state.connections.first(where: { $0.serverID == store.workspace.selectedServer?.id }) { WorkspacePolicyView(store: store, connection: c) }
             else { WorkspaceManagementView(store: store, section: panel ?? "我的设备") }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.refreshSelectionEvents() }
         .onDisappear { pathTask?.cancel() }
         .task {
             do { try store.synchronizeAliases() } catch { notice = error.localizedDescription }
             store.setSyncEnabled(UserDefaults.standard.bool(forKey: "KeyPort.cloudSyncEnabled"))
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
+                store.refreshSelectionEvents()
                 await store.synchronize(automatically: true)
             }
         }
@@ -123,6 +134,7 @@ private struct WorkspaceControls: View {
     }
     var body: some View {
         Menu("SSH 连接") {
+            Button("修复连接策略组件") { perform { try store.repairPolicyInstallation(); notice = "已重新安装连接策略组件与配置。" } }
             Button("同步终端别名") { perform { try store.synchronizeAliases(); notice = "终端别名已同步。" } }
             if workspace.selectedServer != nil {
                 Button("撤销授权", role: .destructive) { serverAction = false }
@@ -132,6 +144,12 @@ private struct WorkspaceControls: View {
             if let connection {
                 Text(connection.policyMode ?? "固定地址（旧配置）")
                 Button("连接策略与地址顺序…") { editingPolicy = true }
+                Button("测试连接策略") {
+                    Task { @MainActor in
+                        do { try await store.testConnectionPolicy(connection); notice = "连接策略已通过 SSH 主机身份与账户登录验证。" }
+                        catch { notice = error.localizedDescription }
+                    }
+                }
                 Button("复制连接命令") { perform {
                     let command = try store.command(for: connection)
                     NSPasteboard.general.clearContents()

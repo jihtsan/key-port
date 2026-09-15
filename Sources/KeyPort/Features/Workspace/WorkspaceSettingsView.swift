@@ -37,6 +37,7 @@ struct WorkspaceSettingsView: View {
                             Toggle("自动同步", isOn: Binding(get: { store.syncEnabled }, set: { store.setSyncEnabled($0) }))
                                 .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(unavailable || syncBusy)
                         }
+                        Text("统一连接策略使用新版同步记录；首次同步读取旧资料。请将其他 Mac 一并升级，旧版本后续修改不会直接覆盖新版策略。").font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         Text(syncExplanation).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         if let issue = store.syncUnavailable, issue != .adHocSignature && issue != .missingEntitlement {
                             Button("重新检查 iCloud") { Task { await store.checkSyncAvailability() } }.disabled(syncBusy)

@@ -182,6 +182,9 @@ extension SSHConfigGenerator {
                 base += "\n    HostKeyAlias \(alias)\n"
             }
             guard let relay = entry.relay else { return base }
+            // OpenSSH includes ProxyCommand startup in its banner timeout. Allow the relay
+            // its full 20-second preconnect budget plus five seconds for SSH negotiation.
+            base = base.replacingOccurrences(of: "ConnectTimeout 5\n", with: "ConnectTimeout 25\n")
             return base + "\n    HostKeyAlias \(relay.hostKeyAlias)\n    ProxyCommand \(try relay.rendered())\n"
         }.joined(separator: "\n") + (entries.isEmpty ? "" : "\nHost *\n")
     }

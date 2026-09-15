@@ -279,7 +279,10 @@ public struct SSHRelaySelectionEvent: Codable, Sendable {
     public let profileID: UUID
     public let endpointID: UUID
     public let selectedAt: Date
-    public init(attemptID: UUID, profileID: UUID, endpointID: UUID, selectedAt: Date) {
+    public let generation: String?
+    public let phase: String?
+    public init(attemptID: UUID, profileID: UUID, endpointID: UUID, selectedAt: Date, generation: String? = nil, phase: String? = nil) {
         self.attemptID = attemptID; self.profileID = profileID; self.endpointID = endpointID; self.selectedAt = selectedAt
+        self.generation = generation; self.phase = phase
     }
 }
