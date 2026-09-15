@@ -135,8 +135,21 @@ struct ServerContextView: View {
     }
     private func pathChoices(_ server: ServerNaming) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("该服务器的全部地址").font(.system(size: 12, weight: .medium))
-            ForEach(workspace.paths(for: server.id)) { item in
+            let choices = workspace.policyChoices(for: server.id)
+            if choices.count > 1 {
+                Text("连接策略").font(.system(size: 12, weight: .medium))
+                Text("此服务器有多个 SSH 别名，选择策略查看其地址。").font(.system(size: 11)).foregroundStyle(.secondary)
+                ForEach(choices) { choice in
+                    Button { workspace.select(.path(choice.id)) } label: {
+                        HStack {
+                            Text(choice.account + " · ssh " + (choice.sshAlias ?? server.alias)).font(InterfaceStyle.technical(11))
+                            if let path, path.account == choice.account && path.sshAlias == choice.sshAlias { Image(systemName: "checkmark") }
+                        }
+                    }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
+                }
+            }
+            Text(path == nil ? "请选择连接策略" : "此策略的地址").font(.system(size: 12, weight: .medium))
+            ForEach(path.map { workspace.policyPaths(for: $0) } ?? []) { item in
                 Button { workspace.select(.path(item.id)) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(item.account + " · " + item.endpoint).font(InterfaceStyle.technical(10)).lineLimit(2)

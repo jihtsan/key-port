@@ -96,6 +96,16 @@ public enum WorkspacePresentation { case list, graph }
         switch selection { case .server(let value): id = value; case .path: id = selectedPath?.serverID; default: id = nil }
         return graph.servers.first { $0.id == id }
     }
+    /// Addresses belong to a selected account/alias policy, even when endpoints are shared.
+    public func policyChoices(for serverID: String) -> [ConfiguredAccessPath] {
+        var seen = Set<String>()
+        return paths(for: serverID).filter { seen.insert($0.account + "|" + ($0.sshAlias ?? "").lowercased()).inserted }
+    }
+    public func policyPaths(for path: ConfiguredAccessPath) -> [ConfiguredAccessPath] {
+        paths(for: path.serverID).filter {
+            $0.account == path.account && ($0.sshAlias ?? "").caseInsensitiveCompare(path.sshAlias ?? "") == .orderedSame
+        }
+    }
     public func paths(for serverID: String) -> [ConfiguredAccessPath] { graph.paths.filter { $0.serverID == serverID } }
     public func select(_ value: WorkspaceSelection?) {
         switch value {

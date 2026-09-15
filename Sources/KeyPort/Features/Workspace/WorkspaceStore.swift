@@ -216,7 +216,23 @@ import Observation
             ?? SSHAccount(id: UUID(), nodeID: nodeID, username: draft.account)
         guard !next.topology.activeConnectionProfiles.contains(where: { $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame && $0.accountID != account.id }) else { throw WorkspaceError.aliasConflict }
         if !next.topology.sshAccounts.contains(where: { $0.id == account.id }) { next.topology.sshAccounts.append(account) }
-        let existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame }
+        let existing: SSHConnectionProfile?
+        if let target = draft.profileID {
+            guard let id = UUID(uuidString: target),
+                  let profile = next.topology.activeConnectionProfiles.first(where: { $0.id == id }),
+                  profile.accountID == account.id else { throw WorkspaceError.configuration }
+            let group = SSHPolicyUpgrade.group(for: profile, in: next.topology)
+            let ids = Set(group.map(\.id))
+            guard !next.topology.activeConnectionProfiles.contains(where: {
+                !ids.contains($0.id) && $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame
+            }) else { throw WorkspaceError.aliasConflict }
+            for i in next.topology.sshConnectionProfiles.indices where ids.contains(next.topology.sshConnectionProfiles[i].id) {
+                next.topology.sshConnectionProfiles[i].sshAlias = draft.alias
+            }
+            existing = profile
+        } else {
+            existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame }
+        }
         var endpoints: [UUID] = []
         for address in draft.addresses {
             let endpoint = next.topology.activeEndpoints.first { $0.nodeID == nodeID && $0.address.caseInsensitiveCompare(address) == .orderedSame && $0.port == port && $0.protocol == .ssh }

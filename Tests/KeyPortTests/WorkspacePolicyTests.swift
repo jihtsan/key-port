@@ -29,6 +29,45 @@ import KeyPortInterface
         try store.trust(.init(serverID: c.serverID, address: c.address, port: c.port, key: .init(algorithm: parsed.type, fingerprint: parsed.fingerprint, knownHostsLine: "\(c.address) ssh-ed25519 BAUG")))
         try store.checked(c.id, success: true)
     }
+    func testEditingAliasKeepsOriginalPolicyAndCandidateRows() throws {
+        let (store, server, key) = try fixture()
+        let original = store.state.connections[0]
+        let path = try XCTUnwrap(store.workspace.snapshot.configuredPaths.first)
+        var draft = try XCTUnwrap(store.workspace.accessDraft(for: path))
+        draft.alias = "renamed"
+        _ = try store.save(draft: draft, serverID: server, key: key)
+        XCTAssertEqual(store.topology.activeConnectionProfiles.count, 1)
+        XCTAssertEqual(store.state.connections.count, 2)
+        XCTAssertEqual(Set(store.state.connections.compactMap(\.profileID)), [original.profileID!])
+        XCTAssertTrue(store.state.connections.allSatisfy { $0.alias == "renamed" })
+        _ = try store.save(draft: draft, serverID: server, key: key)
+        XCTAssertEqual(store.state.connections.count, 2)
+    }
+
+    func testSharedEndpointsAreShownWithinTheirOwnAliasPolicy() throws {
+        let (store, server, key) = try fixture()
+        var draft = AccessFormDraft()
+        draft.alias = "second"; draft.account = "user"
+        draft.address = "192.0.2.1"; draft.additionalAddresses = ["192.0.2.2"]
+        _ = try store.save(draft: draft, serverID: server, key: key)
+        let choices = store.workspace.policyChoices(for: server)
+        XCTAssertEqual(choices.count, 2)
+        XCTAssertEqual(store.topology.activeEndpoints.count, 2)
+        for choice in choices {
+            let rows = store.workspace.policyPaths(for: choice)
+            XCTAssertEqual(rows.count, 2)
+            XCTAssertEqual(Set(rows.map(\.endpoint)).count, 2)
+            XCTAssertTrue(rows.allSatisfy { $0.sshAlias == choice.sshAlias })
+        }
+        var edit = try XCTUnwrap(store.workspace.accessDraft(for: choices.first { $0.sshAlias == "fixture" }!))
+        edit.alias = "second"
+        XCTAssertThrowsError(try store.save(draft: edit, serverID: server, key: key))
+        XCTAssertEqual(store.topology.activeConnectionProfiles.count, 2)
+        edit.alias = "fixture"; edit.profileID = UUID().uuidString
+        XCTAssertThrowsError(try store.save(draft: edit, serverID: server, key: key))
+        XCTAssertEqual(store.topology.activeConnectionProfiles.count, 2)
+    }
+
     func testAutomaticAliasSharesCommandAndOnlyIncludesVerifiedCandidates() async throws {
         let (store, _, _) = try fixture()
         XCTAssertEqual(store.topology.activeConnectionProfiles.count, 1)
