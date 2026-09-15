@@ -7,7 +7,9 @@ struct KeyPortApp: App {
     var body: some Scene {
         Window("KeyPort", id: "main") {
             WorkspaceRoot().frame(minWidth: 1100, minHeight: 740).preferredColorScheme(.light)
+                .ignoresSafeArea(.container, edges: .top)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1320, height: 820)
     }
 }
