@@ -8,6 +8,8 @@ struct WorkspacePolicyView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var endpoints: [UUID] = []
     @State private var automatic = false
+    @State private var selected = Set<UUID>()
+    @State private var ports: [UUID: String] = [:]
     @State private var notice: String?
     @State private var verifying = false
     @State private var verificationTask: Task<Void, Never>?
@@ -24,12 +26,14 @@ struct WorkspacePolicyView: View {
             List(Array(endpoints.enumerated()), id: \.element) { index, id in
                 if let endpoint = store.topology.activeEndpoints.first(where: { $0.id == id }) {
                     HStack {
+                        Toggle("参与策略", isOn: Binding(get: { selected.contains(id) }, set: { if $0 { selected.insert(id) } else { selected.remove(id) } })).labelsHidden().toggleStyle(.checkbox).accessibilityLabel("参与策略 " + endpoint.address)
                         Text("\(index + 1)").foregroundStyle(.secondary)
                         VStack(alignment: .leading) {
-                            Text(endpoint.address + ":" + String(endpoint.port)).font(.system(.body, design: .monospaced))
+                            Text(endpoint.address).font(.system(.body, design: .monospaced))
                             Text(store.state.connections.first { $0.endpointID == id && $0.account == connection.account && $0.alias == connection.alias }?.verification == "verified" ? "本机已验证" : "待验证 · 暂不参与连接").font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
+                        TextField("端口", text: Binding(get: { ports[id] ?? String(endpoint.port) }, set: { ports[id] = $0 })).frame(width: 65).textFieldStyle(.roundedBorder).accessibilityLabel("端口 " + endpoint.address)
                         Button("上移") { endpoints.swapAt(index, index - 1) }.disabled(index == 0)
                         Button("下移") { endpoints.swapAt(index, index + 1) }.disabled(index + 1 == endpoints.count)
                     }.padding(.vertical, 4)
@@ -37,7 +41,7 @@ struct WorkspacePolicyView: View {
             }
             if let notice { Text(notice).textSelection(.enabled).foregroundStyle(.secondary) }
             HStack {
-                Button(verifying ? "正在验证…" : "保存并验证全部地址") { verifyAll() }
+                Button(verifying ? "正在验证…" : "保存并验证所选地址") { verifyAll() }
                 Spacer()
                 Button("保存策略") {
                     do { try save(); dismiss() } catch { notice = error.localizedDescription }
@@ -47,6 +51,10 @@ struct WorkspacePolicyView: View {
         .onAppear {
             if let id = connection.profileID {
                 endpoints = store.policyEndpoints(id)
+                selected = Set(endpoints)
+                let other = store.topology.activeEndpoints.filter { $0.nodeID.uuidString == connection.serverID && $0.protocol == .ssh && $0.serviceID == nil && !selected.contains($0.id) }
+                endpoints += other.sorted { $0.address < $1.address }.map(\.id)
+                if store.topology.activeConnectionProfiles.first(where: { $0.id == id })?.policyConflict == true { notice = "其他设备同时修改了策略。连接已停用，请确认下面的完整顺序并保存。" }
                 automatic = store.topology.activeConnectionProfiles.first { $0.id == id }?.routePolicy.fixedEndpointID == nil
             }
         }
@@ -58,7 +66,15 @@ struct WorkspacePolicyView: View {
         let account = store.topology.activeAccounts.first { $0.nodeID.uuidString == connection.serverID && $0.username == connection.account }
         let current = store.topology.activeConnectionProfiles.first { $0.id == id || ($0.sshAlias == connection.alias && $0.accountID == account?.id) }
         guard let profile = current else { throw WorkspaceError.configuration }
-        try store.updatePolicy(profileID: profile.id, endpoints: endpoints, automatic: automatic)
+        let included = endpoints.filter(selected.contains)
+        var values: [UUID: UInt16] = [:]
+        for id in included {
+            guard let text = ports[id] ?? store.topology.activeEndpoints.first(where: { $0.id == id }).map({ String($0.port) }), let port = UInt16(text), port > 0 else { throw WorkspaceError.configuration }
+            values[id] = port
+        }
+        let updated = try store.updatePolicy(profileID: profile.id, endpoints: included, automatic: automatic, ports: values)
+        selected = Set(updated); endpoints = updated + endpoints.filter { !included.contains($0) && !updated.contains($0) }
+        ports = [:]
     }
     private func verifyAll() {
         verificationTask = Task { @MainActor in
@@ -66,7 +82,7 @@ struct WorkspacePolicyView: View {
             do {
                 try save()
                 var passed = 0, failed = 0
-                for id in endpoints {
+                for id in endpoints where selected.contains(id) {
                     try Task.checkCancellation()
                     guard let c = store.state.connections.first(where: { $0.endpointID == id && $0.account == connection.account && $0.alias == connection.alias }),
                           let path = store.workspace.graph.paths.first(where: { $0.id == c.id }), var draft = store.workspace.accessDraft(for: path),
@@ -77,6 +93,7 @@ struct WorkspacePolicyView: View {
                         let trustedPins = Set(store.state.trusts.filter { $0.serverID == c.serverID }.map(\.key.fingerprint))
                         let identity = try await adapter.inspectHost(address: c.address, port: String(c.port))
                         if identity.needsConfirmation {
+                            guard !trustedPins.isEmpty else { throw SSHServiceError.hostKeyNotConfirmed }
                             guard trustedPins == [identity.fingerprint] else { throw AccessFlowFailure.identityMismatch }
                             try await adapter.confirmHost(identity)
                         }

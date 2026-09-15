@@ -131,7 +131,8 @@ enum CloudSyncError: LocalizedError, Sendable, Equatable {
 
 actor CloudKitSyncService: CloudSyncing {
     private static let recordType = "KPTopologyMetadata"
-    private static let recordName = "keyport-topology-v1"
+    static let recordName = "keyport-topology-policy-v1"
+    static let legacyRecordName = "keyport-topology-v1"
 
     private let containerIdentifier: String
     private let encoder = JSONEncoder()
@@ -220,22 +221,33 @@ actor CloudKitSyncService: CloudSyncing {
     }
 
     private func fetchRecord(from database: CKDatabase) async throws -> (CKRecord, TopologySnapshot, Bool) {
-        let record: CKRecord
-        do {
-            record = try await database.record(for: recordID)
-        } catch let error as CKError where error.code == .unknownItem {
-            return (CKRecord(recordType: Self.recordType, recordID: recordID), TopologySnapshot.empty, true)
-        }
+        try await fetchRecord { try await database.record(for: $0) }
+    }
 
-        guard let data = record["payload"] as? Data else {
-            throw CloudSyncError.malformedRecord
+    /// A separate record fences off old clients that discard unknown policy fields.
+    /// The old collection is read only once, when the new record does not yet exist.
+    func fetchRecord(fetch: @Sendable (CKRecord.ID) async throws -> CKRecord) async throws -> (CKRecord, TopologySnapshot, Bool) {
+        let record: CKRecord
+        do { record = try await fetch(recordID) }
+        catch let error as CKError where error.code == .unknownItem {
+            let created = CKRecord(recordType: Self.recordType, recordID: recordID)
+            do {
+                let legacy = try await fetch(CKRecord.ID(recordName: Self.legacyRecordName))
+                return (created, try decodeRecord(legacy), true)
+            } catch let error as CKError where error.code == .unknownItem {
+                return (created, TopologySnapshot.empty, true)
+            }
         }
+        return (record, try decodeRecord(record), false)
+    }
+    private func decodeRecord(_ record: CKRecord) throws -> TopologySnapshot {
+        guard let data = record["payload"] as? Data else { throw CloudSyncError.malformedRecord }
         do {
             let decoded = try decoder.decode(TopologySnapshot.self, from: data)
-            return (record, TopologyCloudMetadataSnapshotPolicy.sanitized(decoded), false)
-        } catch {
-            throw CloudSyncError.malformedRecord
-        }
+            guard decoded.schemaVersion == TopologySnapshot.currentSchemaVersion,
+                  decoded.sshConnectionProfiles.allSatisfy({ $0.policyVersion == nil || $0.policyVersion == 1 }) else { throw CloudSyncError.malformedRecord }
+            return TopologyCloudMetadataSnapshotPolicy.sanitized(decoded)
+        } catch { throw CloudSyncError.malformedRecord }
     }
 
     private func save(_ record: CKRecord, to database: CKDatabase) async throws {

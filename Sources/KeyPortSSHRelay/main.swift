@@ -84,7 +84,7 @@ private enum RelayCommand {
         }
         self = .forward(
             configuration: configuration,
-            target: RelayTargetArguments(host: forwardHost, port: forwardPort)
+            target: RelayTargetArguments(host: forwardHost, port: forwardPort, generation: configURL.deletingLastPathComponent().lastPathComponent)
         )
     }
 
@@ -116,6 +116,7 @@ private enum RelayCommand {
 private struct RelayTargetArguments: Sendable {
     let host: String
     let port: UInt16
+    let generation: String
 }
 
 private enum RelayRuntimeError: String, Error {
@@ -174,7 +175,7 @@ private struct RelayRuntime {
         guard let directory = configuration.eventsDirectory else { return }
         var info = stat()
         guard lstat(directory, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { return }
-        let event = SSHRelaySelectionEvent(attemptID: UUID(), profileID: configuration.profileID, endpointID: endpointID, selectedAt: Date())
+        let event = SSHRelaySelectionEvent(attemptID: UUID(), profileID: configuration.profileID, endpointID: endpointID, selectedAt: Date(), generation: target.generation, phase: "tcpConnected")
         guard let data = try? JSONEncoder().encode(event) else { return }
         let file = URL(fileURLWithPath: directory).appendingPathComponent(configuration.profileID.uuidString + ".json")
         try? data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])

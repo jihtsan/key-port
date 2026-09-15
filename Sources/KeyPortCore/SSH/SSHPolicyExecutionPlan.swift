@@ -16,9 +16,11 @@ public enum SSHPolicyCompiler {
         HostV6.CanonicalJSON.sha256(Data("\(endpoint.id)|\(endpoint.address)|\(endpoint.port)|\(fingerprint)|\(keyFingerprint)|\(username)".utf8))
     }
     public static func compile(profile: SSHConnectionProfile, topology: TopologySnapshot, deviceID: String, keyID: String?) throws -> SSHPolicyExecutionPlan {
-        guard !profile.isDeleted, profile.policyVersion == 1,
+        guard !profile.isDeleted, profile.policyVersion == 1, profile.policyConflict != true,
               let account = topology.activeAccounts.first(where: { $0.id == profile.accountID }),
               topology.activeNodes.contains(where: { $0.id == account.nodeID }),
+              profile.transportPreference == .direct,
+              !topology.activeConnectionProfiles.contains(where: { $0.sshAlias.lowercased() == profile.sshAlias.lowercased() && $0.accountID != profile.accountID }),
               !profile.candidateEndpointIDs.isEmpty else { throw Failure.invalidPolicy }
         guard let key = topology.sshKeys.first(where: { $0.id == keyID && $0.deviceID == deviceID && $0.privateKeyPath != nil && $0.isLocallyAvailable }) else { throw Failure.missingKey }
         guard topology.authorizations.contains(where: { !$0.isDeleted && $0.accountID == account.id && $0.fingerprint == key.fingerprint && $0.remoteState == .authorized && $0.relationState == .active }) else { throw Failure.missingAuthorization }

@@ -107,6 +107,7 @@ struct ServerContextView: View {
                 Text(path.policyMode.map { "连接策略：" + $0 + " · 各地址共用一个 SSH 别名" } ?? (isDefault ? "默认连接 · 普通终端使用服务器别名" : "地址诊断 · 日常连接使用默认策略")).font(.system(size: 11)).foregroundStyle(.secondary)
                 if let command = path.terminalCommand { Text(command).font(InterfaceStyle.technical(11)).textSelection(.enabled).help(command) }
             }
+            if let selection = path.selectionSummary { Text(selection).font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled) }
             Text("检测：" + path.checkedLabel).font(.system(size: 11)).foregroundStyle(.secondary)
         }.padding(compact ? 0 : 16).frame(maxWidth: .infinity, alignment: .leading)
             .background(compact ? .clear : InterfaceStyle.color(0xF8F9FB), in: RoundedRectangle(cornerRadius: 8))
