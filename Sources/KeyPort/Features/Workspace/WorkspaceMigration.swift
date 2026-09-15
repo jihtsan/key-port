@@ -41,6 +41,12 @@ import KeyPortCore
             result.topology.nodes.append(.init(id: id, name: Host.current().localizedName ?? "此 Mac", roles: [.clientDevice]))
             result.topology.profiles.append(.init(id: current, nodeID: id, name: Host.current().localizedName ?? "此 Mac", isCurrent: true))
         }
+        for profile in result.topology.activeConnectionProfiles where result.pathKeys[profile.id.uuidString] == nil && profile.policyVersion == nil {
+            let keys = result.topology.sshKeys.filter { key in
+                key.deviceID == current && key.privateKeyPath != nil && key.isLocallyAvailable && result.topology.authorizations.contains { !$0.isDeleted && $0.accountID == profile.accountID && $0.fingerprint == key.fingerprint && $0.remoteState == .authorized && $0.relationState == .active }
+            }
+            if keys.count == 1 { result.pathKeys[profile.id.uuidString] = keys[0].id }
+        }
         for connection in WorkspaceStore.project(result).connections where result.defaultPaths[connection.serverID] == nil {
             result.defaultPaths[connection.serverID] = connection.id
         }

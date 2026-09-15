@@ -7,9 +7,10 @@ struct ServerContextView: View {
     let onAdd: () -> Void
     let onConfigure: (AccessFormDraft) -> Void
     var onManageAuthorization: (() -> Void)? = nil
+    var onManagePolicy: (() -> Void)? = nil
     var onPathAction: ((ConfiguredAccessPath, Bool) -> Void)? = nil
     private var path: ConfiguredAccessPath? { workspace.selectedPath ?? workspace.selectedServer.flatMap { server in
-        let paths = workspace.paths(for: server.id); return paths.count == 1 ? paths.first : nil
+        let paths = workspace.paths(for: server.id); return Set(paths.map { $0.account + "|" + ($0.sshAlias ?? "") }).count == 1 ? paths.first : nil
     } }
     var body: some View {
         ScrollView {
@@ -44,12 +45,13 @@ struct ServerContextView: View {
                     Button("添加地址") {
                         var draft = path.flatMap { workspace.accessDraft(for: $0) } ?? AccessFormDraft()
                         draft.editingEntryID = server.id
-                        draft.alias = server.alias
+                        draft.alias = path?.sshAlias ?? server.alias
                         draft.description = server.description
                         draft.address = ""
                         draft.password = ""
                         onConfigure(draft)
                     }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
+                    if let onManagePolicy, path != nil { Button("连接策略与地址顺序", action: onManagePolicy).buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue) }
                     Button("连接设置") { if let path, let draft = workspace.accessDraft(for: path) { onConfigure(draft) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
                         Text("最近活动").font(.system(size: 13, weight: .medium))
@@ -102,7 +104,7 @@ struct ServerContextView: View {
             Text(path.verification.rawValue).foregroundStyle(path.verification.color)
             Text(path.reachability.rawValue).foregroundStyle(.secondary)
             if let isDefault = path.isDefaultConnection {
-                Text(isDefault ? "默认连接 · 普通终端使用服务器别名" : "指定路径 · 命令固定此地址，不切换默认连接").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text(path.policyMode.map { "连接策略：" + $0 + " · 各地址共用一个 SSH 别名" } ?? (isDefault ? "默认连接 · 普通终端使用服务器别名" : "地址诊断 · 日常连接使用默认策略")).font(.system(size: 11)).foregroundStyle(.secondary)
                 if let command = path.terminalCommand { Text(command).font(InterfaceStyle.technical(11)).textSelection(.enabled).help(command) }
             }
             Text("检测：" + path.checkedLabel).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -121,18 +123,18 @@ struct ServerContextView: View {
     @ViewBuilder private func actions(_ path: ConfiguredAccessPath) -> some View {
         if compact {
             primaryAction(path)
-            Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
+            Button("验证此地址") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
         } else {
             HStack(spacing: 10) {
                 primaryAction(path)
-                Button("测试路径") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
+                Button("验证此地址") { if let onPathAction { onPathAction(path, true) } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
                 Button("管理免密授权") { if let onManageAuthorization { onManageAuthorization() } else { onAction() } }.buttonStyle(InterfaceButtonStyle())
             }
         }
     }
     private func pathChoices(_ server: ServerNaming) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("该服务器的全部路径").font(.system(size: 12, weight: .medium))
+            Text("该服务器的全部地址").font(.system(size: 12, weight: .medium))
             ForEach(workspace.paths(for: server.id)) { item in
                 Button { workspace.select(.path(item.id)) } label: {
                     VStack(alignment: .leading, spacing: 4) {

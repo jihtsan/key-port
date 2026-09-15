@@ -5,17 +5,20 @@ public struct SSHConfigEntry: Hashable, Sendable {
     public let identityPath: String
     public let proxyCommand: String?
     public let relay: SSHRelayCommand?
+    public let policyHostKeyAlias: String?
 
     public init(
         server: ServerConnection,
         identityPath: String,
         proxyCommand: String? = nil,
-        relay: SSHRelayCommand? = nil
+        relay: SSHRelayCommand? = nil,
+        policyHostKeyAlias: String? = nil
     ) {
         self.server = server
         self.identityPath = identityPath
         self.proxyCommand = proxyCommand
         self.relay = relay
+        self.policyHostKeyAlias = policyHostKeyAlias
     }
 }
 
@@ -172,10 +175,15 @@ extension SSHConfigGenerator {
         try entries.map { entry in
             guard entry.proxyCommand == nil else { throw SSHPolicyCompiler.Failure.invalidPolicy }
             let direct = SSHConfigEntry(server: entry.server, identityPath: entry.identityPath)
-            let base = try directConfig(entries: [direct], knownHostsPath: knownHostsPath)
+            var base = try directConfig(entries: [direct], knownHostsPath: knownHostsPath)
+            if let range = base.range(of: "\nHost *\n", options: .backwards) { base.removeSubrange(range.lowerBound..<base.endIndex) }
+            if let alias = entry.policyHostKeyAlias {
+                guard !alias.isEmpty, alias.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else { throw SSHPolicyCompiler.Failure.invalidPolicy }
+                base += "\n    HostKeyAlias \(alias)\n"
+            }
             guard let relay = entry.relay else { return base }
             return base + "\n    HostKeyAlias \(relay.hostKeyAlias)\n    ProxyCommand \(try relay.rendered())\n"
-        }.joined(separator: "\n")
+        }.joined(separator: "\n") + (entries.isEmpty ? "" : "\nHost *\n")
     }
 
     public static func directConfig(entries: [SSHConfigEntry], knownHostsPath: String) throws -> String {

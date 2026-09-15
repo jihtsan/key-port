@@ -7,11 +7,12 @@ import Observation
 /// The only writable workspace authority. UI and SSH inputs are read-only projections.
 @MainActor @Observable final class WorkspaceStore {
     struct Document: Codable {
-        var version = 1
+        var version = 2
         var deviceID: String
         var topology: TopologySnapshot
         var defaultPaths: [String: String] = [:]
         var pathKeys: [String: String] = [:]
+        var preferredProfilesByAccountID: [String: UUID]?
     }
     struct Trust: Codable {
         var serverID: String
@@ -31,6 +32,10 @@ import Observation
         var verification = "pending"
         var reachability = "unknown"
         var checkedAt: Date?
+        var profileID: UUID?
+        var endpointID: UUID?
+        var policyMode: String?
+        var policyReady: Bool?
     }
     struct State: Codable {
         var version = 1
@@ -43,6 +48,7 @@ import Observation
     }
     let paths: KeyPortPaths
     let installation: ManagedAliasInstallation
+    let policyInstallation: ManagedSSHPolicyInstallation
     let workspace: AccessWorkspace
     private(set) var document: Document
     private let lockFD: Int32
@@ -85,9 +91,12 @@ import Observation
     var topology: TopologySnapshot { document.topology }
     private var stateURL: URL { paths.applicationSupport.appendingPathComponent("workspace-v1.json") }
 
-    init(home: URL? = nil, userHome: URL? = nil, cloud: any CloudSyncing = CloudKitSyncService(), deviceID: String? = nil) throws {
+    init(home: URL? = nil, userHome: URL? = nil, cloud: any CloudSyncing = CloudKitSyncService(), deviceID: String? = nil, relayHelper: URL? = nil) throws {
         paths = KeyPortPaths(home: home ?? FileManager.default.homeDirectoryForCurrentUser)
         installation = .init(home: userHome ?? home ?? FileManager.default.homeDirectoryForCurrentUser)
+        var policy = ManagedSSHPolicyInstallation(home: userHome ?? home ?? FileManager.default.homeDirectoryForCurrentUser)
+        if let relayHelper { policy.bundledHelper = relayHelper }
+        policyInstallation = policy
         self.cloud = cloud
         try paths.prepareDirectories()
         lockFD = Darwin.open(paths.applicationSupport.appendingPathComponent("workspace.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
@@ -114,7 +123,7 @@ import Observation
     static func validate(_ document: Document) throws {
         let t = document.topology
         func unique<T: Hashable>(_ ids: [T]) -> Bool { Set(ids).count == ids.count }
-        guard document.version == 1, t.schemaVersion == TopologySnapshot.currentSchemaVersion,
+        guard (1...2).contains(document.version), t.schemaVersion == TopologySnapshot.currentSchemaVersion,
               unique(t.nodes.map(\.id)), unique(t.profiles.map(\.id)), unique(t.endpoints.map(\.id)),
               unique(t.services.map(\.id)), unique(t.sshAccounts.map(\.id)), unique(t.sshConnectionProfiles.map(\.id)),
               unique(t.sshKeys.map(\.id)), unique(t.hostKeyTrusts.map(\.id)), unique(t.authorizations.map(\.id)) else { throw WorkspaceError.storage }
@@ -134,16 +143,18 @@ import Observation
         }
         for p in t.activeConnectionProfiles {
             guard let a = t.activeAccounts.first(where: { $0.id == p.accountID }), let n = t.nodes.first(where: { $0.id == a.nodeID && !$0.isDeleted }) else { continue }
-            // Automatic routes remain stored intact; the UI exposes their explicitly selected first candidate.
-            let endpointID = p.routePolicy.fixedEndpointID ?? p.candidateEndpointIDs.first
-            guard let e = t.activeEndpoints.first(where: { $0.id == endpointID && $0.nodeID == n.id && $0.protocol == .ssh }) else { continue }
-            let id = p.id.uuidString
-            let localKey = t.sshKeys.first { $0.id == document.pathKeys[id] && $0.deviceID == document.deviceID && $0.privateKeyPath != nil }
-                ?? t.sshKeys.first { k in k.deviceID == document.deviceID && k.privateKeyPath != nil && t.authorizations.contains { $0.accountID == a.id && $0.keyID == k.id && !$0.isDeleted && $0.remoteState == .authorized } }
-                ?? t.sshKeys.first { $0.deviceID == document.deviceID && $0.privateKeyPath != nil }
-            let v = t.accessVerifications.first { $0.profileID == p.id && $0.endpointID == e.id && $0.deviceID == document.deviceID }
-            let r = t.reachabilityObservations.first { $0.endpointID == e.id && $0.observerDeviceID == document.deviceID }
-            result.connections.append(.init(id: id, serverID: n.id.uuidString, alias: p.sshAlias, description: n.name, address: e.address, port: Int(e.port), account: a.username, keyID: localKey?.id ?? "", verification: localKey != nil && v?.status == .authorized ? "verified" : v == nil ? "pending" : "failed", reachability: r.map { $0.wasReachable ? "reachable" : "unreachable" } ?? "unknown", checkedAt: v?.lastCheckedAt))
+            let endpointIDs = p.policyVersion == 1 ? p.candidateEndpointIDs : [p.routePolicy.fixedEndpointID ?? p.candidateEndpointIDs.first].compactMap { $0 }
+            let localKey = t.sshKeys.first { $0.id == document.pathKeys[p.id.uuidString] && $0.deviceID == document.deviceID && $0.privateKeyPath != nil }
+            let plan = try? SSHPolicyCompiler.compile(profile: p, topology: t, deviceID: document.deviceID, keyID: localKey?.id)
+            for eid in endpointIDs {
+                guard let e = t.activeEndpoints.first(where: { $0.id == eid && $0.nodeID == n.id && $0.protocol == .ssh }) else { continue }
+                let id = p.policyVersion == 1 ? SSHPolicyUpgrade.pathID(profileID: p.id, endpointID: e.id) : p.id.uuidString
+                let v = t.accessVerifications.first { $0.profileID == p.id && $0.endpointID == e.id && $0.deviceID == document.deviceID }
+                let trust = t.hostKeyTrusts.first { !$0.isDeleted && $0.state == .confirmed && $0.endpointID == e.id && $0.algorithm == "ssh-ed25519" }
+                let bound = p.policyVersion != 1 || (localKey != nil && trust != nil && v?.policyEvidenceBinding == SSHPolicyCompiler.evidence(endpoint: e, fingerprint: trust!.fingerprint, keyFingerprint: localKey!.fingerprint, username: a.username))
+                let r = t.reachabilityObservations.first { $0.endpointID == e.id && $0.observerDeviceID == document.deviceID }
+                result.connections.append(.init(id: id, serverID: n.id.uuidString, alias: p.sshAlias, description: n.name, address: e.address, port: Int(e.port), account: a.username, keyID: localKey?.id ?? "", verification: localKey != nil && bound && v?.status == .authorized ? "verified" : v == nil || !bound ? "pending" : "failed", reachability: r.map { $0.wasReachable ? "reachable" : "unreachable" } ?? "unknown", checkedAt: v?.lastCheckedAt, profileID: p.id, endpointID: e.id, policyMode: p.policyVersion == 1 ? (p.routePolicy.fixedEndpointID == nil ? "按顺序自动回退" : "固定地址") : nil, policyReady: p.policyVersion == 1 ? plan != nil : nil))
+            }
             for auth in t.authorizations where auth.accountID == a.id && !auth.isDeleted && auth.relationState == .active {
                 result.authorizations[authorizationID(n.id.uuidString, a.username, auth.keyID)] = auth.remoteState == .authorized ? "installed" : auth.remoteState == .revoked ? "absent" : "unknown"
             }
@@ -185,27 +196,33 @@ import Observation
         next.topology.nodes[index].name = draft.description; next.topology.nodes[index].updatedAt = Date()
         let account = next.topology.activeAccounts.first { $0.nodeID == nodeID && $0.username == draft.account }
             ?? SSHAccount(id: UUID(), nodeID: nodeID, username: draft.account)
+        guard !next.topology.activeConnectionProfiles.contains(where: { $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame && $0.accountID != account.id }) else { throw WorkspaceError.aliasConflict }
         if !next.topology.sshAccounts.contains(where: { $0.id == account.id }) { next.topology.sshAccounts.append(account) }
-        var primaryID: UUID?
-        for (offset, address) in draft.addresses.enumerated() {
+        let existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.sshAlias.caseInsensitiveCompare(draft.alias) == .orderedSame }
+        var endpoints: [UUID] = []
+        for address in draft.addresses {
             let endpoint = next.topology.activeEndpoints.first { $0.nodeID == nodeID && $0.address.caseInsensitiveCompare(address) == .orderedSame && $0.port == port && $0.protocol == .ssh }
                 ?? Endpoint(id: UUID(), nodeID: nodeID, address: address, port: port, protocol: .ssh)
             if !next.topology.endpoints.contains(where: { $0.id == endpoint.id }) { next.topology.endpoints.append(endpoint) }
-            let existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.routePolicy.fixedEndpointID == endpoint.id }
-            let id = existing?.id ?? UUID()
-            if offset == 0 || existing == nil {
-                next.topology.sshConnectionProfiles.removeAll { $0.id == id }
-                next.topology.sshConnectionProfiles.append(.init(id: id, accountID: account.id, sshAlias: draft.alias, routePolicy: .fixed(endpointID: endpoint.id), createdAt: existing?.createdAt ?? Date(), updatedAt: Date(), version: (existing?.version ?? 0) + 1))
-                next.pathKeys[id.uuidString] = key.id
-            }
-            if offset == 0 {
-                primaryID = id
-                next.topology.accessVerifications.removeAll { $0.profileID == id && $0.deviceID == state.deviceID }
-            }
+            endpoints.append(endpoint.id)
         }
-        guard let id = primaryID else { throw WorkspaceError.configuration }
-        if next.defaultPaths[serverID] == nil { next.defaultPaths[serverID] = id.uuidString }
-        try commit(next); workspace.select(.path(id.uuidString)); return id.uuidString
+        guard let first = endpoints.first else { throw WorkspaceError.configuration }
+        let profileID = existing?.id ?? UUID()
+        if existing == nil {
+            next.topology.sshConnectionProfiles.append(.init(id: profileID, accountID: account.id, sshAlias: draft.alias, routePolicy: .fixed(endpointID: first)))
+        }
+        let group = SSHPolicyUpgrade.group(for: next.topology.activeConnectionProfiles.first { $0.id == profileID }!, in: next.topology)
+        let previous = group.flatMap { $0.candidateEndpointIDs.isEmpty ? [$0.routePolicy.fixedEndpointID].compactMap { $0 } : $0.candidateEndpointIDs }
+        var seen = Set<UUID>()
+        let candidates = (previous + endpoints).filter { seen.insert($0).inserted }
+        let automatic = draft.automaticRouting ?? (existing?.policyVersion == 1 ? existing?.routePolicy.fixedEndpointID == nil : existing == nil && candidates.count > 1)
+        let canonical = try SSHPolicyUpgrade.apply(profileID: profileID, endpointIDs: candidates, automatic: automatic, to: &next.topology)
+        next.pathKeys[canonical.uuidString] = key.id
+        next.topology.accessVerifications.removeAll { $0.profileID == canonical && $0.endpointID == first && $0.deviceID == state.deviceID }
+        let id = SSHPolicyUpgrade.pathID(profileID: canonical, endpointID: first)
+        if next.defaultPaths[serverID] == nil { next.defaultPaths[serverID] = id }
+        next.version = 2
+        try commit(next); workspace.select(.path(id)); return id
     }
 
     func record(_ status: AccessAuthorizationStatus, serverID: String, account: String, keyID: String) throws {
@@ -219,30 +236,41 @@ import Observation
         }
         try commit(next)
     }
-    func checked(_ id: String, success: Bool, unreachable: Bool = false) throws {
+    func checked(_ id: String, success: Bool, unreachable: Bool = false, identityMismatch: Bool = false) throws {
         var next = document
-        guard let p = next.topology.activeConnectionProfiles.first(where: { $0.id.uuidString == id }), let e = p.routePolicy.fixedEndpointID else { throw WorkspaceError.storage }
-        next.topology.accessVerifications.removeAll { $0.profileID == p.id && $0.deviceID == state.deviceID }
-        next.topology.accessVerifications.append(.init(accountID: p.accountID, deviceID: state.deviceID, profileID: p.id, endpointID: e, status: success ? .authorized : .keyAuthenticationFailed, lastCheckedAt: Date()))
-        next.topology.reachabilityObservations.removeAll { $0.endpointID == e && $0.observerDeviceID == state.deviceID }
-        if success || unreachable { next.topology.reachabilityObservations.append(.init(endpointID: e, observerDeviceID: state.deviceID, networkEpoch: 0, observedAt: Date(), wasReachable: success)) }
+        guard let c = state.connections.first(where: { $0.id == id }), let pid = c.profileID, let eid = c.endpointID,
+              let p = next.topology.activeConnectionProfiles.first(where: { $0.id == pid }),
+              let endpoint = next.topology.activeEndpoints.first(where: { $0.id == eid }) else { throw WorkspaceError.storage }
+        next.topology.accessVerifications.removeAll { $0.profileID == p.id && $0.endpointID == eid && $0.deviceID == state.deviceID }
+        var v = AccessVerification(accountID: p.accountID, deviceID: state.deviceID, profileID: p.id, endpointID: eid, status: success ? .authorized : identityMismatch ? .hostKeyMismatch : .keyAuthenticationFailed, lastCheckedAt: Date())
+        if success, let trust = next.topology.hostKeyTrusts.first(where: { !$0.isDeleted && $0.state == .confirmed && $0.endpointID == eid && $0.algorithm == "ssh-ed25519" }), let key = next.topology.sshKeys.first(where: { $0.id == c.keyID }) {
+            v.policyEvidenceBinding = SSHPolicyCompiler.evidence(endpoint: endpoint, fingerprint: trust.fingerprint, keyFingerprint: key.fingerprint, username: c.account)
+        }
+        next.topology.accessVerifications.append(v)
+        next.topology.reachabilityObservations.removeAll { $0.endpointID == eid && $0.observerDeviceID == state.deviceID }
+        if success || unreachable { next.topology.reachabilityObservations.append(.init(endpointID: eid, observerDeviceID: state.deviceID, networkEpoch: 0, observedAt: Date(), wasReachable: success)) }
         try commit(next)
     }
-    func isDefault(_ connection: Connection) -> Bool { document.defaultPaths[connection.serverID] == connection.id }
+    func isDefault(_ connection: Connection) -> Bool { connection.policyMode != nil || document.defaultPaths[connection.serverID] == connection.id }
     func synchronizeAliases() throws {
         try write(Data((Set(state.trusts.map(\.key.knownHostsLine)).sorted().joined(separator: "\n") + "\n").utf8), to: paths.knownHosts)
         try export(state); try cleanPathConfigurations()
-        for c in state.connections where c.verification == "verified" { _ = try writeConfiguration(for: c) }
+        for c in state.connections + legacyDiagnosticConnections() where c.verification == "verified" { _ = try writeConfiguration(for: c) }
     }
     func setDefault(_ id: String) throws {
         guard let c = state.connections.first(where: { $0.id == id }), c.verification == "verified" else { throw WorkspaceError.configuration }
-        var next = document; next.defaultPaths[c.serverID] = id; try commit(next); try synchronizeAliases()
+        guard let pid = c.profileID, let eid = c.endpointID else { throw WorkspaceError.configuration }
+        try updatePolicy(profileID: pid, endpoints: [eid] + policyEndpoints(pid).filter { $0 != eid }, automatic: false)
     }
+
     func rename(serverID: String, alias: String, replacingAlias: String? = nil) throws {
         guard AliasDirectory.isValidNewAlias(alias), aliases.validationMessage(for: alias, editingEntryID: serverID) == nil else { throw WorkspaceError.aliasConflict }
         try installation.validateAlias(alias)
         var next = document
+        guard !next.topology.activeConnectionProfiles.contains(where: { p in p.sshAlias.caseInsensitiveCompare(alias) == .orderedSame && next.topology.activeAccounts.contains { $0.id == p.accountID && $0.nodeID.uuidString != serverID } }) else { throw WorkspaceError.aliasConflict }
         let ids = Set(next.topology.activeAccounts.filter { $0.nodeID.uuidString == serverID }.map(\.id))
+        let affected = next.topology.activeConnectionProfiles.filter { ids.contains($0.accountID) && (replacingAlias == nil || $0.sshAlias == replacingAlias) }
+        guard Set(affected.map(\.accountID)).count <= 1 else { throw WorkspaceError.aliasConflict }
         for i in next.topology.sshConnectionProfiles.indices where ids.contains(next.topology.sshConnectionProfiles[i].accountID) && (replacingAlias == nil || next.topology.sshConnectionProfiles[i].sshAlias == replacingAlias) {
             next.topology.sshConnectionProfiles[i].sshAlias = alias
             next.topology.sshConnectionProfiles[i].updatedAt = Date(); next.topology.sshConnectionProfiles[i].version += 1
@@ -251,11 +279,18 @@ import Observation
     }
     func remove(_ id: String) throws {
         var next = document
-        guard let i = next.topology.sshConnectionProfiles.firstIndex(where: { $0.id.uuidString == id }) else { return }
-        next.topology.sshConnectionProfiles[i].isDeleted = true; next.topology.sshConnectionProfiles[i].updatedAt = Date(); next.topology.sshConnectionProfiles[i].version += 1
-        next.defaultPaths = next.defaultPaths.filter { $0.value != id }; next.pathKeys.removeValue(forKey: id)
+        guard let c = state.connections.first(where: { $0.id == id }), let pid = c.profileID,
+              let i = next.topology.sshConnectionProfiles.firstIndex(where: { $0.id == pid }) else { return }
+        if next.topology.sshConnectionProfiles[i].policyVersion == 1 {
+            next.topology.sshConnectionProfiles[i].candidateEndpointIDs.removeAll { $0 == c.endpointID }
+            if next.topology.sshConnectionProfiles[i].candidateEndpointIDs.isEmpty { next.topology.sshConnectionProfiles[i].isDeleted = true }
+        } else { next.topology.sshConnectionProfiles[i].isDeleted = true }
+        next.topology.sshConnectionProfiles[i].updatedAt = Date(); next.topology.sshConnectionProfiles[i].version += 1
+        next.topology.accessVerifications.removeAll { $0.profileID == pid && $0.endpointID == c.endpointID }
+        next.defaultPaths = next.defaultPaths.filter { $0.value != id }
         try commit(next); try synchronizeAliases()
     }
+
     func renameDevice(_ id: String, name: String) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw WorkspaceError.configuration }
@@ -296,7 +331,11 @@ import Observation
     }
     func commit(_ next: Document, scheduleSync shouldSchedule: Bool = true) throws {
         try Self.validate(next)
-        // Persist authority first. Derived SSH files can always be rebuilt on retry.
+        // Withdraw before authority changes. A failed save/activation must not retain an obsolete route.
+        try installation.install(entries: [], knownHosts: paths.knownHosts)
+        let generation = try prepared(next)
+        try invalidateOldPolicyFiles(except: generation.knownHosts.deletingLastPathComponent())
+        // Persist authority after dependency preparation; activation errors remain visible and retryable.
         try write(try Self.encoder().encode(next), to: stateURL)
         document = next
         revision += 1
@@ -304,7 +343,9 @@ import Observation
         workspace.replaceSnapshot(Self.snapshot(state, configDirectory: paths.keyPortDirectory, nodes: topology.nodes))
         let lines = Set(state.trusts.map(\.key.knownHostsLine)).sorted().joined(separator: "\n") + "\n"
         try write(Data(lines.utf8), to: paths.knownHosts)
-        try export(state)
+        try installation.install(entries: generation.entries, knownHosts: generation.knownHosts)
+        try cleanPathConfigurations()
+        for connection in legacyDiagnosticConnections() { _ = try writeConfiguration(for: connection) }
     }
     private func write(_ data: Data, to url: URL) throws {
         if FileManager.default.fileExists(atPath: url.path) {
@@ -324,7 +365,7 @@ import Observation
         for url in try FileManager.default.contentsOfDirectory(at: paths.keyPortDirectory, includingPropertiesForKeys: nil)
             where url.lastPathComponent.hasPrefix("path-") && url.pathExtension == "conf" {
             let id = String(url.deletingPathExtension().lastPathComponent.dropFirst(5))
-            if UUID(uuidString: id) != nil, !state.connections.contains(where: { $0.id == id && $0.verification == "verified" }) {
+            if UUID(uuidString: id) != nil, !(state.connections + legacyDiagnosticConnections()).contains(where: { $0.id == id && $0.verification == "verified" }) {
                 let backup = paths.keyPortDirectory.appendingPathComponent("retired-" + UUID().uuidString)
                 try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
                 try FileManager.default.moveItem(at: url, to: backup.appendingPathComponent(url.lastPathComponent))
@@ -332,11 +373,17 @@ import Observation
         }
     }
     func command(for connection: Connection) throws -> String {
-        guard let current = state.connections.first(where: { $0.id == connection.id }), current.verification == "verified" else { throw WorkspaceError.configuration }
+        guard let current = state.connections.first(where: { $0.id == connection.id }) else { throw WorkspaceError.configuration }
+        if current.policyMode != nil { guard current.policyReady == true else { throw WorkspaceError.configuration } }
+        else { guard state.connections.contains(where: { $0.alias == current.alias && $0.account == current.account && $0.verification == "verified" && isDefault($0) }) else { throw WorkspaceError.configuration } }
         try synchronizeAliases()
-        if isDefault(current) { return "ssh " + current.alias }
-        let config = try writeConfiguration(for: current)
-        return "/usr/bin/ssh -F \(Self.shellQuote(config.path)) \(Self.shellQuote(current.alias))"
+        guard (try? String(contentsOf: installation.managed).contains("Host " + current.alias + "\n")) == true else { throw WorkspaceError.aliasConflict }
+        return "ssh " + current.alias
+    }
+    func diagnosticCommand(for connection: Connection) throws -> String {
+        guard state.connections.contains(where: { $0.id == connection.id && $0.verification == "verified" }) else { throw WorkspaceError.configuration }
+        let config = try writeConfiguration(for: connection)
+        return "/usr/bin/ssh -F \(Self.shellQuote(config.path)) \(Self.shellQuote(connection.alias))"
     }
     private func entry(_ connection: Connection, state: State) throws -> SSHConfigEntry {
         guard UUID(uuidString: connection.id) != nil,
@@ -344,11 +391,17 @@ import Observation
         return SSHConfigEntry(server: ServerConnection(name: connection.description, host: connection.address,
             port: connection.port, username: connection.account, alias: connection.alias), identityPath: privatePath)
     }
+    private func prepared(_ next: Document) throws -> ManagedSSHPolicyInstallation.Generation {
+        let value = Self.project(next)
+        let conflicts = Set(Dictionary(grouping: next.topology.activeConnectionProfiles, by: { $0.sshAlias.lowercased() }).filter { Set($0.value.map(\.accountID)).count > 1 }.keys)
+        let connections = value.connections.filter { !conflicts.contains($0.alias.lowercased()) && $0.policyMode == nil && value.defaultPaths?[$0.serverID] == $0.id && $0.verification == "verified" }
+        let plans = next.topology.activeConnectionProfiles.filter { !conflicts.contains($0.sshAlias.lowercased()) }.compactMap { try? SSHPolicyCompiler.compile(profile: $0, topology: next.topology, deviceID: next.deviceID, keyID: next.pathKeys[$0.id.uuidString]) }
+        return try policyInstallation.prepare(plans: plans, directEntries: connections.map { try entry($0, state: value) }, knownHostsLines: value.trusts.map(\.key.knownHostsLine))
+    }
     private func export(_ value: State) throws {
-        let connections = value.connections.filter { value.defaultPaths?[$0.serverID] == $0.id && $0.verification == "verified" }
-        let entries = try connections.map { try entry($0, state: value) }
+        let generation = try prepared(document)
         try WorkspaceConfigurationMigration.retire(paths: paths, migratedAliases: Set(topology.sshConnectionProfiles.map { $0.sshAlias.lowercased() })) {
-            try installation.install(entries: entries, knownHosts: paths.knownHosts)
+            try installation.install(entries: generation.entries, knownHosts: generation.knownHosts)
         }
     }
     /// A selected nondefault edge always uses its own explicit configuration.
@@ -371,8 +424,8 @@ import Observation
         let paths = state.connections.map { ConfiguredAccessPath(id: $0.id, deviceID: state.deviceID, serverID: $0.serverID, account: $0.account, address: $0.address, port: $0.port,
             verification: $0.verification == "verified" ? .verified : $0.verification == "failed" ? .failed : .pending,
             reachability: $0.reachability == "reachable" ? .reachable : $0.reachability == "unreachable" ? .unreachable : .unknown, checkedAt: $0.checkedAt,
-            terminalCommand: $0.verification != "verified" ? nil : state.defaultPaths?[$0.serverID] == $0.id ? "ssh " + $0.alias : "/usr/bin/ssh -F " + shellQuote(configDirectory.appendingPathComponent("path-\($0.id).conf").path) + " " + shellQuote($0.alias),
-            isDefaultConnection: state.defaultPaths?[$0.serverID] == $0.id, sshAlias: $0.alias) }
+            terminalCommand: ($0.policyReady ?? ($0.verification == "verified" && state.defaultPaths?[$0.serverID] == $0.id)) ? "ssh " + $0.alias : nil,
+            isDefaultConnection: $0.policyMode != nil || state.defaultPaths?[$0.serverID] == $0.id, sshAlias: $0.alias, profileID: $0.profileID?.uuidString, policyMode: $0.policyMode) }
         var authorizations: [AccessAuthorizationKey: AccessAuthorizationStatus] = [:]
         for connection in state.connections {
             let status = state.authorizations[authorizationID(connection.serverID, connection.account, connection.keyID)]

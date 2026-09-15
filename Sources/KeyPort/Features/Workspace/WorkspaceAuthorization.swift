@@ -5,7 +5,7 @@ extension WorkspaceStore {
     /// Target identity is account plus fingerprint; the authenticating key may belong to this Mac.
     func refreshAuthorization(_ authorization: SSHAuthorization, revoke: Bool, executor: any ProcessExecuting = ProcessExecutor()) async throws {
         guard let account = topology.activeAccounts.first(where: { $0.id == authorization.accountID }),
-              let path = state.connections.first(where: { $0.serverID == account.nodeID.uuidString && $0.account == account.username && !$0.keyID.isEmpty }),
+              let path = try? authorizationConnection(accountID: account.id),
               let identity = state.keys.first(where: { $0.id == path.keyID && $0.deviceID == state.deviceID }), identity.privateKeyPath != nil,
               let target = state.keys.first(where: { $0.id == authorization.keyID && $0.fingerprint == authorization.fingerprint }),
               let parsed = PublicKeyParser.parse(target.publicKey), parsed.fingerprint == authorization.fingerprint else { throw WorkspaceError.missingKey }

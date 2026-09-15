@@ -12,8 +12,8 @@ public struct SSHPolicyExecutionPlan: Sendable {
 
 public enum SSHPolicyCompiler {
     public enum Failure: Error { case invalidPolicy, missingKey, missingAuthorization, identityConflict, noVerifiedCandidates }
-    public static func evidence(endpoint: Endpoint, fingerprint: String, keyFingerprint: String) -> String {
-        HostV6.CanonicalJSON.sha256(Data("\(endpoint.id)|\(endpoint.address)|\(endpoint.port)|\(fingerprint)|\(keyFingerprint)".utf8))
+    public static func evidence(endpoint: Endpoint, fingerprint: String, keyFingerprint: String, username: String) -> String {
+        HostV6.CanonicalJSON.sha256(Data("\(endpoint.id)|\(endpoint.address)|\(endpoint.port)|\(fingerprint)|\(keyFingerprint)|\(username)".utf8))
     }
     public static func compile(profile: SSHConnectionProfile, topology: TopologySnapshot, deviceID: String, keyID: String?) throws -> SSHPolicyExecutionPlan {
         guard !profile.isDeleted, profile.policyVersion == 1,
@@ -33,7 +33,7 @@ public enum SSHPolicyCompiler {
         for endpoint in desired {
             guard let trust = trusts.first(where: { $0.endpointID == endpoint.id }),
                   let parsed = PublicKeyParser.parse(trust.knownHostsLine), parsed.fingerprint == trust.fingerprint,
-                  topology.accessVerifications.contains(where: { $0.profileID == profile.id && $0.endpointID == endpoint.id && $0.deviceID == deviceID && $0.status == .authorized && $0.policyEvidenceBinding == evidence(endpoint: endpoint, fingerprint: trust.fingerprint, keyFingerprint: key.fingerprint) }) else { continue }
+                  topology.accessVerifications.contains(where: { $0.accountID == account.id && $0.profileID == profile.id && $0.endpointID == endpoint.id && $0.deviceID == deviceID && $0.status == .authorized && $0.policyEvidenceBinding == evidence(endpoint: endpoint, fingerprint: trust.fingerprint, keyFingerprint: key.fingerprint, username: account.username) }) else { continue }
             endpoints.append(endpoint)
             lines.insert("\(hostAlias) \(parsed.type) \(parsed.blob)")
             lines.insert(trust.knownHostsLine)
