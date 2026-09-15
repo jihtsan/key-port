@@ -25,6 +25,9 @@ struct WorkspaceServerActionView: View {
                 }
             }.frame(maxHeight: 220)
             Text(disconnect ? "全部撤销成功后，将删除服务器、路径、账户、服务和终端别名。失败时保留服务器记录。" : "撤销后保留服务器与连接路径，使用这些公钥将无法继续登录。")
+            if disconnect && store.topology.profiles.contains(where: { $0.nodeID.uuidString == serverID }) {
+                Text("这台机器也是工作区设备：将移除 SSH 服务器角色，保留设备档案和本机密钥。").font(.callout)
+            }
             HStack {
                 Spacer()
                 if working { ProgressView().controlSize(.small); Text("正在撤销…") }

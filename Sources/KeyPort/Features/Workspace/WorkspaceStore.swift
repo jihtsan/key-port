@@ -180,6 +180,11 @@ import Observation
         let endpoint = next.topology.activeEndpoints.first(where: { $0.nodeID == nodeID && $0.address == draft.address && $0.port == port && $0.protocol == .ssh })
             ?? Endpoint(id: UUID(), nodeID: nodeID, address: draft.address, port: port, protocol: .ssh)
         if !next.topology.endpoints.contains(where: { $0.id == endpoint.id }) { next.topology.endpoints.append(endpoint) }
+        if !next.topology.nodes[index].roles.contains(.sshHost) {
+            next.topology.nodes[index].roles.append(.sshHost)
+            next.topology.nodes[index].removedRoles?.removeAll { $0 == .sshHost }
+            next.topology.nodes[index].roleVersion = (next.topology.nodes[index].roleVersion ?? 0) + 1
+        }
         next.topology.nodes[index].name = draft.description; next.topology.nodes[index].updatedAt = Date()
         let account = next.topology.activeAccounts.first { $0.nodeID == nodeID && $0.username == draft.account }
             ?? SSHAccount(id: UUID(), nodeID: nodeID, username: draft.account)
