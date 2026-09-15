@@ -160,3 +160,84 @@ private actor BlockingWorkspaceCloud: CloudSyncing {
     }
     func finish() { pending?.resume(returning: remote); pending = nil }
 }
+
+extension WorkspaceAuthorityTests {
+    private func removalFixture() throws -> WorkspaceStore {
+        let root = try home(), paths = KeyPortPaths(home: root)
+        try paths.prepareDirectories()
+        var initial = fixture()
+        initial.authorizations = [.init(accountID: initial.sshAccounts[0].id, keyID: "key", fingerprint: initial.sshKeys[0].fingerprint, remoteComment: "", remoteState: .authorized)]
+        try WorkspaceStore.encoder().encode(initial).write(to: paths.topologySnapshot)
+        return try WorkspaceStore(home: root)
+    }
+    func testDisconnectDeletesServerChildrenAndAliasesButPreservesSharedKeysAndCloudTombstones() async throws {
+        let store = try removalFixture(), original = store.topology
+        let id = original.nodes[0].id.uuidString
+        try store.checked(original.sshConnectionProfiles[0].id.uuidString, success: true)
+        try store.setDefault(original.sshConnectionProfiles[0].id.uuidString)
+        let config = try store.writeConfiguration(for: store.state.connections[0])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: config.path))
+        var calls = 0
+        try await store.revokeServer(id, disconnect: true) { batch in
+            calls += 1; XCTAssertEqual(batch.count, 1)
+        }
+        XCTAssertEqual(calls, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: config.path))
+        XCTAssertTrue(store.document.defaultPaths.isEmpty)
+        XCTAssertTrue(store.document.pathKeys.isEmpty)
+        XCTAssertTrue(store.topology.activeNodes.isEmpty)
+        XCTAssertTrue(store.topology.activeAccounts.isEmpty)
+        XCTAssertTrue(store.topology.activeEndpoints.isEmpty)
+        XCTAssertTrue(store.topology.activeConnectionProfiles.isEmpty)
+        XCTAssertTrue(store.topology.services.allSatisfy(\.isDeleted))
+        XCTAssertTrue(store.topology.authorizations.allSatisfy { $0.isDeleted && $0.remoteState == .revoked })
+        XCTAssertEqual(store.topology.sshKeys, original.sshKeys)
+        XCTAssertTrue(store.state.connections.isEmpty)
+        XCTAssertTrue(store.workspace.graph.servers.isEmpty)
+        let merged = TopologyCloudMetadataSnapshotPolicy.merge(local: store.topology, remote: original)
+        XCTAssertTrue(merged.activeNodes.isEmpty)
+        XCTAssertTrue(merged.activeAccounts.isEmpty)
+        XCTAssertTrue(merged.activeConnectionProfiles.isEmpty)
+    }
+    func testRevokeOnlyPreservesServerAndPath() async throws {
+        let store = try removalFixture(), original = store.topology
+        try await store.revokeServer(original.nodes[0].id.uuidString, disconnect: false) { _ in }
+        XCTAssertEqual(store.topology.nodes, original.nodes)
+        XCTAssertEqual(store.topology.sshConnectionProfiles, original.sshConnectionProfiles)
+        XCTAssertEqual(store.topology.authorizations[0].remoteState, .revoked)
+        try await store.revokeServer(original.nodes[0].id.uuidString, disconnect: true) { _ in XCTFail("Already revoked") }
+        XCTAssertTrue(store.topology.activeNodes.isEmpty)
+    }
+    func testFailedRevocationDoesNotDeleteServerOrPath() async throws {
+        let store = try removalFixture(), original = store.topology
+        do {
+            try await store.revokeServer(original.nodes[0].id.uuidString, disconnect: true) { _ in throw WorkspaceError.missingKey }
+            XCTFail("Expected failure")
+        } catch {}
+        XCTAssertEqual(store.topology, original)
+        XCTAssertFalse(store.serverOperationInProgress)
+    }
+    func testPartialFailureRetainsCompletedAccountAndRetrySkipsIt() async throws {
+        let store = try removalFixture()
+        var next = store.document
+        let node = next.topology.nodes[0].id
+        let account = SSHAccount(id: UUID(), nodeID: node, username: "other")
+        next.topology.sshAccounts.append(account)
+        next.topology.authorizations.append(.init(accountID: account.id, keyID: "key", fingerprint: next.topology.sshKeys[0].fingerprint, remoteComment: "", remoteState: .authorized))
+        try store.commit(next)
+        var calls = 0
+        do {
+            try await store.revokeServer(node.uuidString, disconnect: true) { _ in
+                calls += 1
+                if calls == 2 { throw WorkspaceError.missingKey }
+            }
+            XCTFail("Expected failure")
+        } catch {}
+        XCTAssertEqual(store.topology.activeNodes.count, 1)
+        XCTAssertEqual(store.serverAuthorizations(node.uuidString).filter { $0.remoteState == .revoked }.count, 1)
+        calls = 0
+        try await store.revokeServer(node.uuidString, disconnect: true) { _ in calls += 1 }
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(store.topology.activeNodes.isEmpty)
+    }
+}

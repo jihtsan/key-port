@@ -116,3 +116,26 @@ final class SSHRemoteCommandTests: XCTestCase {
         }
     }
 }
+
+
+extension SSHRemoteCommandTests {
+    func testBatchRevocationRunsAtomicScriptAndPreservesUnrelatedKeys() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".ssh"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let auth = root.appendingPathComponent(".ssh/authorized_keys")
+        try "ssh-ed25519 AQID first\nrestrict ssh-ed25519 BAUG second\nssh-ed25519 BwgJ keep\n".write(to: auth, atomically: true, encoding: .utf8)
+        let script = SSHRemoteCommand.revokeAuthorizedKeys(keyBlobs: ["AQID", "BAUG"]).spec.standardInputScript!
+            .replacingOccurrences(of: "$HOME", with: root.path)
+        let scriptURL = root.appendingPathComponent("revoke.sh")
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh"); process.arguments = [scriptURL.path]
+        try process.run(); process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(try String(contentsOf: auth), "ssh-ed25519 BwgJ keep\n")
+        let backups = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(".ssh").path).filter { $0.contains("backup") }
+        XCTAssertEqual(backups.count, 1)
+        XCTAssertTrue(try String(contentsOf: root.appendingPathComponent(".ssh/" + backups[0])).contains("AQID"))
+        XCTAssertEqual(SSHRemoteCommand.revokeAuthorizedKeys(keyBlobs: ["'; exit 0"]).spec.standardInputScript, "exit 1")
+    }
+}
