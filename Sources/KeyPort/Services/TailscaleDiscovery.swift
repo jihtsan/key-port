@@ -33,6 +33,14 @@ struct TailscaleDiscovery {
             AccessFormDraft.isValidHost($0) && seen.insert($0.lowercased()).inserted
         }
     }
+    static func apply(addresses selected: [String], node: TailscaleNode, to draft: inout AccessFormDraft) {
+        let valid = Set(addresses(for: node))
+        let selected = selected.filter { valid.contains($0) }
+        guard let first = selected.first else { return }
+        if draft.address.isEmpty { apply(address: first, node: node, to: &draft) }
+        var seen = Set(draft.addresses.map { $0.lowercased() })
+        draft.additionalAddresses.append(contentsOf: selected.filter { seen.insert($0.lowercased()).inserted })
+    }
     static func apply(address: String, node: TailscaleNode, to draft: inout AccessFormDraft) {
         guard addresses(for: node).contains(address) else { return }
         draft.address = address

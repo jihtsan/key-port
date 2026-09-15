@@ -5,6 +5,11 @@ public struct AccessFormDraft: Equatable {
     public var description = ""
     public var editingEntryID: String?
     public var address = ""
+    public var additionalAddresses: [String] = []
+    public var addresses: [String] {
+        var seen = Set<String>()
+        return ([address] + additionalAddresses).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+    }
     public var port = "22"
     public var account = ""
     public var password = ""
@@ -20,6 +25,7 @@ public struct AccessFormDraft: Equatable {
     public func validationMessage(in directory: AliasDirectory) -> String? {
         if let error = directory.validationMessage(for: alias, editingEntryID: editingEntryID) { return error }
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if additionalAddresses.contains(where: { !Self.isValidHost($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) { return "请检查附加地址，输入有效的 IP 地址或主机名。" }
         if !Self.isValidHost(host) { return "请输入有效的 IP 地址或主机名，不含协议与账户。" }
         if !port.allSatisfy({ $0.isASCII && $0.isNumber }) || Int(port).map({ !(1...65535).contains($0) }) != false { return "端口必须为 1–65535。" }
         if account.isEmpty || account.hasPrefix("-") || account.contains(where: { $0.isWhitespace }) { return "请输入有效的登录账户。" }
