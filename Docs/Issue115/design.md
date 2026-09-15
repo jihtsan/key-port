@@ -24,7 +24,7 @@
 | 界面 | Figma | 覆盖需求 | 截图 |
 | --- | --- | --- | --- |
 | 01 我的设备 | [61:3](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-3) | D1–D8，仅本机 | [PNG](evidence/01-my-devices.png) |
-| 02 新 Mac 设置免密 | [61:4](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-4) | C、F，当前服务器数据 | [PNG](evidence/02-new-mac.png) |
+| 02 当前 Mac 设置免密 | [61:4](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-4) | C、F，当前服务器数据 | [PNG](evidence/02-current-mac.png) |
 | 03 双向免密确认 | [61:5](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-5) | R，本机凭据只读引用、别名可覆盖 | [PNG](evidence/03-confirm.png) |
 | 04 双向验证结果 | [61:6](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-6) | 服务器详情已就绪状态 | [PNG](evidence/04-success.png) |
 | 05 反向失败与恢复 | [61:7](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-7) | 服务器关系的部分完成 | [PNG](evidence/05-partial-failure.png) |
@@ -34,8 +34,14 @@
 | 09 Tailscale 待接入 | [67:3](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=67-3) | N，官方登录与状态刷新 | [PNG](evidence/09-tailscale-login.png) |
 | 10 服务器详情 | [67:4](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=67-4) | R，唯一双向操作所属位置 | [PNG](evidence/10-server-detail.png) |
 | 11 Tailscale 地址就绪 | [67:5](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=67-5) | N，地址获取不等于 SSH 成功 | [PNG](evidence/11-tailscale-ready.png) |
+| 12 同步后服务器列表 | [72:2](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=72-2) | 被动同步、待配置 | [PNG](evidence/12-list-pending.png) |
+| 13 主动设置中的列表 | [72:3](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=72-3) | 单行进度、其他行可用 | [PNG](evidence/13-list-running.png) |
+| 14 授权结果列表 | [72:4](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=72-4) | 成功、部分失败、独立反向 | [PNG](evidence/14-list-results.png) |
+| 15 连接时发现未授权 | [72:5](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=72-5) | 被动连接与明确设置动作 | [PNG](evidence/15-connect-prompt.png) |
 
 ## 交互契约
+
+主动、被动触发和列表投影见 [专项需求](triggers-and-list.md)。列表为账户状态示意，实际布局沿用服务器列表；“02”由缺失信息时的当前设备授权流程复用，不是一级页面。
 
 - 我的设备 → 配置连接方式 → 选择公网/Tailscale/局域网。公网展示地址与外部端口；Tailscale 展示客户端状态与接入入口；局域网实现为接口选择/手填表单，字段与限制见需求 N。
 - Tailscale 未安装时提供安装入口，未登录时打开官方流程；用户返回后读取真实状态和本机地址。未安装、审批中、断开等文案变体见 requirements.md，不把演示跳转当成客户端已登录。
@@ -54,4 +60,6 @@
 
 ## 本轮检查记录
 
-十一张画板逐张截图检查，验证账号/地址可见、默认别名可辨、凭据单一入口、我的设备无服务器关系，服务器详情有双向操作。文本几何检查无零宽或父容器越界；原型导航无已删除节点引用。实际 SSH、Tailscale 客户端调用、iCloud、macOS 交互和认证测试均未执行。
+前次十一张画板逐张截图检查，验证账号/地址可见、默认别名可辨、凭据单一入口、我的设备无服务器关系，服务器详情有双向操作。文本几何检查无零宽或父容器越界；原型导航无已删除节点引用。实际 SSH、Tailscale 客户端调用、iCloud、macOS 交互和认证测试均未执行。
+
+本次 #119 增加四张触发与列表状态图，并更新 02 的当前设备语义。五张变更截图及导航目标单独复核；其他十张沿用前次结果。画板内容是设计示例，不执行远端命令。
