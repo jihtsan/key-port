@@ -41,6 +41,15 @@ struct ServerContextView: View {
                             onConfigure(draft)
                         }.buttonStyle(InterfaceButtonStyle(primary: true))
                     }
+                    Button("添加地址") {
+                        var draft = path.flatMap { workspace.accessDraft(for: $0) } ?? AccessFormDraft()
+                        draft.editingEntryID = server.id
+                        draft.alias = server.alias
+                        draft.description = server.description
+                        draft.address = ""
+                        draft.password = ""
+                        onConfigure(draft)
+                    }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     Button("连接设置") { if let path, let draft = workspace.accessDraft(for: path) { onConfigure(draft) } else { onAction() } }.buttonStyle(.plain).foregroundStyle(InterfaceStyle.blue)
                     if !compact {
                         Text("最近活动").font(.system(size: 13, weight: .medium))
