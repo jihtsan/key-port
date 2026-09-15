@@ -17,3 +17,10 @@
 - 清单通过 O_NOFOLLOW 打开后 fstat 检查，读取期间限制字节数。
 - Relay 只记录最近 TCP 选址，带独立 attemptID，不声明登录成功。
 - 定向测试和真实本地 OpenSSH fixture 通过：HostKeyAlias、首选不可达回退、身份错误和认证失败停止；DNS 阻塞子进程有界回收。
+
+## P3：本机配置代次
+
+- 应用构建同时打包并签名 KeyPortSSHRelay。安装器验证其代码签名，复制到用户 SSH 目录下按内容哈希命名的稳定路径。
+- manifest 与 known_hosts 按内容组成不可变代次，先完成依赖准备再通过现有 Include 日志事务激活。重复准备复用文件，篡改会停止激活。
+- 严格配置只接受结构化 relay 命令；原有任意 ProxyCommand 仍被拒绝。
+- 验证：11 个安装器测试通过，包括不可变代次、篡改、事务回滚与真实 ssh -G；git diff --check 通过。应用整体验收在 P5。
