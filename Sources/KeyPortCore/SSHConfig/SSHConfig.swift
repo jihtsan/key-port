@@ -4,15 +4,18 @@ public struct SSHConfigEntry: Hashable, Sendable {
     public let server: ServerConnection
     public let identityPath: String
     public let proxyCommand: String?
+    public let relay: SSHRelayCommand?
 
     public init(
         server: ServerConnection,
         identityPath: String,
-        proxyCommand: String? = nil
+        proxyCommand: String? = nil,
+        relay: SSHRelayCommand? = nil
     ) {
         self.server = server
         self.identityPath = identityPath
         self.proxyCommand = proxyCommand
+        self.relay = relay
     }
 }
 
@@ -165,6 +168,16 @@ public enum SSHConfigGenerator {
 
 extension SSHConfigGenerator {
     /// Explicit, strictly verified direct routes; no helper or app executable dependency.
+    public static func policyConfig(entries: [SSHConfigEntry], knownHostsPath: String) throws -> String {
+        try entries.map { entry in
+            guard entry.proxyCommand == nil else { throw SSHPolicyCompiler.Failure.invalidPolicy }
+            let direct = SSHConfigEntry(server: entry.server, identityPath: entry.identityPath)
+            let base = try directConfig(entries: [direct], knownHostsPath: knownHostsPath)
+            guard let relay = entry.relay else { return base }
+            return base + "\n    HostKeyAlias \(relay.hostKeyAlias)\n    ProxyCommand \(try relay.rendered())\n"
+        }.joined(separator: "\n")
+    }
+
     public static func directConfig(entries: [SSHConfigEntry], knownHostsPath: String) throws -> String {
         func quoted(_ value: String) throws -> String {
             guard !value.isEmpty, !value.contains(where: { $0.isNewline || $0 == "\0" || $0 == "%" || $0 == "\\" || $0 == "\"" }) else {
@@ -174,7 +187,7 @@ extension SSHConfigGenerator {
         }
         return try entries.map { entry in
             let server = entry.server
-            guard !server.alias.isEmpty, server.alias.first != "-", server.alias.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }), (1...65535).contains(server.port), entry.proxyCommand == nil else {
+            guard !server.alias.isEmpty, server.alias.first != "-", server.alias.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }), (1...65535).contains(server.port), entry.proxyCommand == nil, entry.relay == nil else {
                 throw CocoaError(.fileWriteInapplicableStringEncoding)
             }
             return """

@@ -5,6 +5,13 @@ import KeyPortCore
 @main
 struct KeyPortSSHRelayMain {
     static func main() {
+        if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--resolve" {
+            let hosts = BoundedDNS.numericHosts(CommandLine.arguments[2], port: CommandLine.arguments[3])
+            if let data = try? JSONEncoder().encode(hosts) { FileHandle.standardOutput.write(data) }
+            return
+        }
+        signal(SIGTERM) { _ in relayCancelled = 1 }
+        signal(SIGINT) { _ in relayCancelled = 1 }
         do {
             let command = try RelayCommand(arguments: Array(CommandLine.arguments.dropFirst()))
             switch command {
@@ -57,8 +64,7 @@ private enum RelayCommand {
             throw RelayRuntimeError.invalidArguments
         }
         let configURL = URL(fileURLWithPath: configPath).standardizedFileURL
-        guard isOwnedPrivateFile(configURL),
-              let data = try? Data(contentsOf: configURL),
+        guard let data = try? SSHRelayOwnedFile.read(configURL, limit: SSHPreconnectRelayRuntime.maximumManifestBytes),
               data.count <= SSHPreconnectRelayRuntime.maximumManifestBytes,
               let manifest = try? HostV6.CanonicalJSON.decode(
                   SSHPreconnectRelayManifest.self,
@@ -140,7 +146,7 @@ private struct RelayRuntime {
 
         for candidate in configuration.candidates {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else { throw RelayRuntimeError.budgetExceeded }
+            guard relayCancelled == 0, now < deadline else { throw RelayRuntimeError.budgetExceeded }
             let remaining = deadline - now
             let candidateBudget = min(
                 UInt64(configuration.connectTimeoutMilliseconds) * 1_000_000,
@@ -148,6 +154,7 @@ private struct RelayRuntime {
             )
             switch connect(candidate: candidate, timeoutNanoseconds: candidateBudget) {
             case .connected(let descriptor):
+                recordSelection(candidate.endpointID)
                 try relay(descriptor)
                 return
             case .timedOut:
@@ -163,6 +170,17 @@ private struct RelayRuntime {
         throw sawTimeout ? RelayRuntimeError.candidateTimeout : RelayRuntimeError.candidateUnavailable
     }
 
+    private func recordSelection(_ endpointID: UUID) {
+        guard let directory = configuration.eventsDirectory else { return }
+        var info = stat()
+        guard lstat(directory, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { return }
+        let event = SSHRelaySelectionEvent(attemptID: UUID(), profileID: configuration.profileID, endpointID: endpointID, selectedAt: Date())
+        guard let data = try? JSONEncoder().encode(event) else { return }
+        let file = URL(fileURLWithPath: directory).appendingPathComponent(configuration.profileID.uuidString + ".json")
+        try? data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
     private enum ConnectResult {
         case connected(Int32)
         case timedOut
@@ -175,46 +193,22 @@ private struct RelayRuntime {
     ) -> ConnectResult {
         let host = SSHPreconnectRelayConfiguration.normalizedHost(candidate.host)
         let service = String(candidate.port)
-        var hints = addrinfo(
-            ai_flags: 0,
-            ai_family: AF_UNSPEC,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: IPPROTO_TCP,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-        var addressList: UnsafeMutablePointer<addrinfo>?
-        let resolutionStatus = host.withCString { hostPointer in
-            service.withCString { servicePointer in
-                getaddrinfo(hostPointer, servicePointer, &hints, &addressList)
-            }
+        let candidateDeadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        let hosts = BoundedDNS.resolve(host, port: service, deadline: candidateDeadline)
+        for (index, numericHost) in hosts.enumerated() {
+            guard relayCancelled == 0 else { return .unavailable }
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < candidateDeadline else { return .timedOut }
+            // Reserve time for the other address family within the same DNS candidate.
+            let deadline = now + (candidateDeadline - now) / UInt64(max(1, hosts.count - index))
+            var hints = addrinfo(ai_flags: AI_NUMERICHOST | AI_NUMERICSERV, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: IPPROTO_TCP, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
+            var list: UnsafeMutablePointer<addrinfo>?
+            guard getaddrinfo(numericHost, service, &hints, &list) == 0, let address = list else { continue }
+            let descriptor = connect(address: address.pointee.ai_addr, length: address.pointee.ai_addrlen, deadline: deadline)
+            freeaddrinfo(address)
+            if let descriptor { return .connected(descriptor) }
         }
-        guard resolutionStatus == 0, let firstAddress = addressList else {
-            if addressList != nil { freeaddrinfo(addressList) }
-            return .unavailable
-        }
-        defer { freeaddrinfo(firstAddress) }
-
-        let candidateDeadline = DispatchTime.now().uptimeNanoseconds
-            .addingReportingOverflow(timeoutNanoseconds).partialValue
-        var address = firstAddress
-        var sawTimeout = false
-        while true {
-            if let descriptor = connect(
-                address: address.pointee.ai_addr,
-                length: address.pointee.ai_addrlen,
-                deadline: candidateDeadline
-            ) {
-                return .connected(descriptor)
-            }
-            if DispatchTime.now().uptimeNanoseconds >= candidateDeadline {
-                sawTimeout = true
-            }
-            guard let next = address.pointee.ai_next else { break }
-            address = next
-        }
+        let sawTimeout = DispatchTime.now().uptimeNanoseconds >= candidateDeadline
         return sawTimeout ? .timedOut : .unavailable
     }
 
@@ -245,7 +239,7 @@ private struct RelayRuntime {
         )
         while true {
             let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline else {
+            guard relayCancelled == 0, now < deadline else {
                 Darwin.close(descriptor)
                 return nil
             }
@@ -253,11 +247,8 @@ private struct RelayRuntime {
                 UInt64(Int32.max),
                 (deadline - now + 999_999) / 1_000_000
             )))
-            let pollResult = Darwin.poll(&pollDescriptor, 1, remainingMilliseconds)
-            if pollResult == 0 {
-                Darwin.close(descriptor)
-                return nil
-            }
+            let pollResult = Darwin.poll(&pollDescriptor, 1, min(100, remainingMilliseconds))
+            if pollResult == 0 { continue }
             if pollResult < 0 {
                 if errno == EINTR { continue }
                 Darwin.close(descriptor)
@@ -300,6 +291,7 @@ private struct RelayRuntime {
         var bytes = [UInt8](repeating: 0, count: 16 * 1_024)
 
         while socketOpen || !outputBuffer.isEmpty {
+            guard relayCancelled == 0 else { throw RelayRuntimeError.forwardingFailed }
             var pollDescriptors: [pollfd] = []
             var inputIndex: Int?
             var socketIndex: Int?
@@ -322,7 +314,7 @@ private struct RelayRuntime {
 
             if pollDescriptors.isEmpty { break }
             let pollResult = pollDescriptors.withUnsafeMutableBufferPointer {
-                Darwin.poll($0.baseAddress, nfds_t($0.count), -1)
+                Darwin.poll($0.baseAddress, nfds_t($0.count), 250)
             }
             if pollResult < 0 {
                 if errno == EINTR { continue }
@@ -392,14 +384,4 @@ private func setNonBlocking(_ descriptor: Int32) -> Bool {
     let flags = fcntl(descriptor, F_GETFL, 0)
     guard flags >= 0 else { return false }
     return fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0
-}
-
-private func isOwnedPrivateFile(_ url: URL) -> Bool {
-    var info = stat()
-    guard lstat(url.path, &info) == 0,
-          (info.st_mode & S_IFMT) == S_IFREG,
-          info.st_uid == getuid() else {
-        return false
-    }
-    return (info.st_mode & 0o077) == 0
 }

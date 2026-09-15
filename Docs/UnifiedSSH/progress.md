@@ -8,3 +8,12 @@
 - 云端合并保留 superseded 元数据，旧 fixed 记录不会重新作为有效入口出现。
 - 调整规划中的 canonical 选择：采用组内稳定最小 ID，不采用各 Mac 的本地默认 ID，避免两台 Mac 同时升级选出不同 canonical；候选顺序仍由用户明确指定。
 - 本阶段只提供纯迁移能力，正式工作区将在 P4 接入。
+
+## P2：策略执行基础（#132）
+
+- 编译仅放行同 Node、主机指纹一致、具备本机账户授权及当前端点绑定验证的候选。
+- 新增结构化 Relay SSH 配置，不接受任意 ProxyCommand 文本。
+- DNS 在可终止子进程中完成，解析与拨号共用预算；IPv4/IPv6 共用候选截止时间。
+- 清单通过 O_NOFOLLOW 打开后 fstat 检查，读取期间限制字节数。
+- Relay 只记录最近 TCP 选址，带独立 attemptID，不声明登录成功。
+- 定向测试和真实本地 OpenSSH fixture 通过：HostKeyAlias、首选不可达回退、身份错误和认证失败停止；DNS 阻塞子进程有界回收。

@@ -226,6 +226,25 @@ if [[ -x /usr/sbin/sshd && -x /usr/bin/ssh-keygen && -x /usr/bin/ssh-keyscan ]];
         "    ProxyCommand $HELPER --config $OPENSSH_MANIFEST --profile-id $PROFILE_ID --forward-host %h --forward-port %p" \
         >"$OPENSSH_CONFIG"
     /usr/bin/ssh -F "$OPENSSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=3 relay-fixture true
+    # Verify the stable logical host name across a preconnect fallback.
+    cp "$KNOWN_HOSTS" "$FIXTURE_DIR/known-hosts-original"
+    /usr/bin/awk '{print "keyport-fixture " $2 " " $3}' "$FIXTURE_DIR/known-hosts-original" >"$KNOWN_HOSTS"
+    printf '\n    HostKeyAlias keyport-fixture\n' >>"$OPENSSH_CONFIG"
+    /usr/bin/ssh -F "$OPENSSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=3 relay-fixture true
+    write_manifest "$OPENSSH_MANIFEST" 127.0.0.1 "$SSH_PORT" "$PROFILE_ID" "$SSH_PORT" "$THIRD_PORT"
+    /usr/bin/ssh-keygen -q -t ed25519 -N '' -f "$FIXTURE_DIR/wrong-host"
+    /usr/bin/awk '{print "keyport-fixture " $1 " " $2}' "$FIXTURE_DIR/wrong-host.pub" >"$KNOWN_HOSTS"
+    if /usr/bin/ssh -F "$OPENSSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=3 relay-fixture true >"$FIXTURE_DIR/mismatch.out" 2>"$FIXTURE_DIR/mismatch.err"; then
+        echo "Host mismatch unexpectedly succeeded" >&2; exit 1
+    fi
+    [[ ! -s "$THIRD_RECEIVED" ]]
+    /usr/bin/awk '{print "keyport-fixture " $2 " " $3}' "$FIXTURE_DIR/known-hosts-original" >"$KNOWN_HOSTS"
+    : >"$FIXTURE_DIR/authorized_keys"
+    if /usr/bin/ssh -F "$OPENSSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=3 relay-fixture true >"$FIXTURE_DIR/auth.out" 2>"$FIXTURE_DIR/auth.err"; then
+        echo "Rejected authentication unexpectedly succeeded" >&2; exit 1
+    fi
+    [[ ! -s "$THIRD_RECEIVED" ]]
+    echo "System OpenSSH: stable HostKeyAlias, identity mismatch and rejected authentication stop without fallback"
     echo "System OpenSSH: auth, host-key policy, and session lifecycle remained outside the helper"
 else
     echo "System OpenSSH fixture skipped: sshd/key tools unavailable"
