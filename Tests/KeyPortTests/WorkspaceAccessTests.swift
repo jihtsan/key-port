@@ -63,6 +63,37 @@ import KeyPortInterface
         XCTAssertEqual(restored.workspace.graph.paths.first?.verification, .verified)
         XCTAssertEqual(restored.workspace.graph.servers.first?.description, input.description)
     }
+    func testBatchAddressesPersistAsIndependentPendingPathsAndPreserveExistingVerification() throws {
+        let root = try directory()
+        var store: WorkspaceStore? = try WorkspaceStore(home: root)
+        let key = try key(store!)
+        let server = UUID().uuidString
+        var input = draft()
+        input.additionalAddresses = ["100.64.0.2", "fd7a:115c:a1e0::2", "TEST.EXAMPLE", "100.64.0.2"]
+        let primary = try store!.save(draft: input, serverID: server, key: key)
+        XCTAssertEqual(store!.state.connections.count, 3)
+        XCTAssertEqual(Set(store!.state.connections.map(\.serverID)), [server])
+        XCTAssertTrue(store!.state.connections.allSatisfy { $0.verification == "pending" })
+        XCTAssertTrue(store!.state.trusts.isEmpty)
+        try store!.checked(primary, success: true)
+        XCTAssertEqual(store!.state.connections.filter { $0.verification == "verified" }.count, 1)
+        var more = draft()
+        more.address = "another.example"
+        more.additionalAddresses = input.addresses
+        _ = try store!.save(draft: more, serverID: server, key: key)
+        XCTAssertEqual(store!.state.connections.count, 4)
+        XCTAssertEqual(store!.state.connections.first { $0.id == primary }?.verification, "verified")
+        XCTAssertEqual(store!.state.defaultPaths?[server], primary)
+        let count = store!.state.connections.count
+        more.additionalAddresses.append("invalid address")
+        XCTAssertThrowsError(try store!.save(draft: more, serverID: server, key: key))
+        XCTAssertEqual(store!.state.connections.count, count)
+        store = nil
+        let restored = try WorkspaceStore(home: root)
+        XCTAssertEqual(restored.state.connections.count, 4)
+        XCTAssertEqual(restored.state.connections.filter { $0.verification == "pending" }.count, 3)
+        XCTAssertEqual(restored.state.connections.first { $0.id == primary }?.verification, "verified")
+    }
     func testDefaultPathRenameDeletionAndRestartStayConsistent() throws {
         let root = try directory()
         var store: WorkspaceStore? = try WorkspaceStore(home: root)

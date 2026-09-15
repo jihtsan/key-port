@@ -5,29 +5,34 @@ import KeyPortInterface
 struct TailscaleAddressPicker: View {
     @Binding var draft: AccessFormDraft
     @State private var presented = false
+    @State private var managing = false
     var body: some View {
         HStack {
             Button("检测并导入 Tailscale 地址") { presented = true }
                 .buttonStyle(.plain).foregroundStyle(.blue)
-            Text("自动发现设备与地址").foregroundStyle(.secondary)
+            Button("管理地址（\(draft.addresses.count)）") { managing = true }
+                .buttonStyle(.plain).foregroundStyle(.blue)
         }.font(.system(size: 12)).frame(height: 28)
         .sheet(isPresented: $presented) {
             TailscaleDiscoveryView { node, address in
-                TailscaleDiscovery.apply(address: address, node: node, to: &draft)
+                TailscaleDiscovery.apply(addresses: address, node: node, to: &draft)
                 presented = false
             }
         }
+        .sheet(isPresented: $managing) { WorkspaceAddressEditor(draft: $draft) }
     }
 }
 
 private struct TailscaleDiscoveryView: View {
-    let select: (TailscaleNode, String) -> Void
+    let select: (TailscaleNode, [String]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var status: TailscaleStatus?
     @State private var error: String?
     @State private var detecting = true
     @State private var generation = 0
     @State private var search = ""
+    @State private var selectedNodeID: String?
+    @State private var selectedAddresses = Set<String>()
     private var nodes: [TailscaleNode] {
         (status?.nodes ?? []).filter { node in
             !TailscaleDiscovery.addresses(for: node).isEmpty && (search.isEmpty || node.name.localizedCaseInsensitiveContains(search) || TailscaleDiscovery.addresses(for: node).contains { $0.localizedCaseInsensitiveContains(search) })
@@ -41,7 +46,7 @@ private struct TailscaleDiscoveryView: View {
                 Button("重新检测") { generation += 1 }.disabled(detecting)
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("选择地址后自动填入连接表单。登录账户请填写目标机器的 SSH 用户名。")
+            Text("勾选同一台设备的多个地址，或全选后一次导入。账户与端口共用。")
             Text("设备在线仅表示已连接 Tailscale；SSH 可达性与免密登录将在配置时验证。")
                 .font(.callout).foregroundStyle(.secondary)
             if detecting { HStack { ProgressView().controlSize(.small); Text("正在检测本机 Tailscale…") } }
@@ -57,23 +62,45 @@ private struct TailscaleDiscoveryView: View {
                             Text(node.name).font(.headline)
                             if node.isCurrent { Text("此 Mac").foregroundStyle(.secondary) }
                             Spacer()
+                            Button("全选地址") {
+                                selectedNodeID = node.id
+                                selectedAddresses = Set(TailscaleDiscovery.addresses(for: node))
+                            }
                             Text(node.isOnline ? "在线" : "离线").foregroundStyle(node.isOnline ? .green : .secondary)
                         }
                         ForEach(TailscaleDiscovery.addresses(for: node), id: \.self) { address in
                             HStack {
                                 Text(address).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
                                 Spacer()
-                                Button("使用此地址") { select(node, address) }
-                                    .accessibilityLabel("使用地址 " + address)
+                                Toggle("选择", isOn: Binding(get: { selectedNodeID == node.id && selectedAddresses.contains(address) }, set: { included in
+                                    if included {
+                                        selectedNodeID = node.id
+                                        selectedAddresses.insert(address)
+                                    } else {
+                                        selectedAddresses.remove(address)
+                                        if selectedAddresses.isEmpty { selectedNodeID = nil }
+                                    }
+                                })).toggleStyle(.checkbox).labelsHidden()
+                                    .accessibilityLabel("选择地址 " + address)
+                                    .disabled(selectedNodeID != nil && selectedNodeID != node.id)
                             }
                         }
                     }.padding(.vertical, 8)
                 }
             }
-            Spacer(minLength: 0)
-        }.padding(24).frame(width: 720, height: 550)
+            HStack {
+                Text("已选择 \(selectedAddresses.count) 个地址").foregroundStyle(.secondary)
+                Button("清空选择") { selectedAddresses = []; selectedNodeID = nil }
+                    .disabled(selectedAddresses.isEmpty)
+                Spacer()
+                Button("导入所选地址") {
+                    guard let node = status?.nodes.first(where: { $0.id == selectedNodeID }) else { return }
+                    select(node, TailscaleDiscovery.addresses(for: node).filter { selectedAddresses.contains($0) })
+                }.disabled(detecting || selectedAddresses.isEmpty).keyboardShortcut(.defaultAction)
+            }
+        }.padding(24).frame(width: 720, height: 580)
         .task(id: generation) {
-            detecting = true; error = nil; status = nil
+            detecting = true; error = nil; status = nil; selectedNodeID = nil; selectedAddresses = []
             defer { detecting = false }
             do { status = try await TailscaleDiscovery.detect() }
             catch is CancellationError { }

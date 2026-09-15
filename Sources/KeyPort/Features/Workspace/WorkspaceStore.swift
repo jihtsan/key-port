@@ -171,15 +171,12 @@ import Observation
         try commit(next)
     }
     func save(draft: AccessFormDraft, serverID: String, key: SSHKeyRecord) throws -> String {
-        guard AccessFormDraft.isValidHost(draft.address), !draft.account.isEmpty, draft.account.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == ".") }), aliases.validationMessage(for: draft.alias, editingEntryID: serverID) == nil,
+        guard AccessFormDraft.isValidHost(draft.address), draft.addresses.allSatisfy(AccessFormDraft.isValidHost), draft.additionalAddresses.allSatisfy({ AccessFormDraft.isValidHost($0.trimmingCharacters(in: .whitespacesAndNewlines)) }), !draft.account.isEmpty, draft.account.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == ".") }), aliases.validationMessage(for: draft.alias, editingEntryID: serverID) == nil,
               let nodeID = UUID(uuidString: serverID), let port = UInt16(draft.port), port > 0 else { throw WorkspaceError.configuration }
         try installation.validateAlias(draft.alias)
         var next = document
         if !next.topology.nodes.contains(where: { $0.id == nodeID }) { next.topology.nodes.append(.init(id: nodeID, name: draft.description, roles: [.sshHost])) }
         guard let index = next.topology.nodes.firstIndex(where: { $0.id == nodeID && !$0.isDeleted }) else { throw WorkspaceError.storage }
-        let endpoint = next.topology.activeEndpoints.first(where: { $0.nodeID == nodeID && $0.address == draft.address && $0.port == port && $0.protocol == .ssh })
-            ?? Endpoint(id: UUID(), nodeID: nodeID, address: draft.address, port: port, protocol: .ssh)
-        if !next.topology.endpoints.contains(where: { $0.id == endpoint.id }) { next.topology.endpoints.append(endpoint) }
         if !next.topology.nodes[index].roles.contains(.sshHost) {
             next.topology.nodes[index].roles.append(.sshHost)
             next.topology.nodes[index].removedRoles?.removeAll { $0 == .sshHost }
@@ -189,15 +186,28 @@ import Observation
         let account = next.topology.activeAccounts.first { $0.nodeID == nodeID && $0.username == draft.account }
             ?? SSHAccount(id: UUID(), nodeID: nodeID, username: draft.account)
         if !next.topology.sshAccounts.contains(where: { $0.id == account.id }) { next.topology.sshAccounts.append(account) }
-        let existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.routePolicy.fixedEndpointID == endpoint.id }
-        let id = existing?.id ?? UUID()
-        next.topology.sshConnectionProfiles.removeAll { $0.id == id }
-        next.topology.sshConnectionProfiles.append(.init(id: id, accountID: account.id, sshAlias: draft.alias, routePolicy: .fixed(endpointID: endpoint.id), createdAt: existing?.createdAt ?? Date(), updatedAt: Date(), version: (existing?.version ?? 0) + 1))
-        next.pathKeys[id.uuidString] = key.id
+        var primaryID: UUID?
+        for (offset, address) in draft.addresses.enumerated() {
+            let endpoint = next.topology.activeEndpoints.first { $0.nodeID == nodeID && $0.address.caseInsensitiveCompare(address) == .orderedSame && $0.port == port && $0.protocol == .ssh }
+                ?? Endpoint(id: UUID(), nodeID: nodeID, address: address, port: port, protocol: .ssh)
+            if !next.topology.endpoints.contains(where: { $0.id == endpoint.id }) { next.topology.endpoints.append(endpoint) }
+            let existing = next.topology.activeConnectionProfiles.first { $0.accountID == account.id && $0.routePolicy.fixedEndpointID == endpoint.id }
+            let id = existing?.id ?? UUID()
+            if offset == 0 || existing == nil {
+                next.topology.sshConnectionProfiles.removeAll { $0.id == id }
+                next.topology.sshConnectionProfiles.append(.init(id: id, accountID: account.id, sshAlias: draft.alias, routePolicy: .fixed(endpointID: endpoint.id), createdAt: existing?.createdAt ?? Date(), updatedAt: Date(), version: (existing?.version ?? 0) + 1))
+                next.pathKeys[id.uuidString] = key.id
+            }
+            if offset == 0 {
+                primaryID = id
+                next.topology.accessVerifications.removeAll { $0.profileID == id && $0.deviceID == state.deviceID }
+            }
+        }
+        guard let id = primaryID else { throw WorkspaceError.configuration }
         if next.defaultPaths[serverID] == nil { next.defaultPaths[serverID] = id.uuidString }
-        next.topology.accessVerifications.removeAll { $0.profileID == id && $0.deviceID == state.deviceID }
         try commit(next); workspace.select(.path(id.uuidString)); return id.uuidString
     }
+
     func record(_ status: AccessAuthorizationStatus, serverID: String, account: String, keyID: String) throws {
         var next = document
         guard let a = next.topology.activeAccounts.first(where: { $0.nodeID.uuidString == serverID && $0.username == account }),

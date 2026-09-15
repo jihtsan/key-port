@@ -166,6 +166,10 @@ public struct FirstAccessView<Controls: View>: View {
                     .lineLimit(2).help(flow.draft.description)
             }
             Text("\(flow.draft.account) · 此 Mac · 免密登录验证成功" + (flow.isSimulation ? "（模拟）" : "")).font(.system(size: 14)).foregroundStyle(InterfaceStyle.color(0x258456)).frame(height: 21)
+            if flow.draft.addresses.count > 1 {
+                Text("已保存 \(flow.draft.addresses.count) 条地址；本次验证：\(flow.draft.address)。其他新增地址待逐条验证。")
+                    .font(.system(size: 12)).foregroundStyle(InterfaceStyle.muted)
+            }
             Text(flow.command).font(InterfaceStyle.technical(17)).foregroundStyle(InterfaceStyle.color(0x536C8D)).frame(height: 26).textSelection(.enabled)
             Text("SSH 命令使用别名；修改描述不改变连接配置。")
                 .font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)

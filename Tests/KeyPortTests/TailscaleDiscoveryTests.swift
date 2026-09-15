@@ -22,6 +22,18 @@ final class TailscaleDiscoveryTests: XCTestCase {
         TailscaleDiscovery.apply(address: "unrelated.example", node: peer, to: &draft)
         XCTAssertEqual(draft.address, "fd7a:115c:a1e0::2")
     }
+    func testBatchImportAddsEverySelectedAddressWithoutOverwritingExistingAddress() throws {
+        let node = try XCTUnwrap(TailscaleStatusParser.parse(json).nodes.first { !$0.isCurrent })
+        var draft = AccessFormDraft()
+        TailscaleDiscovery.apply(addresses: TailscaleDiscovery.addresses(for: node), node: node, to: &draft)
+        XCTAssertEqual(draft.addresses, ["server.tail.example", "100.64.0.2", "fd7a:115c:a1e0::2"])
+        TailscaleDiscovery.apply(addresses: TailscaleDiscovery.addresses(for: node), node: node, to: &draft)
+        XCTAssertEqual(draft.addresses.count, 3)
+        draft.address = "existing.example"
+        draft.additionalAddresses = []
+        TailscaleDiscovery.apply(addresses: ["100.64.0.2", "fd7a:115c:a1e0::2", "other.example"], node: node, to: &draft)
+        XCTAssertEqual(draft.addresses, ["existing.example", "100.64.0.2", "fd7a:115c:a1e0::2"])
+    }
     func testStoppedAndMalformedAndFailedResultsAreRejected() async {
         for stub in [Stub(output: #"{"BackendState":"Stopped"}"#), Stub(output: "invalid"), Stub(output: json, ending: .timedOut(forcedKill: false)), Stub(output: json, ending: .exited(1))] {
             do {
