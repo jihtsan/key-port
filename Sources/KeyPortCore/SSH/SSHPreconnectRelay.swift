@@ -66,6 +66,7 @@ public struct SSHPreconnectRelayConfiguration: Identifiable, Codable, Hashable, 
     public static let minimumOverallBudgetMilliseconds = 100
     public static let maximumOverallBudgetMilliseconds = 120_000
 
+    public let eventsDirectory: String?
     public let schemaVersion: Int
     public let operationID: UUID
     public let profileID: UUID
@@ -78,6 +79,7 @@ public struct SSHPreconnectRelayConfiguration: Identifiable, Codable, Hashable, 
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
+        eventsDirectory: String? = nil,
         operationID: UUID,
         profileID: UUID,
         target: SSHPreconnectRelayTarget,
@@ -85,6 +87,7 @@ public struct SSHPreconnectRelayConfiguration: Identifiable, Codable, Hashable, 
         connectTimeoutMilliseconds: Int = 5_000,
         overallBudgetMilliseconds: Int = 20_000
     ) {
+        self.eventsDirectory = eventsDirectory
         self.schemaVersion = schemaVersion
         self.operationID = operationID
         self.profileID = profileID
@@ -269,4 +272,14 @@ public enum SSHPreconnectRelayRuntime {
     public static let version = 1
     public static let versionString = "KeyPortSSHRelay/1"
     public static let maximumManifestBytes = 1_024 * 1_024
+}
+
+public struct SSHRelaySelectionEvent: Codable, Sendable {
+    public let attemptID: UUID
+    public let profileID: UUID
+    public let endpointID: UUID
+    public let selectedAt: Date
+    public init(attemptID: UUID, profileID: UUID, endpointID: UUID, selectedAt: Date) {
+        self.attemptID = attemptID; self.profileID = profileID; self.endpointID = endpointID; self.selectedAt = selectedAt
+    }
 }

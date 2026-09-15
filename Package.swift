@@ -42,6 +42,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("Network")]
         ),
         .executableTarget(name: "KeyPortCoreChecks", dependencies: ["KeyPortCore"]),
+        .testTarget(name: "KeyPortSSHRelayTests", dependencies: ["KeyPortSSHRelay"]),
         .testTarget(name: "KeyPortTests", dependencies: ["KeyPort"]),
         .testTarget(name: "KeyPortCoreTests", dependencies: ["KeyPortCore"]),
         .testTarget(name: "KeyPortTunnelBrokerTests", dependencies: ["KeyPortTunnelBroker"]),
