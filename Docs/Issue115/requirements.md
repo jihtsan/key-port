@@ -2,7 +2,7 @@
 
 - 状态：需求与交互设计提案；未实现、未完成真实 SSH / 双 Mac iCloud 验收。
 - 日期：2026-09-15
-- 关联：初稿 [#115](https://github.com/jihtsan/key-port/issues/115)；当前修订 [#117](https://github.com/jihtsan/key-port/issues/117)
+- 关联：初稿 [#115](https://github.com/jihtsan/key-port/issues/115)；页面修订 [#117](https://github.com/jihtsan/key-port/issues/117)；触发与列表 [#119](https://github.com/jihtsan/key-port/issues/119)
 - 设计：[Figma 页面](https://www.figma.com/design/RGpDDMdxvoPwzhlTB5RyiY?node-id=61-2)
 - 配套：[交互与设计索引](design.md)、[验收清单](acceptance.md)
 
@@ -94,6 +94,10 @@ A 已配置目标服务器后，B 通过同一 Apple 账户同步目标服务器
 6. 密码只在所需步骤短期可用。安装后断网应显示“公钥已安装，登录待验证”，支持继续测试与精确撤销。
 
 “已有设备代装 B 公钥”可作为后续替代认证能力；本期核心路径是同步的有效服务器凭据，不承诺已实现代装。
+
+### 5.1 主动与被动触发
+
+首次授权适用于任意当前 Mac，不是新设备专属页面。主动点击设置进入执行；被动同步先更新待配置状态，被动连接发现不足时由用户选择“设置免密并连接”。列表与详情共用按本机、服务器和账户定位的状态，只有真实验证成功才显示已就绪。详细触发、状态、并发与多账户规则见 [触发与服务器列表](triggers-and-list.md)。
 
 ## 6. 双向免密（R）
 
