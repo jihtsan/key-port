@@ -56,6 +56,8 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
     /// legacy meaning: all active SSH endpoints matching `networkScope` are
     /// eligible and are ranked by live evidence and endpoint priority.
     public var candidateEndpointIDs: [UUID]
+    public var policyVersion: Int?
+    public var supersededProfileIDs: [UUID]
     public var transportPreference: SSHConnectionTransportPreference
     public var createdAt: Date
     public var updatedAt: Date
@@ -68,6 +70,8 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         sshAlias: String,
         routePolicy: SSHRoutePolicy,
         candidateEndpointIDs: [UUID] = [],
+        policyVersion: Int? = nil,
+        supersededProfileIDs: [UUID] = [],
         transportPreference: SSHConnectionTransportPreference = .automatic,
         createdAt: Date = .now,
         updatedAt: Date = .now,
@@ -79,6 +83,8 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         self.sshAlias = sshAlias.trimmingCharacters(in: .whitespacesAndNewlines)
         self.routePolicy = routePolicy
         self.candidateEndpointIDs = Self.uniqueIDs(candidateEndpointIDs)
+        self.policyVersion = policyVersion
+        self.supersededProfileIDs = supersededProfileIDs
         self.transportPreference = transportPreference
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -92,6 +98,7 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         case sshAlias
         case routePolicy
         case candidateEndpointIDs
+        case policyVersion, supersededProfileIDs
         case transportPreference
         case createdAt
         case updatedAt
@@ -110,6 +117,8 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
                 [UUID].self,
                 forKey: .candidateEndpointIDs
             ) ?? [],
+            policyVersion: try container.decodeIfPresent(Int.self, forKey: .policyVersion),
+            supersededProfileIDs: try container.decodeIfPresent([UUID].self, forKey: .supersededProfileIDs) ?? [],
             transportPreference: try container.decodeIfPresent(
                 SSHConnectionTransportPreference.self,
                 forKey: .transportPreference
@@ -128,6 +137,8 @@ public struct SSHConnectionProfile: Identifiable, Codable, Hashable, Sendable {
         try container.encode(sshAlias, forKey: .sshAlias)
         try container.encode(routePolicy, forKey: .routePolicy)
         try container.encode(Self.uniqueIDs(candidateEndpointIDs), forKey: .candidateEndpointIDs)
+        try container.encodeIfPresent(policyVersion, forKey: .policyVersion)
+        try container.encode(supersededProfileIDs, forKey: .supersededProfileIDs)
         try container.encode(transportPreference, forKey: .transportPreference)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)

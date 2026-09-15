@@ -427,10 +427,11 @@ public struct AccessVerification: Identifiable, Codable, Hashable, Sendable {
     public var passwordCheck: AuthenticationCheck?
     public var keyCheck: AuthenticationCheck?
     public var machineConfigurationRefreshAttemptedAt: Date?
+    public var policyEvidenceBinding: String?
 
     public var id: String {
         let planSubject = profileID?.uuidString.lowercased() ?? "account"
-        return "\(deviceID):\(accountID.uuidString.lowercased()):\(planSubject)"
+        return "\(deviceID):\(accountID.uuidString.lowercased()):\(planSubject)" + (endpointID.map { ":" + $0.uuidString.lowercased() } ?? "")
     }
 
     public init(
@@ -687,7 +688,8 @@ public struct TopologySnapshot: Codable, Hashable, Sendable {
     public var activeEndpoints: [Endpoint] { endpoints.filter { !$0.isDeleted } }
     public var activeAccounts: [SSHAccount] { sshAccounts.filter { !$0.isDeleted } }
     public var activeConnectionProfiles: [SSHConnectionProfile] {
-        sshConnectionProfiles.filter { !$0.isDeleted }
+        let superseded = Set(sshConnectionProfiles.flatMap(\.supersededProfileIDs))
+        return sshConnectionProfiles.filter { !$0.isDeleted && !superseded.contains($0.id) }
     }
     public var activeTailscaleNodes: [TailscaleNodeIdentity] {
         tailscaleNodes.filter { !$0.isDeleted }
