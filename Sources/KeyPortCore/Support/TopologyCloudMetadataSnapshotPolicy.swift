@@ -213,10 +213,11 @@ public enum TopologyCloudMetadataSnapshotPolicy {
         _ candidate: SSHConnectionProfile,
         over existing: SSHConnectionProfile
     ) -> SSHConnectionProfile {
-        if candidate.version != existing.version {
-            return candidate.version > existing.version ? candidate : existing
-        }
-        return candidate.updatedAt >= existing.updatedAt ? candidate : existing
+        var winner = candidate.version != existing.version
+            ? (candidate.version > existing.version ? candidate : existing)
+            : (candidate.updatedAt >= existing.updatedAt ? candidate : existing)
+        winner.supersededProfileIDs = Array(Set(candidate.supersededProfileIDs + existing.supersededProfileIDs)).sorted { $0.uuidString < $1.uuidString }
+        return winner
     }
 
     private static func mergeByID<Value, ID: Hashable>(
