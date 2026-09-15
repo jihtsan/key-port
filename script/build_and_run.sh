@@ -47,6 +47,7 @@ pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 cd "$ROOT_DIR"
 swift build --product KeyPort
 swift build --product KeyPortAskPass
+swift build --product KeyPortSSHRelay
 BUILD_DIR="$(swift build --show-bin-path)"
 RESOURCE_BUNDLE_SOURCE="$BUILD_DIR/$RESOURCE_BUNDLE_NAME"
 
@@ -54,6 +55,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_HELPERS" "$APP_RESOURCES"
 cp "$BUILD_DIR/KeyPort" "$APP_BINARY"
 cp "$BUILD_DIR/KeyPortAskPass" "$APP_HELPERS/KeyPortAskPass"
+cp "$BUILD_DIR/KeyPortSSHRelay" "$APP_HELPERS/KeyPortSSHRelay"
 if [[ ! -d "$RESOURCE_BUNDLE_SOURCE" ]]; then
   echo "SwiftPM resource bundle is missing: $RESOURCE_BUNDLE_SOURCE" >&2
   exit 2
@@ -71,7 +73,7 @@ if [[ ! -d "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME/Contents/Resources" ]]; then
   echo "Packaged SwiftPM resource bundle is incomplete: $APP_RESOURCES/$RESOURCE_BUNDLE_NAME" >&2
   exit 2
 fi
-chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass"
+chmod +x "$APP_BINARY" "$APP_HELPERS/KeyPortAskPass" "$APP_HELPERS/KeyPortSSHRelay"
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -117,6 +119,7 @@ if [[ "$SIGNING_IDENTITY" == "-" ]]; then
   # Ad-hoc signing is useful for local UI and SSH workflow checks, but cannot
   # activate CloudKit or iCloud Keychain.
   codesign --force --sign - "$APP_HELPERS/KeyPortAskPass" >/dev/null
+  codesign --force --sign - "$APP_HELPERS/KeyPortSSHRelay" >/dev/null
   codesign --force --sign - "$APP_BUNDLE" >/dev/null
   codesign --verify --deep --strict "$APP_BUNDLE"
   echo "Signed ad-hoc (iCloud disabled)"
@@ -273,6 +276,7 @@ else
   /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$ENTITLEMENTS_FILE"
 
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_HELPERS/KeyPortAskPass" >/dev/null
+  codesign --force --options runtime --sign "$SIGNING_IDENTITY" "$APP_HELPERS/KeyPortSSHRelay" >/dev/null
   codesign --force --options runtime --sign "$SIGNING_IDENTITY" \
     --entitlements "$ENTITLEMENTS_FILE" "$APP_BUNDLE" >/dev/null
   SIGNED_TEAM_ID="$(codesign -dvv "$APP_BUNDLE" 2>&1 | sed -n 's/^TeamIdentifier=//p')"

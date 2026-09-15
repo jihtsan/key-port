@@ -69,7 +69,7 @@ struct ManagedAliasInstallation {
             guard Set(aliases).count == aliases.count else { throw Failure(message: "管理配置包含重复别名。") }
             var visited = Set<String>()
             try inspect(body, source: userConfig, aliases: aliases, visited: &visited, depth: 0)
-            let content = try SSHConfigGenerator.directConfig(entries: entries, knownHostsPath: knownHosts.path)
+            let content = try SSHConfigGenerator.policyConfig(entries: entries, knownHostsPath: knownHosts.path)
             let newUser = entries.isEmpty ? body : prefix + body
             let next = [
                 FileState(path: managed.path, data: entries.isEmpty ? nil : Data(content.utf8), mode: 0o600),
