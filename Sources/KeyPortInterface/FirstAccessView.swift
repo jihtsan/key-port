@@ -170,6 +170,7 @@ public struct FirstAccessView<Controls: View>: View {
                 Text("已保存 \(flow.draft.addresses.count) 条地址；本次验证：\(flow.draft.address)。其他新增地址待逐条验证。")
                     .font(.system(size: 12)).foregroundStyle(InterfaceStyle.muted)
             }
+            if flow.command.isEmpty { Text("此地址验证成功。日常连接策略尚未就绪，请返回服务器检查固定地址或候选列表。").foregroundStyle(.secondary) }
             Text(flow.command).font(InterfaceStyle.technical(17)).foregroundStyle(InterfaceStyle.color(0x536C8D)).frame(height: 26).textSelection(.enabled)
             Text("SSH 命令使用别名；修改描述不改变连接配置。")
                 .font(.system(size: 12)).foregroundStyle(InterfaceStyle.color(0x8797AC)).frame(height: 18)
@@ -201,7 +202,7 @@ public struct FirstAccessView<Controls: View>: View {
         HStack(spacing: 12) {
             switch flow.state {
             case .success:
-                Button(flow.handoff == .opened ? "已请求打开终端" : "在终端打开") { flow.performHandoff() }.buttonStyle(InterfaceButtonStyle(primary: true, width: 112, height: 38))
+                Button(flow.handoff == .opened ? "已请求打开终端" : "在终端打开") { flow.performHandoff() }.disabled(flow.command.isEmpty).buttonStyle(InterfaceButtonStyle(primary: true, width: 112, height: 38))
                 Button("返回服务器", action: finish).buttonStyle(InterfaceButtonStyle(width: 112, height: 38)).keyboardShortcut(.cancelAction)
                 if flow.handoff != .idle {
                     Button((flow.handoff == .copied ? "已复制" : "复制命令") + (flow.isSimulation ? "（演示）" : "")) { flow.performHandoff(copy: true) }.buttonStyle(InterfaceButtonStyle(height: 38))

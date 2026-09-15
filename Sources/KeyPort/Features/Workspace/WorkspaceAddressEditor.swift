@@ -12,7 +12,8 @@ struct WorkspaceAddressEditor: View {
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("先验证第一条地址，其他新增地址保存为待验证路径；共用当前账户和端口。")
+            Toggle("按列表顺序自动回退（仅使用已验证地址）", isOn: Binding(get: { draft.automaticRouting ?? (draft.addresses.count > 1) }, set: { draft.automaticRouting = $0 }))
+            Text("所有地址共用一个 SSH 别名。先验证第一条，其他地址保存后可逐条验证。")
                 .foregroundStyle(.secondary)
             List(draft.addresses, id: \.self) { value in
                 HStack {

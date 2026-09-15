@@ -14,7 +14,7 @@ final class SSHPolicyCompilerTests: XCTestCase {
         var v = AccessVerification(accountID: account, deviceID: "local", profileID: profileID, endpointID: endpointID, status: .authorized)
         t.accessVerifications = [v]
         XCTAssertThrowsError(try SSHPolicyCompiler.compile(profile: p, topology: t, deviceID: "local", keyID: "key"))
-        v.policyEvidenceBinding = SSHPolicyCompiler.evidence(endpoint: endpoint, fingerprint: parsed.fingerprint, keyFingerprint: key.fingerprint)
+        v.policyEvidenceBinding = SSHPolicyCompiler.evidence(endpoint: endpoint, fingerprint: parsed.fingerprint, keyFingerprint: key.fingerprint, username: "user")
         t.accessVerifications = [v]
         XCTAssertEqual(try SSHPolicyCompiler.compile(profile: p, topology: t, deviceID: "local", keyID: "key").endpoints.map(\.id), [endpointID])
         t.endpoints[0].address = "192.0.2.2"

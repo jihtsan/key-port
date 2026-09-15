@@ -38,6 +38,7 @@ private struct WorkspaceHome: View {
         } message: { Text(notice ?? "") }
         .sheet(isPresented: Binding(get: { panel != nil }, set: { if !$0 { panel = nil } })) {
             if panel == "设置" { WorkspaceSettingsView(store: store) }
+            else if panel == "连接策略", let c = store.state.connections.first(where: { $0.id == store.workspace.selectedPath?.id }) ?? store.state.connections.first(where: { $0.serverID == store.workspace.selectedServer?.id }) { WorkspacePolicyView(store: store, connection: c) }
             else { WorkspaceManagementView(store: store, section: panel ?? "我的设备") }
         }
         .onDisappear { pathTask?.cancel() }
@@ -75,7 +76,7 @@ private struct WorkspaceHome: View {
                     notice = "已请求打开终端；SSH 会话结果请在终端查看。"
                 }
             } catch {
-                if test { try? store.checked(path.id, success: false, unreachable: (error as? AccessFlowFailure) == .unreachable) }
+                if test { try? store.checked(path.id, success: false, unreachable: (error as? AccessFlowFailure) == .unreachable, identityMismatch: (error as? AccessFlowFailure) == .identityMismatch) }
                 notice = (error as? ManagedAliasInstallation.Failure)?.message ?? (test ? "路径验证未通过。请打开连接设置检查；身份不匹配时不会自动继续。" : "终端交接失败，请在配置成功页复制命令。")
             }
         }
@@ -113,6 +114,7 @@ private struct WorkspaceControls: View {
     @Binding var notice: String?
     @State private var serverAction: Bool?
     @State private var renaming = false
+    @State private var editingPolicy = false
     @State private var alias = ""
     private var connection: WorkspaceStore.Connection? {
         if let path = workspace.selectedPath { return store.state.connections.first { $0.id == path.id } }
@@ -128,7 +130,8 @@ private struct WorkspaceControls: View {
                 Divider()
             }
             if let connection {
-                Text(store.isDefault(connection) ? "当前为默认连接" : "当前为指定路径")
+                Text(connection.policyMode ?? "固定地址（旧配置）")
+                Button("连接策略与地址顺序…") { editingPolicy = true }
                 Button("复制连接命令") { perform {
                     let command = try store.command(for: connection)
                     NSPasteboard.general.clearContents()
@@ -141,8 +144,13 @@ private struct WorkspaceControls: View {
                         catch { notice = error.localizedDescription }
                     }
                 }
-                Button("设为默认连接") { perform { try store.setDefault(connection.id) } }
-                    .disabled(connection.verification != "verified" || store.isDefault(connection))
+                Button("复制此地址诊断命令") { perform {
+                    let command = try store.diagnosticCommand(for: connection)
+                    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(command, forType: .string)
+                    notice = "仅本次固定使用所选地址：" + command
+                } }.disabled(connection.verification != "verified")
+                Button("固定使用此地址") { perform { try store.setDefault(connection.id) } }
+                    .disabled(connection.verification != "verified")
                 Button("修改 SSH 别名") { alias = connection.alias; renaming = true }
                 Button("删除当前路径", role: .destructive) { perform { try store.remove(connection.id) } }
             }
@@ -155,6 +163,7 @@ private struct WorkspaceControls: View {
                 }
             }
         }
+        .sheet(isPresented: $editingPolicy) { if let connection { WorkspacePolicyView(store: store, connection: connection) } }
         .alert("修改 SSH 别名", isPresented: $renaming) {
             TextField("SSH 别名", text: $alias)
             Button("取消", role: .cancel) {}

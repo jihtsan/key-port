@@ -4,6 +4,8 @@ import Darwin
 public struct AccessFormDraft: Equatable {
     public var description = ""
     public var editingEntryID: String?
+    public var profileID: String?
+    public var automaticRouting: Bool?
     public var address = ""
     public var additionalAddresses: [String] = []
     public var addresses: [String] {

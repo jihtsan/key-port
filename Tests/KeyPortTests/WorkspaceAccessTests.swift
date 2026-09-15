@@ -19,6 +19,13 @@ import KeyPortInterface
             isInAgent: false, origin: .generated, isLocallyAvailable: true)
         try store.addKey(key); return key
     }
+    private func verify(_ store: WorkspaceStore, _ id: String) throws {
+        let c = store.state.connections.first { $0.id == id }!
+        let parsed = PublicKeyParser.parse(hostLine)!
+        try store.trust(.init(serverID: c.serverID, address: c.address, port: c.port, key: .init(algorithm: parsed.type, fingerprint: parsed.fingerprint, knownHostsLine: "\(c.address) \(parsed.type) \(parsed.blob)")))
+        try store.record(.installed, serverID: c.serverID, account: c.account, keyID: c.keyID)
+        try store.checked(id, success: true)
+    }
     private func draft() -> AccessFormDraft {
         var draft = AccessFormDraft(); draft.alias = "test-server"; draft.description = "验收测试"; draft.address = "test.example"
         draft.account = "test"; draft.password = "synthetic-test-password"; return draft
@@ -69,13 +76,14 @@ import KeyPortInterface
         let key = try key(store!)
         let server = UUID().uuidString
         var input = draft()
+        input.automaticRouting = false
         input.additionalAddresses = ["100.64.0.2", "fd7a:115c:a1e0::2", "TEST.EXAMPLE", "100.64.0.2"]
         let primary = try store!.save(draft: input, serverID: server, key: key)
         XCTAssertEqual(store!.state.connections.count, 3)
         XCTAssertEqual(Set(store!.state.connections.map(\.serverID)), [server])
         XCTAssertTrue(store!.state.connections.allSatisfy { $0.verification == "pending" })
         XCTAssertTrue(store!.state.trusts.isEmpty)
-        try store!.checked(primary, success: true)
+        try verify(store!, primary)
         XCTAssertEqual(store!.state.connections.filter { $0.verification == "verified" }.count, 1)
         var more = draft()
         more.address = "another.example"
@@ -100,15 +108,17 @@ import KeyPortInterface
         let key = try key(store!)
         let server = UUID().uuidString
         let first = try store!.save(draft: draft(), serverID: server, key: key)
-        try store!.checked(first, success: true)
+        try verify(store!, first)
         var secondDraft = draft(); secondDraft.address = "second.example"
         let second = try store!.save(draft: secondDraft, serverID: server, key: key)
-        try store!.checked(second, success: true)
+        try verify(store!, second)
         XCTAssertEqual(try store!.command(for: store!.state.connections[0]), "ssh test-server")
-        XCTAssertTrue(try store!.command(for: store!.state.connections[1]).contains(" -F "))
+        XCTAssertEqual(try store!.command(for: store!.state.connections[1]), "ssh test-server")
+        XCTAssertTrue(try store!.diagnosticCommand(for: store!.state.connections[1]).contains(" -F "))
         XCTAssertTrue(try String(contentsOf: store!.installation.managed).contains("test.example"))
         try store!.setDefault(second)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: store!.paths.keyPortDirectory.appendingPathComponent("path-\(first).conf").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store!.paths.keyPortDirectory.appendingPathComponent("path-\(first).conf").path))
+        _ = try store!.diagnosticCommand(for: store!.state.connections.first { $0.id == first }!)
         XCTAssertTrue(try String(contentsOf: store!.installation.managed).contains("second.example"))
         try store!.rename(serverID: server, alias: "renamed")
         XCTAssertFalse(try String(contentsOf: store!.installation.managed).contains("Host test-server"))
@@ -121,14 +131,15 @@ import KeyPortInterface
         try store!.remove(second)
         XCTAssertNil(store!.state.defaultPaths?[server])
         XCTAssertFalse(FileManager.default.fileExists(atPath: store!.installation.managed.path))
-        XCTAssertTrue(try store!.command(for: store!.state.connections[0]).contains(" -F "))
+        XCTAssertThrowsError(try store!.command(for: store!.state.connections[0]))
+        XCTAssertTrue(try store!.diagnosticCommand(for: store!.state.connections[0]).contains(" -F "))
         XCTAssertEqual(store!.state.keys.count, 1)
     }
     func testConflictingRenamePreservesStateAndConfiguration() throws {
         let store = try WorkspaceStore(home: directory()), key = try key(store)
         let server = UUID().uuidString
         let id = try store.save(draft: draft(), serverID: server, key: key)
-        try store.checked(id, success: true)
+        try verify(store, id)
         let original = try String(contentsOf: store.installation.userConfig)
         try Data((original + "\nHost occupied\n HostName other.example\n").utf8).write(to: store.installation.userConfig)
         XCTAssertThrowsError(try store.rename(serverID: server, alias: "occupied"))
@@ -139,13 +150,13 @@ import KeyPortInterface
         let store = try WorkspaceStore(home: directory()), key = try key(store)
         let server = UUID().uuidString
         let id = try store.save(draft: draft(), serverID: server, key: key)
-        try store.checked(id, success: true)
+        try verify(store, id)
         let repeated = try store.save(draft: draft(), serverID: server, key: key)
         XCTAssertEqual(id, repeated); XCTAssertEqual(store.state.connections.count, 1)
         XCTAssertEqual(store.state.defaultPaths?[server], id)
         XCTAssertThrowsError(try store.command(for: store.state.connections[0]))
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.installation.managed.path))
-        try store.checked(id, success: true)
+        try verify(store, id)
         XCTAssertEqual(try store.command(for: store.state.connections[0]), "ssh test-server")
     }
     func testChangedHostStopsBeforeAuthentication() async throws {

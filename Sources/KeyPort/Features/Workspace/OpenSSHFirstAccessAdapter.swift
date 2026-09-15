@@ -130,10 +130,10 @@ import KeyPortInterface
         try check(token)
         guard let connection = store.state.connections.first(where: { $0.id == connectionID }) else { throw WorkspaceError.storage }
         try store.checked(connectionID, success: true)
-        handoffCommand = try store.command(for: connection)
+        handoffCommand = (try? store.command(for: connection)) ?? ""
     }
     func recordFailure(_ failure: AccessFlowFailure) throws {
-        if let connectionID { try store.checked(connectionID, success: false, unreachable: failure == .unreachable) }
+        if let connectionID { try store.checked(connectionID, success: false, unreachable: failure == .unreachable, identityMismatch: failure == .identityMismatch) }
     }
     func command(for draft: AccessFormDraft) -> String { handoffCommand }
     func openTerminal(command: String) async throws {
@@ -156,7 +156,14 @@ import KeyPortInterface
     }
     func cancel() { epoch = UUID(); clearPassword(); server = nil; key = nil; observed = nil }
     private func clearPassword() { password.resetBytes(in: password.indices); password.removeAll(keepingCapacity: false) }
-    private func check(_ token: UUID) throws { try Task.checkCancellation(); guard token == epoch else { throw CancellationError() } }
+    private func check(_ token: UUID) throws {
+        try Task.checkCancellation(); guard token == epoch else { throw CancellationError() }
+        if let server, let key, let observed, let connectionID {
+            guard store.state.connections.contains(where: { $0.id == connectionID && $0.address == server.host && $0.port == server.port && $0.account == server.username && $0.keyID == key.id }),
+                  store.state.keys.contains(where: { $0.id == key.id && $0.fingerprint == key.fingerprint && $0.privateKeyPath == key.privateKeyPath }),
+                  store.state.trusts.contains(where: { $0.serverID == observed.serverID && $0.address == server.host && $0.port == server.port && $0.key.fingerprint == observed.key.fingerprint }) else { throw AccessFlowFailure.identityMismatch }
+        }
+    }
     private func session(_ authorization: AccessAuthorizationKey) throws -> (ServerConnection, SSHKeyRecord) {
         guard authorization.deviceID == deviceID, authorization.serverID == observed?.serverID,
               let server, server.username == authorization.account, let key else { throw AccessFlowFailure.identityMismatch }

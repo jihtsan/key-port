@@ -50,7 +50,7 @@ extension WorkspaceStore {
     private func revokeAccountBatch(_ batch: [SSHAuthorization], serverID: String) async throws {
         guard let accountID = batch.first?.accountID,
               let account = topology.sshAccounts.first(where: { $0.id == accountID }),
-              let path = state.connections.first(where: { $0.serverID == serverID && $0.account == account.username && !$0.keyID.isEmpty }),
+              let path = try? authorizationConnection(accountID: account.id),
               let identity = state.keys.first(where: { $0.id == path.keyID && $0.deviceID == state.deviceID }), identity.privateKeyPath != nil else {
             throw SSHServiceError.operationFailed("缺少可用 SSH 路径或本机密钥，请先为该账户恢复连接路径。")
         }

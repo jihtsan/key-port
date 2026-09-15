@@ -35,7 +35,7 @@ struct ManagedSSHPolicyInstallation {
         try directory(generations)
         let events = root.appendingPathComponent("events"); try directory(events)
         var helper: URL?
-        if !plans.isEmpty {
+        if plans.contains(where: { $0.profile.routePolicy.fixedEndpointID == nil }) {
             // Validate bundled code before copying it outside the movable application bundle.
             var code: SecStaticCode?
             guard SecStaticCodeCreateWithPath(bundledHelper as CFURL, [], &code) == errSecSuccess,
@@ -46,7 +46,7 @@ struct ManagedSSHPolicyInstallation {
             try immutable(data, at: target, mode: 0o700)
             helper = target
         }
-        let configurations = plans.map { plan in
+        let configurations = plans.filter { $0.profile.routePolicy.fixedEndpointID == nil }.map { plan in
             SSHPreconnectRelayConfiguration(eventsDirectory: events.path, operationID: plan.profile.id, profileID: plan.profile.id,
                 target: .init(host: plan.hostKeyAlias, port: 22),
                 candidates: plan.endpoints.map { .init(endpointID: $0.id, host: $0.address, port: $0.port) })
@@ -61,8 +61,11 @@ struct ManagedSSHPolicyInstallation {
         let manifestURL = generation.appendingPathComponent("manifest.json")
         let hostsURL = generation.appendingPathComponent("known_hosts")
         try immutable(data, at: manifestURL); try immutable(hosts, at: hostsURL)
-        let entries = directEntries + plans.map { plan in
-            SSHConfigEntry(server: .init(name: plan.profile.sshAlias, host: plan.hostKeyAlias, port: 22, username: plan.username, alias: plan.profile.sshAlias),
+        let entries = directEntries + plans.map { plan -> SSHConfigEntry in
+            if plan.profile.routePolicy.fixedEndpointID != nil, let endpoint = plan.endpoints.first {
+                return SSHConfigEntry(server: .init(name: plan.profile.sshAlias, host: endpoint.address, port: Int(endpoint.port), username: plan.username, alias: plan.profile.sshAlias), identityPath: plan.key.privateKeyPath!, policyHostKeyAlias: plan.hostKeyAlias)
+            }
+            return SSHConfigEntry(server: .init(name: plan.profile.sshAlias, host: plan.hostKeyAlias, port: 22, username: plan.username, alias: plan.profile.sshAlias),
                 identityPath: plan.key.privateKeyPath!, relay: .init(executable: helper!.path, manifest: manifestURL.path, profileID: plan.profile.id, hostKeyAlias: plan.hostKeyAlias))
         }
         _ = try SSHConfigGenerator.policyConfig(entries: entries, knownHostsPath: hostsURL.path)
