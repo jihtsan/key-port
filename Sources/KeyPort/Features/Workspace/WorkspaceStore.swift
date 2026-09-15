@@ -50,6 +50,8 @@ import Observation
     private(set) var syncEnabled = false
     @ObservationIgnored private var syncTask: Task<Void, Never>?
     private var revision = 0
+    private(set) var serverOperationInProgress = false
+    func setServerOperationInProgress(_ value: Bool) { serverOperationInProgress = value }
     func setSyncEnabled(_ enabled: Bool) {
         syncEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "KeyPort.cloudSyncEnabled")
@@ -249,7 +251,7 @@ import Observation
     }
     func synchronize(automatically: Bool = false) async {
         guard !automatically || syncEnabled else { return }
-        guard syncState != .syncing else { return }
+        guard syncState != .syncing, !serverOperationInProgress else { return }
         syncState = .syncing
         let sentRevision = revision
         do {
@@ -277,7 +279,7 @@ import Observation
         next.topology = TopologyCloudMetadataSnapshotPolicy.restoringLocalState(in: TopologyCloudMetadataSnapshotPolicy.merge(local: topology, remote: imported), from: topology)
         try commit(next)
     }
-    private func commit(_ next: Document, scheduleSync shouldSchedule: Bool = true) throws {
+    func commit(_ next: Document, scheduleSync shouldSchedule: Bool = true) throws {
         try Self.validate(next)
         // Persist authority first. Derived SSH files can always be rebuilt on retry.
         try write(try Self.encoder().encode(next), to: stateURL)

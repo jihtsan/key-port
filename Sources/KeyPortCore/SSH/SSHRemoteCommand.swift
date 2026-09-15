@@ -35,6 +35,8 @@ public enum SSHRemoteCommand: Hashable, Sendable {
     /// 按公钥正文从 `authorized_keys` 移除（备份 + 原子替换 + 写后校验）。
     case revokeAuthorizedKey(keyBlob: String)
 
+    case revokeAuthorizedKeys(keyBlobs: [String])
+
     /// 从一行 OpenSSH 公钥文本构造安装命令；公钥无法解析时返回 `nil`。
     public static func installAuthorizedKey(publicKeyLine: String) -> SSHRemoteCommand? {
         guard let parsed = PublicKeyParser.parse(publicKeyLine) else { return nil }
@@ -76,6 +78,8 @@ public enum SSHRemoteCommand: Hashable, Sendable {
                     keyBlob: keyBlob
                 )
             )
+        case .revokeAuthorizedKeys(let blobs):
+            return .init(remoteArguments: ["sh", "-s"], standardInputScript: SSHRemoteCommandScripts.revokeAuthorizedKeys(keyBlobs: blobs))
         case .revokeAuthorizedKey(let keyBlob):
             return SSHRemoteCommandSpec(
                 remoteArguments: ["sh", "-s"],
@@ -183,6 +187,32 @@ public enum SSHRemoteCommandScripts {
         mv "$tmp" "$auth"
         trap - EXIT HUP INT TERM
         awk -v blob="$key_blob" '{ for (i=1; i<=NF; i++) if ($i == blob) found=1 } END { exit(found ? 0 : 1) }' "$auth"
+        """
+    }
+
+    public static func revokeAuthorizedKeys(keyBlobs: [String]) -> String {
+        guard !keyBlobs.isEmpty, keyBlobs.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "+/=".contains($0)) } }) else { return "exit 1" }
+        return """
+        set -eu
+        umask 077
+        auth="$HOME/.ssh/authorized_keys"
+        [ -f "$auth" ] || exit 0
+        backup="$auth.keyport-backup-$(date +%Y%m%d%H%M%S)"
+        cp -p "$auth" "$backup"
+        tmp="$auth.keyport-tmp-$$"
+        trap 'rm -f "$tmp"' EXIT HUP INT TERM
+        awk -v blobs='\(keyBlobs.joined(separator: " "))' '
+          BEGIN { split(blobs, keys, " "); for (k in keys) targets[keys[k]]=1 }
+          { remove=0; for (i=1; i<=NF; i++) if ($i in targets) remove=1; if (!remove) print $0 }
+        ' "$auth" > "$tmp"
+        chmod 600 "$tmp"
+        mv "$tmp" "$auth"
+        trap - EXIT HUP INT TERM
+        awk -v blobs='\(keyBlobs.joined(separator: " "))' '
+          BEGIN { split(blobs, keys, " "); for (k in keys) targets[keys[k]]=1 }
+          { for (i=1; i<=NF; i++) if ($i in targets) found=1 }
+          END { exit(found ? 1 : 0) }
+        ' "$auth"
         """
     }
 

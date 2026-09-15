@@ -111,6 +111,7 @@ private struct WorkspaceControls: View {
     let store: WorkspaceStore
     @ObservedObject var workspace: AccessWorkspace
     @Binding var notice: String?
+    @State private var serverAction: Bool?
     @State private var renaming = false
     @State private var alias = ""
     private var connection: WorkspaceStore.Connection? {
@@ -121,6 +122,11 @@ private struct WorkspaceControls: View {
     var body: some View {
         Menu("SSH 连接") {
             Button("同步终端别名") { perform { try store.synchronizeAliases(); notice = "终端别名已同步。" } }
+            if workspace.selectedServer != nil {
+                Button("撤销授权", role: .destructive) { serverAction = false }
+                Button("一键解除", role: .destructive) { serverAction = true }
+                Divider()
+            }
             if let connection {
                 Text(store.isDefault(connection) ? "当前为默认连接" : "当前为指定路径")
                 Button("复制连接命令") { perform {
@@ -141,6 +147,14 @@ private struct WorkspaceControls: View {
                 Button("删除当前路径", role: .destructive) { perform { try store.remove(connection.id) } }
             }
         }.font(.system(size: 11)).fixedSize()
+        .disabled(store.serverOperationInProgress)
+        .sheet(isPresented: Binding(get: { serverAction != nil }, set: { if !$0 { serverAction = nil } })) {
+            if let disconnect = serverAction, let server = workspace.selectedServer {
+                WorkspaceServerActionView(store: store, serverID: server.id, serverName: server.description, disconnect: disconnect) { message in
+                    notice = message.isEmpty ? nil : message; serverAction = nil
+                }
+            }
+        }
         .alert("修改 SSH 别名", isPresented: $renaming) {
             TextField("SSH 别名", text: $alias)
             Button("取消", role: .cancel) {}
