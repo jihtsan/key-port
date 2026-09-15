@@ -241,3 +241,47 @@ extension WorkspaceAuthorityTests {
         XCTAssertTrue(store.topology.activeNodes.isEmpty)
     }
 }
+
+
+extension WorkspaceAuthorityTests {
+    func testDisconnectWorkspaceDeviceRemovesServerRoleButPreservesDeviceAndKeys() async throws {
+        for current in [true, false] {
+            let store = try removalFixture()
+            var next = store.document
+            let nodeID = next.topology.nodes[0].id
+            next.topology.nodes[0].roles.append(.clientDevice)
+            if current { next.topology.profiles[0].nodeID = nodeID }
+            else { next.topology.profiles.append(.init(id: "other-device", nodeID: nodeID, name: "Other Mac")) }
+            try store.commit(next)
+            let original = store.topology
+            var called = false
+            try await store.revokeServer(nodeID.uuidString, disconnect: true) { _ in called = true }
+            XCTAssertTrue(called)
+            XCTAssertEqual(store.topology.profiles, original.profiles)
+            XCTAssertEqual(store.topology.sshKeys, original.sshKeys)
+            let node = try XCTUnwrap(store.topology.activeNodes.first { $0.id == nodeID })
+            XCTAssertTrue(node.roles.contains(.clientDevice))
+            XCTAssertFalse(node.roles.contains(.sshHost))
+            XCTAssertTrue(store.workspace.graph.servers.isEmpty)
+            XCTAssertTrue(store.topology.activeAccounts.isEmpty)
+            let merged = TopologyCloudMetadataSnapshotPolicy.merge(local: store.topology, remote: original)
+            XCTAssertFalse(try XCTUnwrap(merged.activeNodes.first { $0.id == nodeID }).roles.contains(.sshHost))
+            let inverse = TopologyCloudMetadataSnapshotPolicy.merge(local: original, remote: store.topology)
+            XCTAssertFalse(try XCTUnwrap(inverse.activeNodes.first { $0.id == nodeID }).roles.contains(.sshHost))
+            // A later metadata edit on an older peer must not revive the server role.
+            var stale = original
+            stale.nodes[0].updatedAt = Date().addingTimeInterval(60)
+            let newerStale = TopologyCloudMetadataSnapshotPolicy.merge(local: store.topology, remote: stale)
+            XCTAssertFalse(newerStale.nodes[0].roles.contains(.sshHost))
+            let removed = store.topology
+            var draft = AccessFormDraft()
+            draft.alias = "rejoined"; draft.account = "admin"; draft.address = "existing.example"
+            _ = try store.save(draft: draft, serverID: nodeID.uuidString, key: store.state.keys[0])
+            XCTAssertEqual(store.workspace.graph.servers.count, 1)
+            let rejoined = TopologyCloudMetadataSnapshotPolicy.merge(local: store.topology, remote: removed)
+            XCTAssertTrue(try XCTUnwrap(rejoined.activeNodes.first { $0.id == nodeID }).roles.contains(.sshHost))
+            let roundtrip = try WorkspaceStore.decoder().decode(TopologySnapshot.self, from: WorkspaceStore.encoder().encode(removed))
+            XCTAssertEqual(roundtrip.nodes[0].removedRoles, [.sshHost])
+        }
+    }
+}

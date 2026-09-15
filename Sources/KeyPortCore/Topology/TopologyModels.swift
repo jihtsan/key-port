@@ -9,6 +9,9 @@ public struct Node: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var name: String
     public var roles: [NodeRole]
+    /// Explicit role removal survives merging older device metadata.
+    public var removedRoles: [NodeRole]?
+    public var roleVersion: Int?
     public var group: String
     public var notes: String
     public var machineConfiguration: RemoteMachineConfiguration?

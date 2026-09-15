@@ -156,7 +156,14 @@ public enum TopologyCloudMetadataSnapshotPolicy {
 
     private static func preferNode(_ candidate: Node, over existing: Node) -> Node {
         var value = candidate.updatedAt >= existing.updatedAt ? candidate : existing
-        value.roles = Array(Set(candidate.roles + existing.roles)).sorted { $0.rawValue < $1.rawValue }
+        let roleSource: Node
+        if (candidate.roleVersion ?? 0) != (existing.roleVersion ?? 0) {
+            roleSource = (candidate.roleVersion ?? 0) > (existing.roleVersion ?? 0) ? candidate : existing
+        } else { roleSource = value }
+        let removed = Set(roleSource.removedRoles ?? [])
+        value.removedRoles = roleSource.removedRoles
+        value.roleVersion = roleSource.roleVersion
+        value.roles = Array(Set(candidate.roles + existing.roles).subtracting(removed)).sorted { $0.rawValue < $1.rawValue }
         if value.name.isEmpty { value.name = candidate.name.isEmpty ? existing.name : candidate.name }
         if value.group.isEmpty { value.group = candidate.group.isEmpty ? existing.group : candidate.group }
         if value.notes.isEmpty { value.notes = candidate.notes.isEmpty ? existing.notes : candidate.notes }

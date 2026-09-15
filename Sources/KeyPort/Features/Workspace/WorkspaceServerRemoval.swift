@@ -15,9 +15,6 @@ extension WorkspaceStore {
             throw SSHServiceError.operationFailed("正在处理其他操作，请稍后重试。")
         }
         guard let node = topology.activeNodes.first(where: { $0.id.uuidString == serverID }) else { throw WorkspaceError.storage }
-        if disconnect && topology.profiles.contains(where: { $0.nodeID == node.id && !$0.isRevoked }) {
-            throw SSHServiceError.operationFailed("该机器也是工作区设备，不能通过服务器解除操作删除设备档案。")
-        }
         setServerOperationInProgress(true)
         defer { setServerOperationInProgress(false) }
         let pending = serverAuthorizations(serverID).filter { $0.remoteState != .revoked }
@@ -82,11 +79,17 @@ extension WorkspaceStore {
 
     private func removeRevokedServer(_ nodeID: UUID) throws {
         var next = document
+        let keepDevice = next.topology.profiles.contains { $0.nodeID == nodeID }
         let accounts = Set(next.topology.sshAccounts.filter { $0.nodeID == nodeID }.map(\.id))
         let endpoints = Set(next.topology.endpoints.filter { $0.nodeID == nodeID }.map(\.id))
         let profiles = Set(next.topology.sshConnectionProfiles.filter { accounts.contains($0.accountID) }.map { $0.id.uuidString })
         for i in next.topology.nodes.indices where next.topology.nodes[i].id == nodeID {
-            next.topology.nodes[i].isDeleted = true; next.topology.nodes[i].updatedAt = Date()
+            if keepDevice {
+                next.topology.nodes[i].roles.removeAll { $0 == .sshHost }
+                next.topology.nodes[i].removedRoles = Array(Set((next.topology.nodes[i].removedRoles ?? []) + [.sshHost]))
+                next.topology.nodes[i].roleVersion = (next.topology.nodes[i].roleVersion ?? 0) + 1
+            } else { next.topology.nodes[i].isDeleted = true }
+            next.topology.nodes[i].updatedAt = Date()
         }
         for i in next.topology.sshAccounts.indices where accounts.contains(next.topology.sshAccounts[i].id) {
             next.topology.sshAccounts[i].isDeleted = true; next.topology.sshAccounts[i].updatedAt = Date(); next.topology.sshAccounts[i].version += 1
@@ -102,8 +105,8 @@ extension WorkspaceStore {
         for i in next.topology.authorizations.indices where accounts.contains(next.topology.authorizations[i].accountID) {
             next.topology.authorizations[i].isDeleted = true; next.topology.authorizations[i].updatedAt = Date()
         }
-        let tailscaleIDs = Set(next.topology.tailscaleNodes.filter { $0.keyPortNodeID == nodeID }.map(\.id))
-        for i in next.topology.tailscaleNodes.indices where next.topology.tailscaleNodes[i].keyPortNodeID == nodeID {
+        let tailscaleIDs = Set(next.topology.tailscaleNodes.filter { !keepDevice && $0.keyPortNodeID == nodeID }.map(\.id))
+        for i in next.topology.tailscaleNodes.indices where !keepDevice && next.topology.tailscaleNodes[i].keyPortNodeID == nodeID {
             next.topology.tailscaleNodes[i].isDeleted = true; next.topology.tailscaleNodes[i].updatedAt = Date()
         }
         next.topology.nodeAssociations.removeAll { $0.serverID == nodeID }
